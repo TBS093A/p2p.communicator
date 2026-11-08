@@ -8,6 +8,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:p2p_communicator/main.dart' as app;
@@ -67,6 +68,18 @@ void main() {
     await t.pump();
   }
 
+  /// The real soft keyboard slides over the bottom of the screen; wait until
+  /// it is gone so taps land and screenshots are clean.
+  Future<void> hideKeyboard(WidgetTester t) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    final end = DateTime.now().add(const Duration(seconds: 5));
+    while (t.view.viewInsets.bottom > 0 && DateTime.now().isBefore(end)) {
+      await idle(t, const Duration(milliseconds: 200));
+    }
+    await idle(t, const Duration(milliseconds: 600));
+  }
+
   Future<void> createRoom(
     WidgetTester t, {
     required String room,
@@ -80,7 +93,7 @@ void main() {
     await fill(t, 'Twoja nazwa w tym pokoju', me);
     await fill(t, 'PIN do tego pokoju', pin);
     await fill(t, 'Powtórz PIN', pin);
-    FocusManager.instance.primaryFocus?.unfocus();
+    await hideKeyboard(t);
     if (screenshot) await shot(t, '02_new_room');
     final submit = find.widgetWithText(FilledButton, 'Utwórz');
     await reveal(t, submit);
@@ -96,6 +109,8 @@ void main() {
   }
 
   testWidgets('rooms, PIN isolation and screenshots', (t) async {
+    // A tap that misses its widget should fail here, not minutes later.
+    WidgetController.hitTestWarningShouldBeFatal = true;
     app.main();
     await pumpUntil(t, find.byType(PinScreen));
     if (Platform.isAndroid) {
@@ -121,6 +136,7 @@ void main() {
       find.byIcon(Icons.done),
       timeout: const Duration(minutes: 2),
     );
+    await hideKeyboard(t);
     await shot(t, '03_chat');
 
     await t.tap(find.byType(PopupMenuButton<String>));

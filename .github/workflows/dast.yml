@@ -36,6 +36,9 @@ jobs:
           api-level: 34
           arch: x86_64
           target: google_apis
+          # A real phone-sized screen: taps land where users tap, and the
+          # README screenshots look like a phone.
+          profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
