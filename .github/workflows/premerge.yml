@@ -1,7 +1,7 @@
 name: premerge
 
-# Every pull request into main: static analysis, unit tests and a debug APK
-# build, so a broken Android build never reaches main.
+# Every pull request into main: format, analysis, unit tests, a debug APK
+# build, SAST + SCA, and (when app code changed) the emulator DAST run.
 on:
   pull_request:
     branches: [main]
@@ -15,18 +15,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'lib/**'
+              - 'android/**'
+              - 'pubspec.yaml'
+              - 'pubspec.lock'
+              - 'integration_test/**'
+              - 'test_driver/**'
+              - '.github/workflows/dast.yml'
+              - '.github/actions/**'
+
   checks:
     name: analyze + test
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           cache-key: host-debug
 
       - name: Format
-        run: dart format --output=none --set-exit-if-changed lib test
+        run: dart format --output=none --set-exit-if-changed lib test integration_test test_driver
 
       - name: Analyze
         run: flutter analyze
@@ -39,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           cache-key: android-debug
@@ -47,8 +71,23 @@ jobs:
       - name: Build debug APK (arm64)
         run: flutter build apk --debug --target-platform android-arm64
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: app-debug-pr${{ github.event.pull_request.number || 'manual' }}
           path: build/app/outputs/flutter-apk/app-debug.apk
           retention-days: 7
+
+  security:
+    name: security
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      security-events: write
+
+  dast:
+    name: dast
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/dast.yml

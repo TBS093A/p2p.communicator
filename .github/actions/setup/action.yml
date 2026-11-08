@@ -9,12 +9,12 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-java@v6
+    - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
       with:
         distribution: temurin
         java-version: "17"
 
-    - uses: subosito/flutter-action@v2
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
       with:
         # Same version as local development; keep in sync when upgrading.
         flutter-version: 3.47.9
@@ -24,7 +24,7 @@ runs:
     # The veilid build hook compiles veilid-core (Rust) with the toolchain the
     # veilid repo pins (rust-toolchain.toml); rustup on the runner fetches it.
     # Cache crates and the compiled targets: a cold veilid build takes long.
-    - uses: actions/cache@v6
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry

@@ -1,0 +1,25 @@
+# SCA, continuous: weekly PRs for vulnerable or outdated dependencies. Each PR
+# runs the full premerge pipeline before it can be merged. The cooldown skips
+# versions younger than a week, so a freshly published malicious release has
+# time to be caught upstream first.
+version: 2
+updates:
+  - package-ecosystem: pub
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/setup
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

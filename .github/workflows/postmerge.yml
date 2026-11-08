@@ -1,7 +1,11 @@
 name: postmerge
 
-# Every push to main (a merged PR): run the checks again on the merged code,
-# then build a signed release APK and publish it as a GitHub release.
+# Every push to main (a merged PR):
+#   1. analysis, tests, SAST + SCA on the merged code
+#   2. signed release APK published as a GitHub release (gated on 1.)
+#   3. MobSF scan of that APK, report attached to the release
+#   4. emulator DAST; if the UI changed, its screenshots are published to the
+#      `screenshots` branch, which the README embeds
 #
 # Version: major.minor come from pubspec.yaml, the patch is the workflow run
 # number, so every merge gets a unique, increasing version without a commit
@@ -19,12 +23,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      ui: ${{ steps.filter.outputs.ui }}
+      shots-missing: ${{ steps.branch.outputs.missing }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'lib/**'
+              - 'android/**'
+              - 'pubspec.yaml'
+              - 'pubspec.lock'
+              - 'integration_test/**'
+              - 'test_driver/**'
+              - '.github/workflows/dast.yml'
+              - '.github/actions/**'
+            ui:
+              - 'lib/ui/**'
+              - 'lib/app.dart'
+              - 'integration_test/**'
+      - name: Screenshots branch exists?
+        id: branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/branches/screenshots" > /dev/null 2>&1; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
     name: analyze + test
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           cache-key: host-debug
@@ -35,15 +78,26 @@ jobs:
       - name: Test
         run: flutter test
 
+  security:
+    name: security
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      security-events: write
+
   release:
     name: build + release apk
-    needs: checks
+    needs: [checks, security]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
         with:
           cache-key: android-release
@@ -54,9 +108,11 @@ jobs:
           base=$(sed -n 's/^version:[[:space:]]*\([0-9]*\.[0-9]*\)\..*/\1/p' pubspec.yaml)
           if [ -z "$base" ]; then echo "cannot read version from pubspec.yaml" >&2; exit 1; fi
           name="$base.${GITHUB_RUN_NUMBER}"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "code=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "tag=v$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "name=$name"
+            echo "code=${GITHUB_RUN_NUMBER}"
+            echo "tag=v$name"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore signing key
         env:
@@ -74,31 +130,149 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          BUILD_NAME: ${{ steps.version.outputs.name }}
+          BUILD_NUMBER: ${{ steps.version.outputs.code }}
         run: |
           flutter build apk --release \
             --target-platform android-arm64 \
-            --build-name "${{ steps.version.outputs.name }}" \
-            --build-number "${{ steps.version.outputs.code }}"
+            --build-name "$BUILD_NAME" \
+            --build-number "$BUILD_NUMBER"
 
       - name: Prepare assets
         id: assets
+        env:
+          BUILD_NAME: ${{ steps.version.outputs.name }}
         run: |
-          apk="p2p-communicator-${{ steps.version.outputs.name }}-arm64.apk"
+          apk="p2p-communicator-${BUILD_NAME}-arm64.apk"
           cp build/app/outputs/flutter-apk/app-release.apk "$apk"
           sha256sum "$apk" > "$apk.sha256"
           echo "apk=$apk" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-apk
+          path: ${{ steps.assets.outputs.apk }}
+          retention-days: 7
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TITLE: P2P Communicator ${{ steps.version.outputs.name }}
+          APK: ${{ steps.assets.outputs.apk }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            "${{ steps.assets.outputs.apk }}" \
-            "${{ steps.assets.outputs.apk }}.sha256" \
+          gh release create "$TAG" "$APK" "$APK.sha256" \
             --target "$GITHUB_SHA" \
-            --title "P2P Communicator ${{ steps.version.outputs.name }}" \
+            --title "$TITLE" \
             --generate-notes
 
       - name: Clean up signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/release.p12"
+
+  mobsf:
+    name: MobSF (release apk)
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    services:
+      mobsf:
+        image: opensecurity/mobile-security-framework-mobsf:v4.6.4@sha256:cf1465a3cc0c95488b9a6cdb1c7799d4b576d391ee28232c221f6a196bf2f74c
+        ports:
+          - 8000:8000
+        env:
+          MOBSF_API_KEY: ci-local-only-key
+    env:
+      MOBSF: http://localhost:8000
+      KEY: ci-local-only-key
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-apk
+          path: apk
+
+      - name: Wait for MobSF
+        run: |
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$MOBSF/login/" || true)
+            if [ "$code" = "200" ] || [ "$code" = "302" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "MobSF did not start" >&2
+          exit 1
+
+      - name: Scan APK
+        run: |
+          apk=$(ls apk/*.apk)
+          hash=$(curl -sSf -H "Authorization: $KEY" -F "file=@$apk" "$MOBSF/api/v1/upload" | jq -r .hash)
+          curl -sSf --max-time 1800 -H "Authorization: $KEY" -d "hash=$hash" "$MOBSF/api/v1/scan" > /dev/null
+          curl -sSf -H "Authorization: $KEY" -d "hash=$hash" "$MOBSF/api/v1/report_json" -o mobsf-report.json
+          curl -sSf -H "Authorization: $KEY" -d "hash=$hash" "$MOBSF/api/v1/scorecard" -o mobsf-scorecard.json
+          curl -sSf -H "Authorization: $KEY" -d "hash=$hash" "$MOBSF/api/v1/download_pdf" -o mobsf-report.pdf
+          {
+            echo "## MobSF: $(basename "$apk")"
+            echo "Security score: **$(jq -r '.security_score // "n/a"' mobsf-scorecard.json)** / 100"
+            echo
+            echo "| severity | findings |"
+            echo "|---|---|"
+            for s in high warning info secure hotspot; do
+              echo "| $s | $(jq -r --arg s "$s" '(.[$s] // []) | length' mobsf-scorecard.json) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mobsf-report
+          path: mobsf-*
+          if-no-files-found: ignore
+
+      - name: Attach report to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh release upload "$TAG" mobsf-report.pdf --repo "$GITHUB_REPOSITORY"
+
+  dast:
+    name: dast
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || needs.changes.outputs.shots-missing == 'true' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/dast.yml
+
+  screenshots:
+    name: publish screenshots
+    needs: [changes, dast]
+    if: needs.changes.outputs.ui == 'true' || needs.changes.outputs.shots-missing == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: screenshots
+          path: shots
+
+      # A separate, unprotected branch: no bot commits on main, and no
+      # workflow re-trigger loop.
+      - name: Push to screenshots branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git clone --quiet --depth 1 --branch screenshots "$remote" pub 2>/dev/null; then
+            git init --quiet -b screenshots pub
+            git -C pub remote add origin "$remote"
+          fi
+          cp shots/*.png pub/
+          git -C pub add -A
+          if git -C pub diff --cached --quiet; then
+            echo "Screenshots unchanged."
+            exit 0
+          fi
+          git -C pub -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "Screenshots for ${GITHUB_SHA::7}"
+          git -C pub push --quiet origin screenshots

@@ -13,12 +13,34 @@ inny pokój, a zły PIN nie otwiera niczego.
 (arm64, Android 7+). Przy instalacji Android poprosi o zgodę na instalację z
 nieznanego źródła.
 
+| PIN | Nowy pokój | Czat | Zaproszenie |
+|---|---|---|---|
+| ![PIN](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/01_pin.png) | ![Nowy pokój](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/02_new_room.png) | ![Czat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/03_chat.png) | ![Zaproszenie](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/04_invite.png) |
+
+Zrzuty robi CI na emulatorze (test `integration_test/app_test.dart`) i
+odświeża je na gałęzi `screenshots` tylko wtedy, gdy zmieni się UI.
+
 ## CI/CD (GitHub Actions)
 
 | Workflow | Kiedy | Co robi |
 |---|---|---|
-| [`premerge`](.github/workflows/premerge.yml) | każdy PR do `main` | format, `flutter analyze`, testy, debug APK (artefakt na 7 dni) |
-| [`postmerge`](.github/workflows/postmerge.yml) | każdy push do `main` | analyze + testy, podpisany release APK, GitHub Release |
+| [`premerge`](.github/workflows/premerge.yml) | każdy PR do `main` | format, `flutter analyze`, testy, debug APK, SAST + SCA, DAST (gdy zmienił się kod aplikacji) |
+| [`postmerge`](.github/workflows/postmerge.yml) | każdy push do `main` | to samo co wyżej, potem podpisany release APK + GitHub Release, MobSF, DAST, zrzuty ekranu |
+
+### Bezpieczeństwo w pipeline
+
+| Rodzaj | Narzędzie | Co sprawdza | Blokuje? |
+|---|---|---|---|
+| SAST | Semgrep (`p/default` + [`.semgrep/`](.semgrep/p2p-rules.yml)) | Dart, Kotlin, YAML, Actions; reguły projektu: `Random()` w kodzie krypto, logowanie sekretów, `http://`, backup/cleartext w manifeście | tak |
+| SAST | CodeQL (`actions`) | bezpieczeństwo samych workflowów (injection, uprawnienia) | tak |
+| SAST | Gitleaks | sekrety w historii gita | tak |
+| SCA | OSV-Scanner | podatności w `pubspec.lock` (blokuje) i w `Cargo.lock` Veilid (tylko raport) | pub: tak |
+| SCA | Dependabot | cotygodniowe PR-y z aktualizacjami pub i Actions (7 dni karencji) | n/d |
+| DAST | emulator + [`integration_test`](integration_test/app_test.dart) | prawdziwa aplikacja w sieci Veilid: zły PIN nic nie otwiera, każdy PIN otwiera tylko swój pokój, brak crashy | tak |
+| MAST | MobSF | analiza podpisanego APK, raport PDF dołączany do release'u | raport |
+
+Wyniki SAST i SCA trafiają też do zakładki **Security → Code scanning**.
+Wszystkie akcje są przypięte do SHA commitów.
 
 * Praca na gałęziach `feature/...`, PR do `main`, merge po zielonym `premerge`.
 * Wersja release'u: `major.minor` z `pubspec.yaml` + numer przebiegu jako patch
