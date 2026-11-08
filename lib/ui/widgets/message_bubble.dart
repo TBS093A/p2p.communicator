@@ -7,6 +7,9 @@ import 'package:video_player/video_player.dart';
 
 import '../../room/message.dart';
 import '../../room/room_session.dart';
+import '../../room/room_style.dart';
+import 'avatar.dart';
+import 'emoji_text.dart';
 
 class MessageBubble extends StatelessWidget {
   const MessageBubble({
@@ -22,64 +25,112 @@ class MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final mine = message.author == session.myOutbox;
     final scheme = Theme.of(context).colorScheme;
+    final profile = session.profileOf(message.author);
     final time = DateTime.fromMillisecondsSinceEpoch(message.ts);
     final hhmm =
         '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
 
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.sizeOf(context).width * 0.78,
-        ),
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-        decoration: BoxDecoration(
-          color: mine ? scheme.primaryContainer : scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!mine)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text(
-                  session.nameOf(message.author),
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: scheme.primary,
-                    fontSize: 13,
+    // Each member picks their bubble color; everyone sees it the same way.
+    final custom = profile.color == null ? null : Color(profile.color!);
+    final jumbo =
+        message.type == MsgType.text &&
+        EmojiCode.isJumbo(
+          EmojiCode.split(message.text ?? '', session.meta.emoji.keys.toSet()),
+        );
+    final bg = jumbo
+        ? Colors.transparent
+        : custom ??
+              (mine ? scheme.primaryContainer : scheme.surfaceContainerHigh);
+    final fg = jumbo
+        ? scheme.onSurface
+        : custom != null
+        ? onColor(custom)
+        : (mine ? scheme.onPrimaryContainer : scheme.onSurface);
+
+    final bubble = Container(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width * 0.72,
+      ),
+      margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: DefaultTextStyle.merge(
+        style: TextStyle(color: fg),
+        child: IconTheme.merge(
+          data: IconThemeData(color: fg),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!mine)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    profile.name,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: custom != null ? fg : scheme.primary,
+                      fontSize: 13,
+                    ),
                   ),
                 ),
-              ),
-            _content(context),
-            const SizedBox(height: 2),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(hhmm, style: Theme.of(context).textTheme.labelSmall),
-                if (mine) ...[
-                  const SizedBox(width: 4),
-                  Icon(switch (message.status) {
-                    MsgStatus.sending => Icons.schedule,
-                    MsgStatus.sent => Icons.done,
-                    MsgStatus.failed => Icons.error_outline,
-                  }, size: 14),
+              _content(context, fg),
+              const SizedBox(height: 2),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    hhmm,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelSmall?.copyWith(color: fg),
+                  ),
+                  if (mine) ...[
+                    const SizedBox(width: 4),
+                    Icon(switch (message.status) {
+                      MsgStatus.sending => Icons.schedule,
+                      MsgStatus.sent => Icons.done,
+                      MsgStatus.failed => Icons.error_outline,
+                    }, size: 14),
+                  ],
                 ],
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
+      ),
+    );
+
+    return Padding(
+      padding: EdgeInsets.only(left: mine ? 0 : 8, right: mine ? 4 : 0),
+      child: Row(
+        mainAxisAlignment: mine
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (!mine)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Avatar.member(session, message.author, radius: 16),
+            ),
+          bubble,
+        ],
       ),
     );
   }
 
-  Widget _content(BuildContext context) {
+  Widget _content(BuildContext context, Color fg) {
     final media = message.media;
     switch (message.type) {
       case MsgType.text:
-        return SelectableText(message.text ?? '');
+        return EmojiText(
+          text: message.text ?? '',
+          session: session,
+          style: TextStyle(color: fg),
+        );
       case MsgType.image:
         return _MediaLoader(
           session: session,

@@ -12,6 +12,11 @@ import '../room/message.dart';
 import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
 import 'invite_screen.dart';
+import 'members_screen.dart';
+import 'profile_screen.dart';
+import 'room_settings_screen.dart';
+import 'widgets/avatar.dart';
+import 'widgets/emoji_text.dart';
 import 'widgets/message_bubble.dart';
 import 'widgets/network_dot.dart';
 
@@ -198,22 +203,11 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       case 'members':
-        await showDialog<void>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Osoby w pokoju'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final e in _session.members.entries)
-                  Text(
-                    e.key == _session.myOutbox ? '${e.value} (ty)' : e.value,
-                  ),
-              ],
-            ),
-          ),
-        );
+        await _open(MembersScreen(session: _session));
+      case 'profile':
+        await _open(ProfileScreen(session: _session));
+      case 'settings':
+        await _open(RoomSettingsScreen(session: _session));
       case 'forget':
         final yes = await showDialog<bool>(
           context: context,
@@ -245,29 +239,117 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// Sub-screens get the room's accent too, and follow it live (changing the
+  /// color in room settings re-themes that screen at once).
+  Future<void> _open(Widget screen) => Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (context) => ListenableBuilder(
+        listenable: _session,
+        builder: (context, child) =>
+            Theme(data: _roomTheme(context), child: child!),
+        child: screen,
+      ),
+    ),
+  );
+
+  /// The app theme re-seeded with the room's accent color, if it has one.
+  ThemeData _roomTheme(BuildContext context) {
+    final base = Theme.of(context);
+    final accent = _session.meta.accent;
+    if (accent == null) return base;
+    return ThemeData(
+      colorSchemeSeed: Color(accent),
+      brightness: base.brightness,
+      useMaterial3: true,
+    );
+  }
+
+  Future<void> _pickEmoji() async {
+    final codes = _session.meta.emoji.keys.toList()..sort();
+    final code = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: codes.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'Ten pokój nie ma jeszcze własnych emoji. Dodasz je w '
+                  'ustawieniach pokoju.',
+                ),
+              )
+            : GridView.extent(
+                shrinkWrap: true,
+                maxCrossAxisExtent: 64,
+                padding: const EdgeInsets.all(12),
+                children: [
+                  for (final c in codes)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => Navigator.pop(context, c),
+                      child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: EmojiImage(session: _session, code: c, size: 44),
+                      ),
+                    ),
+                ],
+              ),
+      ),
+    );
+    if (code == null) return;
+    final sel = _text.selection;
+    final at = sel.isValid ? sel.start : _text.text.length;
+    final end = sel.isValid ? sel.end : _text.text.length;
+    final insert = ':$code: ';
+    _text.value = TextEditingValue(
+      text: _text.text.replaceRange(at, end, insert),
+      selection: TextSelection.collapsed(offset: at + insert.length),
+    );
+  }
+
   // --------------------------------------------------------------- build
 
   @override
   Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: _session,
+      builder: (context, _) =>
+          Theme(data: _roomTheme(context), child: _scaffold(context)),
+    );
+  }
+
+  Widget _scaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: ListenableBuilder(
-          listenable: _session,
-          builder: (context, _) => Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(_session.roomName),
-              Row(
-                children: [
-                  const NetworkDot(showLabel: false),
-                  const SizedBox(width: 6),
-                  Text(
-                    'osób: ${_session.members.length}',
-                    style: Theme.of(context).textTheme.bodySmall,
+        titleSpacing: 0,
+        title: Builder(
+          builder: (context) => InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => _menu('settings'),
+            child: Row(
+              children: [
+                Avatar.room(_session),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_session.roomName, overflow: TextOverflow.ellipsis),
+                      Row(
+                        children: [
+                          const NetworkDot(showLabel: false),
+                          const SizedBox(width: 6),
+                          Text(
+                            'osób: ${_session.profiles.length}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
           ),
         ),
         actions: [
@@ -281,6 +363,11 @@ class _ChatScreenState extends State<ChatScreen> {
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'invite', child: Text('Zaproś')),
               PopupMenuItem(value: 'members', child: Text('Osoby')),
+              PopupMenuItem(value: 'profile', child: Text('Mój profil')),
+              PopupMenuItem(
+                value: 'settings',
+                child: Text('Ustawienia pokoju'),
+              ),
               PopupMenuItem(value: 'forget', child: Text('Usuń z telefonu')),
             ],
           ),
@@ -365,6 +452,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 tooltip: 'Załącz',
                 icon: const Icon(Icons.add_circle_outline),
                 onPressed: _attach,
+              ),
+              IconButton(
+                tooltip: 'Emoji pokoju',
+                icon: const Icon(Icons.emoji_emotions_outlined),
+                onPressed: _pickEmoji,
               ),
               Expanded(
                 child: TextField(

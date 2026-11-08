@@ -14,8 +14,11 @@ import 'package:integration_test/integration_test.dart';
 import 'package:p2p_communicator/main.dart' as app;
 import 'package:p2p_communicator/ui/chat_screen.dart';
 import 'package:p2p_communicator/ui/invite_screen.dart';
+import 'package:p2p_communicator/ui/members_screen.dart';
 import 'package:p2p_communicator/ui/new_room_screen.dart';
 import 'package:p2p_communicator/ui/pin_screen.dart';
+import 'package:p2p_communicator/ui/profile_screen.dart';
+import 'package:p2p_communicator/ui/room_settings_screen.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -127,6 +130,35 @@ void main() {
     await settle(t);
   }
 
+  Future<void> openMenu(WidgetTester t, String item) async {
+    await t.tap(find.byType(PopupMenuButton<String>));
+    await pumpUntil(t, find.text(item));
+    await settle(t); // the menu animates in; taps before that hit its barrier
+    await t.tap(find.text(item));
+  }
+
+  /// Taps a palette color and waits until the screen's save (a DHT write)
+  /// has finished, i.e. its progress bar is gone again.
+  Future<void> tapSwatch(WidgetTester t, int color) async {
+    final swatch = find.byKey(ValueKey('swatch-${color.toRadixString(16)}'));
+    await t.ensureVisible(swatch);
+    await t.pump();
+    await t.tap(swatch);
+    await idle(t, const Duration(milliseconds: 300));
+    final end = DateTime.now().add(const Duration(minutes: 2));
+    while (find.byType(LinearProgressIndicator).evaluate().isNotEmpty &&
+        DateTime.now().isBefore(end)) {
+      await idle(t, const Duration(milliseconds: 250));
+    }
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    // Selected (shows a check) only once the change was saved.
+    await pumpUntil(
+      t,
+      find.descendant(of: swatch, matching: find.byIcon(Icons.check)),
+      timeout: const Duration(seconds: 10),
+    );
+  }
+
   Future<void> lock(WidgetTester t) async {
     await settle(t);
     await t.tap(find.byTooltip('Zablokuj'));
@@ -165,12 +197,33 @@ void main() {
     await hideKeyboard(t);
     await shot(t, '03_chat');
 
-    await t.tap(find.byType(PopupMenuButton<String>));
-    await pumpUntil(t, find.text('Zaproś'));
-    await settle(t); // the menu animates in; taps before that hit its barrier
-    await t.tap(find.text('Zaproś'));
+    await openMenu(t, 'Zaproś');
     await pumpUntil(t, find.byType(InviteScreen));
     await shot(t, '04_invite');
+    await t.pageBack();
+    await settle(t);
+
+    // Customization: the room accent is shared through the roster, the
+    // bubble color through our outbox head; both go through the DHT.
+    await openMenu(t, 'Ustawienia pokoju');
+    await pumpUntil(t, find.byType(RoomSettingsScreen));
+    await settle(t);
+    await tapSwatch(t, 0xFF00897B);
+    await shot(t, '05_room_settings');
+    await t.pageBack();
+    await settle(t);
+
+    await openMenu(t, 'Mój profil');
+    await pumpUntil(t, find.byType(ProfileScreen));
+    await settle(t);
+    await tapSwatch(t, 0xFFE53935);
+    await t.pageBack();
+    await settle(t);
+    await shot(t, '06_chat_styled');
+
+    await openMenu(t, 'Osoby');
+    await pumpUntil(t, find.byType(MembersScreen));
+    await shot(t, '07_members');
     await t.pageBack();
     await settle(t);
 

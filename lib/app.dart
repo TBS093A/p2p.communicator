@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'core/ui_prefs.dart';
 import 'core/veilid_node.dart';
 import 'ui/pin_screen.dart';
 import 'vault/pin_vault.dart';
@@ -41,6 +42,7 @@ class _P2PAppState extends State<P2PApp> with WidgetsBindingObserver {
   late final Future<void> _init = _start();
 
   Future<void> _start() async {
+    await UiPrefs.instance.load();
     await VeilidNode.instance.start();
     await PinVault.instance.init();
   }
@@ -67,20 +69,25 @@ class _P2PAppState extends State<P2PApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'P2P Communicator',
-      navigatorKey: navigatorKey,
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorSchemeSeed: const Color(0xFF3F51B5),
-        useMaterial3: true,
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: UiPrefs.instance.themeMode,
+      builder: (context, mode, home) => MaterialApp(
+        title: 'P2P Communicator',
+        navigatorKey: navigatorKey,
+        debugShowCheckedModeBanner: false,
+        themeMode: mode,
+        theme: ThemeData(
+          colorSchemeSeed: const Color(0xFF3F51B5),
+          useMaterial3: true,
+        ),
+        darkTheme: ThemeData(
+          colorSchemeSeed: const Color(0xFF3F51B5),
+          brightness: Brightness.dark,
+          useMaterial3: true,
+        ),
+        home: home,
       ),
-      darkTheme: ThemeData(
-        colorSchemeSeed: const Color(0xFF3F51B5),
-        brightness: Brightness.dark,
-        useMaterial3: true,
-      ),
-      home: FutureBuilder<void>(
+      child: FutureBuilder<void>(
         future: _init,
         builder: (context, snap) {
           if (snap.hasError) {
