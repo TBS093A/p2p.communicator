@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:p2p_communicator/main.dart' as app;
 import 'package:p2p_communicator/ui/chat_screen.dart';
@@ -19,6 +20,9 @@ import 'package:p2p_communicator/ui/new_room_screen.dart';
 import 'package:p2p_communicator/ui/pin_screen.dart';
 import 'package:p2p_communicator/ui/profile_screen.dart';
 import 'package:p2p_communicator/ui/room_settings_screen.dart';
+import 'package:p2p_communicator/ui/widgets/avatar.dart';
+
+import 'test_images.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -137,27 +141,44 @@ void main() {
     await t.tap(find.text(item));
   }
 
-  /// Taps a palette color and waits until the screen's save (a DHT write)
-  /// has finished, i.e. its progress bar is gone again.
-  Future<void> tapSwatch(WidgetTester t, int color) async {
-    final swatch = find.byKey(ValueKey('swatch-${color.toRadixString(16)}'));
-    await t.ensureVisible(swatch);
+  Future<void> tapKey(WidgetTester t, String key) async {
+    final f = find.byKey(ValueKey(key));
+    await pumpUntil(t, f, timeout: const Duration(seconds: 20));
+    await t.ensureVisible(f);
     await t.pump();
-    await t.tap(swatch);
-    await idle(t, const Duration(milliseconds: 300));
-    final end = DateTime.now().add(const Duration(minutes: 2));
+    await t.tap(f);
+    await t.pump();
+  }
+
+  /// Waits until a settings screen's save (upload + DHT write) is done,
+  /// i.e. its progress bar is gone again, and no error was shown.
+  Future<void> waitSaved(WidgetTester t) async {
+    await idle(t, const Duration(milliseconds: 400));
+    final end = DateTime.now().add(const Duration(minutes: 3));
     while (find.byType(LinearProgressIndicator).evaluate().isNotEmpty &&
         DateTime.now().isBefore(end)) {
       await idle(t, const Duration(milliseconds: 250));
     }
     expect(find.byType(LinearProgressIndicator), findsNothing);
-    // Selected (shows a check) only once the change was saved.
-    await pumpUntil(
-      t,
-      find.descendant(of: swatch, matching: find.byIcon(Icons.check)),
-      timeout: const Duration(seconds: 10),
-    );
+    expect(find.byType(SnackBar), findsNothing, reason: 'save failed');
   }
+
+  /// Opens an RGB picker via [editKey], types [hex] and saves.
+  Future<void> pickColor(WidgetTester t, String editKey, String hex) async {
+    await tapKey(t, editKey);
+    await pumpUntil(t, find.byKey(const ValueKey('rgb-hex')));
+    await settle(t);
+    await t.enterText(find.byKey(const ValueKey('rgb-hex')), hex);
+    await t.pump();
+    await hideKeyboard(t);
+    await tapKey(t, 'rgb-save');
+    await settle(t);
+    await waitSaved(t);
+  }
+
+  /// An uploaded picture (not initials) is showing inside an avatar.
+  Finder avatarImage() =>
+      find.descendant(of: find.byType(Avatar), matching: find.byType(Image));
 
   Future<void> lock(WidgetTester t) async {
     await settle(t);
@@ -169,6 +190,14 @@ void main() {
   testWidgets('rooms, PIN isolation and screenshots', (t) async {
     // A tap that misses its widget should fail here, not minutes later.
     WidgetController.hitTestWarningShouldBeFatal = true;
+    // "Gallery" picks return generated images through the app's normal
+    // ImagePicker calls.
+    final gallery = FakeImagePicker();
+    ImagePickerPlatform.instance = gallery;
+    final roomPicture = await mountainAvatar();
+    final myPicture = await portraitAvatar();
+    final partyEmoji = await partyGif();
+
     app.main();
     await pumpUntil(t, find.byType(PinScreen));
     if (Platform.isAndroid) {
@@ -179,12 +208,12 @@ void main() {
     // Room A: send a message, show the invite.
     await createRoom(
       t,
-      room: 'Rodzina',
-      me: 'Ala',
+      room: 'Wyprawa w Tatry',
+      me: 'Marta',
       pin: '1234',
       screenshot: true,
     );
-    const hello = 'Cześć! To jest wiadomość testowa 👋';
+    const hello = 'Jutro o 6:00 pod schroniskiem. Kto jedzie? 🏔️';
     await t.enterText(find.byType(TextField).last, hello);
     await t.pump();
     await t.tap(find.byTooltip('Wyślij'));
@@ -203,12 +232,32 @@ void main() {
     await t.pageBack();
     await settle(t);
 
-    // Customization: the room accent is shared through the roster, the
-    // bubble color through our outbox head; both go through the DHT.
+    // Customization. Room picture, background and emoji are shared through
+    // the roster; my picture and bubble color through my outbox head; the
+    // images themselves are uploaded to the DHT like any media.
     await openMenu(t, 'Ustawienia pokoju');
     await pumpUntil(t, find.byType(RoomSettingsScreen));
     await settle(t);
-    await tapSwatch(t, 0xFF00897B);
+
+    gallery.queue.add(roomPicture);
+    await tapKey(t, 'room-avatar-upload');
+    await waitSaved(t);
+    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+
+    await pickColor(t, 'room-bg-edit', '1B2A41');
+    await pumpUntil(t, find.textContaining('#1B2A41'));
+
+    gallery.queue.add(partyEmoji); // party.gif -> suggested code :party:
+    await tapKey(t, 'emoji-add');
+    await pumpUntil(t, find.byKey(const ValueKey('emoji-confirm')));
+    await settle(t);
+    await tapKey(t, 'emoji-confirm');
+    await settle(t);
+    await waitSaved(t);
+    await pumpUntil(t, find.text(':party:'));
+    // Back to the top so the screenshot shows the picture and the background.
+    await t.drag(find.byType(ListView).first, const Offset(0, 1500));
+    await settle(t);
     await shot(t, '05_room_settings');
     await t.pageBack();
     await settle(t);
@@ -216,9 +265,25 @@ void main() {
     await openMenu(t, 'Mój profil');
     await pumpUntil(t, find.byType(ProfileScreen));
     await settle(t);
-    await tapSwatch(t, 0xFFE53935);
+    gallery.queue.add(myPicture);
+    await tapKey(t, 'profile-avatar-upload');
+    await waitSaved(t);
+    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+    await pickColor(t, 'bubble-color-edit', 'FF6F00');
+    await pumpUntil(t, find.textContaining('#FF6F00'));
     await t.pageBack();
     await settle(t);
+
+    // The custom GIF emoji inline and on its own (shown large).
+    for (final text in [':party: Jedziemy!', ':party:']) {
+      await t.enterText(find.byType(TextField).last, text);
+      await t.pump();
+      await t.tap(find.byTooltip('Wyślij'));
+      await settle(t);
+    }
+    // Rich text with an inline image: match the plain part only.
+    await pumpUntil(t, find.textContaining('Jedziemy!', findRichText: true));
+    await hideKeyboard(t);
     await shot(t, '06_chat_styled');
 
     await openMenu(t, 'Osoby');
@@ -229,7 +294,7 @@ void main() {
 
     // Room B under another PIN.
     await lock(t);
-    await createRoom(t, room: 'Praca', me: 'Ala', pin: '5678');
+    await createRoom(t, room: 'Projekt Apollo', me: 'Marta', pin: '5678');
     await lock(t);
 
     // A wrong PIN opens nothing and says nothing.
@@ -242,13 +307,13 @@ void main() {
     await enterPin(t, '1234');
     await pumpUntil(t, find.byType(ChatScreen));
     await pumpUntil(t, find.text(hello));
-    expect(find.text('Praca'), findsNothing);
+    expect(find.text('Projekt Apollo'), findsNothing);
     await lock(t);
 
     await enterPin(t, '5678');
-    await pumpUntil(t, find.text('Praca'));
+    await pumpUntil(t, find.text('Projekt Apollo'));
     expect(find.text(hello), findsNothing);
-    expect(find.text('Rodzina'), findsNothing);
+    expect(find.text('Wyprawa w Tatry'), findsNothing);
     await lock(t);
   });
 }

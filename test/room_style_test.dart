@@ -61,15 +61,15 @@ void main() {
   group('RoomMeta', () {
     test('round-trips through JSON', () {
       final m = RoomMeta(
-        name: 'Rodzina',
+        name: 'Wyprawa w Tatry',
         avatar: _ref('av', mime: 'image/jpeg'),
-        accent: 0xFF00897B,
+        background: 0xFF1B2A41,
         emoji: {'party': _ref('p1'), 'cat': _ref('c1')},
       );
       final back = RoomMeta.fromJson(m.toJson());
-      expect(back.name, 'Rodzina');
+      expect(back.name, 'Wyprawa w Tatry');
       expect(back.avatar!.hash, 'av');
-      expect(back.accent, 0xFF00897B);
+      expect(back.background, 0xFF1B2A41);
       expect(back.emoji.keys, unorderedEquals(['party', 'cat']));
       expect(back.emoji['party']!.mime, 'image/gif');
     });
@@ -78,8 +78,25 @@ void main() {
       final m = RoomMeta.fromJson({'name': 'Stary', 'v': 1});
       expect(m.name, 'Stary');
       expect(m.avatar, isNull);
+      expect(m.background, isNull);
       expect(m.accent, isNull);
       expect(m.emoji, isEmpty);
+    });
+
+    test('keeps a v0.1.3 theme tint until a background is chosen', () {
+      final old = RoomMeta.fromJson({'name': 'x', 'accent': 0xFF00897B});
+      expect(old.accent, 0xFF00897B);
+      expect(old.copyWith(name: 'y').accent, 0xFF00897B);
+      final chosen = old.copyWith(background: 0xFF000000);
+      expect(chosen.background, 0xFF000000);
+      expect(chosen.accent, isNull);
+      expect(old.copyWith(clearBackground: true).accent, isNull);
+    });
+
+    test('background can be reset to the default', () {
+      final m = RoomMeta(name: 'x', background: 0xFF123456);
+      expect(m.copyWith(clearBackground: true).background, isNull);
+      expect(m.copyWith(name: 'y').background, 0xFF123456);
     });
 
     test('drops invalid emoji codes from the network', () {
@@ -101,14 +118,14 @@ void main() {
     test('copyWith can clear the avatar', () {
       final m = RoomMeta(name: 'x', avatar: _ref('a'));
       expect(m.copyWith(clearAvatar: true).avatar, isNull);
-      expect(m.copyWith(accent: 1).avatar!.hash, 'a');
+      expect(m.copyWith(background: 1).avatar!.hash, 'a');
     });
 
     test('a full emoji pack fits in one roster subkey', () {
       final m = RoomMeta(
         name: 'x' * 40,
         avatar: _ref('a' * 64),
-        accent: 0xFF000000,
+        background: 0xFF000000,
         emoji: {
           for (var i = 0; i < RoomMeta.maxEmoji; i++)
             'emoji_code_number_$i': MediaRef(
@@ -143,10 +160,21 @@ void main() {
       expect(old.name, 'Ola');
       expect(old.color, isNull);
     });
+
+    test('bubble color can be reset to the default', () {
+      const p = MemberProfile(name: 'x', color: 0xFF112233);
+      expect(p.copyWith(clearColor: true).color, isNull);
+      expect(p.copyWith(name: 'y').color, 0xFF112233);
+    });
   });
 
-  test('text on palette colors stays readable', () {
-    for (final c in stylePalette) {
+  test('text on presets and default bubbles stays readable', () {
+    for (final c in [
+      ...stylePalette,
+      defaultMyBubble,
+      defaultOtherBubbleLight,
+      defaultOtherBubbleDark,
+    ]) {
       final bg = Color(c);
       final fg = onColor(bg);
       final l1 = bg.computeLuminance();
