@@ -1,0 +1,163 @@
+import 'dart:convert';
+
+import 'package:flutter/painting.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:p2p_communicator/room/message.dart';
+import 'package:p2p_communicator/room/room_style.dart';
+
+MediaRef _ref(String hash, {String mime = 'image/gif'}) => MediaRef(
+  mime: mime,
+  size: 1000,
+  hash: hash,
+  records: ['VLD0:$hash'],
+  chunkSize: 32000,
+  chunksPerRecord: 30,
+);
+
+void main() {
+  group('EmojiCode', () {
+    test('valid codes', () {
+      expect(EmojiCode.isValid('party_parrot'), isTrue);
+      expect(EmojiCode.isValid('ok'), isTrue);
+      expect(EmojiCode.isValid('a'), isFalse);
+      expect(EmojiCode.isValid('Party'), isFalse);
+      expect(EmojiCode.isValid('has space'), isFalse);
+      expect(EmojiCode.isValid('x' * 33), isFalse);
+    });
+
+    test('splits text around known codes only', () {
+      final parts = EmojiCode.split('hej :wave: i :nope: :cat:!', {
+        'wave',
+        'cat',
+      });
+      expect(parts.map((p) => p.code ?? '[${p.text}]').toList(), [
+        '[hej ]',
+        'wave',
+        '[ i :nope: ]',
+        'cat',
+        '[!]',
+      ]);
+    });
+
+    test('no codes means one text part', () {
+      final parts = EmojiCode.split('zwykły tekst', {'wave'});
+      expect(parts, hasLength(1));
+      expect(parts.single.text, 'zwykły tekst');
+    });
+
+    test('jumbo only for 1-3 emoji and whitespace', () {
+      bool jumbo(String s) =>
+          EmojiCode.isJumbo(EmojiCode.split(s, {'a1', 'b2'}));
+      expect(jumbo(':a1:'), isTrue);
+      expect(jumbo(' :a1: :b2: '), isTrue);
+      expect(jumbo(':a1::a1::a1:'), isTrue);
+      expect(jumbo(':a1::a1::a1::a1:'), isFalse);
+      expect(jumbo('hej :a1:'), isFalse);
+      expect(jumbo(':zz:'), isFalse);
+      expect(jumbo(''), isFalse);
+    });
+  });
+
+  group('RoomMeta', () {
+    test('round-trips through JSON', () {
+      final m = RoomMeta(
+        name: 'Rodzina',
+        avatar: _ref('av', mime: 'image/jpeg'),
+        accent: 0xFF00897B,
+        emoji: {'party': _ref('p1'), 'cat': _ref('c1')},
+      );
+      final back = RoomMeta.fromJson(m.toJson());
+      expect(back.name, 'Rodzina');
+      expect(back.avatar!.hash, 'av');
+      expect(back.accent, 0xFF00897B);
+      expect(back.emoji.keys, unorderedEquals(['party', 'cat']));
+      expect(back.emoji['party']!.mime, 'image/gif');
+    });
+
+    test('reads the original v0.1 meta (name only)', () {
+      final m = RoomMeta.fromJson({'name': 'Stary', 'v': 1});
+      expect(m.name, 'Stary');
+      expect(m.avatar, isNull);
+      expect(m.accent, isNull);
+      expect(m.emoji, isEmpty);
+    });
+
+    test('drops invalid emoji codes from the network', () {
+      final m = RoomMeta.fromJson({
+        'name': 'x',
+        'emoji': {
+          'ok_one': _ref('a').toJson(),
+          'BAD CODE': _ref('b').toJson(),
+          'also_bad': 'not a map',
+        },
+      });
+      expect(m.emoji.keys, ['ok_one']);
+    });
+
+    test('blank name falls back', () {
+      expect(RoomMeta.fromJson({'name': '  '}, fallbackName: 'F').name, 'F');
+    });
+
+    test('copyWith can clear the avatar', () {
+      final m = RoomMeta(name: 'x', avatar: _ref('a'));
+      expect(m.copyWith(clearAvatar: true).avatar, isNull);
+      expect(m.copyWith(accent: 1).avatar!.hash, 'a');
+    });
+
+    test('a full emoji pack fits in one roster subkey', () {
+      final m = RoomMeta(
+        name: 'x' * 40,
+        avatar: _ref('a' * 64),
+        accent: 0xFF000000,
+        emoji: {
+          for (var i = 0; i < RoomMeta.maxEmoji; i++)
+            'emoji_code_number_$i': MediaRef(
+              mime: 'image/gif',
+              size: 500000,
+              hash: 'h' * 64,
+              // Real record keys: kind + 43-char key + 43-char secret.
+              records: ['VLD0:${'k' * 43}:${'s' * 43}'],
+              chunkSize: 32000,
+              chunksPerRecord: 30,
+            ),
+        },
+      );
+      final bytes = utf8.encode(jsonEncode(m.toJson())).length;
+      expect(bytes, lessThan(RoomMeta.maxEncodedBytes));
+    });
+  });
+
+  group('MemberProfile', () {
+    test('round-trips and tolerates the old head format', () {
+      final p = MemberProfile(
+        name: 'Ala',
+        avatar: _ref('av'),
+        color: 0xFFE53935,
+      );
+      final back = MemberProfile.fromJson({...p.toJson(), 'count': 7});
+      expect(back.name, 'Ala');
+      expect(back.avatar!.hash, 'av');
+      expect(back.color, 0xFFE53935);
+
+      final old = MemberProfile.fromJson({'count': 3, 'name': 'Ola'});
+      expect(old.name, 'Ola');
+      expect(old.color, isNull);
+    });
+  });
+
+  test('text on palette colors stays readable', () {
+    for (final c in stylePalette) {
+      final bg = Color(c);
+      final fg = onColor(bg);
+      final l1 = bg.computeLuminance();
+      final l2 = fg.computeLuminance();
+      final ratio =
+          (l1 > l2 ? l1 + 0.05 : l2 + 0.05) / (l1 > l2 ? l2 + 0.05 : l1 + 0.05);
+      expect(
+        ratio,
+        greaterThanOrEqualTo(3.0),
+        reason: 'contrast on #${c.toRadixString(16)}',
+      );
+    }
+  });
+}

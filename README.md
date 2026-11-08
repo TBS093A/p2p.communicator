@@ -17,8 +17,28 @@ source.
 |---|---|---|---|
 | ![PIN](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/01_pin.png) | ![New room](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/02_new_room.png) | ![Chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/03_chat.png) | ![Invite](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/04_invite.png) |
 
+| Room settings | Custom bubble + room color | Members |
+|---|---|---|
+| ![Room settings](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/05_room_settings.png) | ![Styled chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/06_chat_styled.png) | ![Members](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/07_members.png) |
+
 Screenshots are taken by CI on an emulator (`integration_test/app_test.dart`)
 and refreshed on the `screenshots` branch only when the UI changes.
+
+## Customization
+
+Rooms are customizable, Discord-style, and every member sees the same thing:
+
+* **Room look** (shared, any member can change it): avatar, name, accent
+  color that re-themes the whole room, and a **custom emoji pack** of up to
+  80 images. Animated **GIF/WebP emoji** play inline; type `:code:` or pick
+  from the emoji button. A message of only 1–3 emoji is shown large.
+* **Your profile per room**: avatar, display name and **bubble color**. Each
+  room has its own profile, so rooms stay unlinkable.
+* **Members list** with avatars and colors.
+* **App theme** (this phone only): system, light or dark.
+
+Where it lives: the room look in roster subkey 0, your profile in the head of
+your own outbox, images in encrypted DHT records like any other media.
 
 ## CI/CD (GitHub Actions)
 
@@ -111,7 +131,10 @@ lib/
   room/blob_store.dart      files in the DHT (chunks)
   room/invite.dart          invite (QR / text)
   room/message.dart         message model
-  ui/                       PIN pad, new room, chat, invite, QR scanner
+  room/room_style.dart      room meta, member profiles, palette, :emoji: parser
+  core/ui_prefs.dart        app-wide light/dark choice
+  ui/                       PIN pad, new room, chat, invite, QR scanner,
+                            room settings, profile, members
 ```
 
 ## Running it (Android)

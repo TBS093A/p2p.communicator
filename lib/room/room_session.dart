@@ -16,6 +16,14 @@ import 'dht.dart';
 import 'invite.dart';
 import 'message.dart';
 import 'room_protocol.dart';
+import 'room_style.dart';
+
+class StyleException implements Exception {
+  StyleException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
 
 /// One unlocked room: keeps the member outboxes watched, merges their logs
 /// into [messages], sends, and keeps an encrypted local cache.
@@ -25,8 +33,17 @@ class RoomSession extends ChangeNotifier {
   final UnlockedRoom room;
 
   final List<ChatMessage> messages = [];
-  final Map<String, String> members = {}; // outbox key -> display name
+
+  /// Outbox key -> how that member presents themselves (us included).
+  final Map<String, MemberProfile> profiles = {};
   final ValueNotifier<String?> networkError = ValueNotifier(null);
+
+  /// Shared room look: name, avatar, accent color, custom emoji. Usable
+  /// before [open] finishes (the chat app bar renders right away).
+  late RoomMeta meta = RoomMeta(name: room.secrets.roomName);
+
+  static const maxAvatarBytes = 200 * 1024;
+  static const maxEmojiBytes = 512 * 1024;
 
   /// Upload/download progress per message id, 0..1.
   final Map<String, double> progress = {};
@@ -47,6 +64,7 @@ class RoomSession extends ChangeNotifier {
 
   int _myCount = 0;
   int _pollTick = 0;
+  bool _profileFromCache = false;
   bool _closed = false;
   bool _connected = false;
   Future<void> _sendChain = Future.value();
@@ -55,11 +73,14 @@ class RoomSession extends ChangeNotifier {
   Timer? _poll;
   Timer? _saveTimer;
 
-  String get roomName => room.secrets.roomName;
+  String get roomName => meta.name;
   String get myOutbox => room.secrets.outboxKey;
+  MemberProfile get myProfile => profiles[myOutbox]!;
 
-  String nameOf(String author) =>
-      author == myOutbox ? room.secrets.myName : (members[author] ?? '?');
+  MemberProfile profileOf(String author) =>
+      profiles[author] ?? const MemberProfile(name: '?');
+
+  String nameOf(String author) => profileOf(author).name;
 
   Invite get invite => Invite(
     roomName: room.secrets.roomName,
@@ -83,7 +104,8 @@ class RoomSession extends ChangeNotifier {
     ).create();
 
     await _loadCache();
-    members[myOutbox] = s.myName;
+    _profileFromCache = profiles.containsKey(myOutbox);
+    profiles.putIfAbsent(myOutbox, () => MemberProfile(name: s.myName));
     unawaited(_connect());
   }
 
@@ -103,6 +125,12 @@ class RoomSession extends ChangeNotifier {
         final head = await Dht.getJson(_outboxKey, 0);
         final count = head?['count'] as int? ?? 0;
         if (count > _myCount) _myCount = count;
+        // No local cache (e.g. reinstalled app): take our profile back from
+        // the network copy instead of resetting it.
+        if (!_profileFromCache && head != null && head['name'] != null) {
+          profiles[myOutbox] = MemberProfile.fromJson(head);
+          notifyListeners();
+        }
 
         _sub = VeilidNode.instance.updates.listen(_onUpdate);
         await rc.watchDHTValues(_rosterKey);
@@ -173,6 +201,10 @@ class RoomSession extends ChangeNotifier {
   }
 
   Future<void> _refreshRoster() async {
+    final metaJson = await Dht.getJson(_rosterKey, 0);
+    if (metaJson != null) {
+      meta = RoomMeta.fromJson(metaJson, fallbackName: meta.name);
+    }
     final entries = <Map<String, dynamic>?>[];
     await Future.wait([
       for (var i = 1; i < RoomLayout.rosterSubkeys; i++)
@@ -181,7 +213,10 @@ class RoomSession extends ChangeNotifier {
     for (final e in entries.whereType<Map<String, dynamic>>()) {
       final outbox = e['o'] as String?;
       if (outbox == null || outbox == myOutbox) continue;
-      members.putIfAbsent(outbox, () => e['n'] as String? ?? '?');
+      profiles.putIfAbsent(
+        outbox,
+        () => MemberProfile(name: e['n'] as String? ?? '?'),
+      );
       if (_watched.containsKey(outbox)) continue;
       final key = RecordKey.fromString(outbox);
       try {
@@ -202,8 +237,15 @@ class RoomSession extends ChangeNotifier {
     final head = await Dht.getJson(key, 0);
     if (head == null) return;
     final count = head['count'] as int? ?? 0;
-    final name = head['name'] as String?;
-    if (name != null) members[outbox] = name;
+    final before = profiles[outbox];
+    final profile = MemberProfile.fromJson(head);
+    profiles[outbox] = profile;
+    if (before?.name != profile.name ||
+        before?.color != profile.color ||
+        before?.avatar?.hash != profile.avatar?.hash) {
+      notifyListeners();
+      _scheduleSave();
+    }
 
     var from = _lastSeen[outbox] ?? 0;
     if (count - from > RoomLayout.outboxRing) {
@@ -341,12 +383,124 @@ class RoomSession extends ChangeNotifier {
       throw StateError('message too large');
     }
     await Dht.set(_outboxKey, 1 + seq % RoomLayout.outboxRing, data);
-    await Dht.setJson(_outboxKey, 0, {
-      'count': seq + 1,
-      'name': room.secrets.myName,
-    });
+    await Dht.setJson(_outboxKey, 0, _head(seq + 1));
     _myCount = seq + 1;
   }
+
+  Map<String, dynamic> _head(int count) => {
+    ...myProfile.toJson(),
+    'count': count,
+  };
+
+  // ---------------------------------------------------------------- style
+
+  /// Changes how we appear in this room. Others see it on their next sync.
+  Future<void> updateMyProfile({
+    String? name,
+    File? avatar,
+    bool clearAvatar = false,
+    int? color,
+  }) async {
+    final ref = avatar == null
+        ? null
+        : await _uploadSmall(avatar, maxAvatarBytes, 'Awatar');
+    profiles[myOutbox] = myProfile.copyWith(
+      name: name?.trim().isEmpty == true ? null : name?.trim(),
+      avatar: ref,
+      clearAvatar: clearAvatar,
+      color: color,
+    );
+    notifyListeners();
+    _scheduleSave();
+    // Serialized with sends so the head never goes backwards.
+    final job = _sendChain.then(
+      (_) => Dht.setJsonSoon(_outboxKey, 0, _head(_myCount)),
+    );
+    _sendChain = job.catchError((Object e) => debugPrint('profile: $e'));
+    await job;
+  }
+
+  Future<void> updateRoom({
+    String? name,
+    File? avatar,
+    bool clearAvatar = false,
+    int? accent,
+  }) async {
+    final ref = avatar == null
+        ? null
+        : await _uploadSmall(avatar, maxAvatarBytes, 'Awatar');
+    await _editMeta(
+      (m) => m.copyWith(
+        name: name?.trim().isEmpty == true ? null : name?.trim(),
+        avatar: ref,
+        clearAvatar: clearAvatar,
+        accent: accent,
+      ),
+    );
+  }
+
+  /// Adds a custom emoji from an image file. GIF/WebP stay animated: the file
+  /// is stored as-is, never re-encoded.
+  Future<void> addEmoji(String code, File image) async {
+    if (!EmojiCode.isValid(code)) {
+      throw StyleException('Kod: 2–32 znaki, małe litery, cyfry i _');
+    }
+    if (meta.emoji.length >= RoomMeta.maxEmoji &&
+        !meta.emoji.containsKey(code)) {
+      throw StyleException('Limit ${RoomMeta.maxEmoji} emoji na pokój');
+    }
+    final ref = await _uploadSmall(image, maxEmojiBytes, 'Emoji');
+    await _editMeta((m) => m.copyWith(emoji: {...m.emoji, code: ref}));
+  }
+
+  Future<void> removeEmoji(String code) =>
+      _editMeta((m) => m.copyWith(emoji: {...m.emoji}..remove(code)));
+
+  /// Read-modify-write of the shared room meta. Everyone shares the roster
+  /// writer key, so start from the network's latest value and retry once if
+  /// another member's write landed in between.
+  Future<void> _editMeta(RoomMeta Function(RoomMeta) change) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final latest = await Dht.getJson(_rosterKey, 0);
+      final base = latest == null
+          ? meta
+          : RoomMeta.fromJson(latest, fallbackName: meta.name);
+      final next = change(base);
+      final data = Uint8List.fromList(utf8.encode(jsonEncode(next.toJson())));
+      if (data.length > RoomMeta.maxEncodedBytes) {
+        throw StyleException('Za dużo emoji w pokoju');
+      }
+      final winner = await Dht.set(_rosterKey, 0, data);
+      if (winner == null || listEquals(winner, data)) {
+        meta = next;
+        notifyListeners();
+        _scheduleSave();
+        return;
+      }
+    }
+    throw StyleException(
+      'Ktoś zmienił pokój w tym samym czasie, spróbuj ponownie',
+    );
+  }
+
+  /// Stores a small image (avatar, emoji) in the DHT and locally.
+  Future<MediaRef> _uploadSmall(File file, int maxBytes, String what) async {
+    final bytes = await file.readAsBytes();
+    if (bytes.length > maxBytes) {
+      throw StyleException('$what jest za duży (max ${maxBytes ~/ 1024} KB)');
+    }
+    final ref = await BlobStore.upload(bytes, mime: _imageMime(file.path));
+    await _storeMedia(ref.hash, bytes);
+    return ref;
+  }
+
+  static String _imageMime(String path) =>
+      switch (p.extension(path).toLowerCase()) {
+        '.gif' => 'image/gif',
+        '.png' => 'image/png',
+        '.webp' => 'image/webp',
+        _ => 'image/jpeg',
+      };
 
   // ---------------------------------------------------------------- media
 
@@ -419,6 +573,7 @@ class RoomSession extends ChangeNotifier {
   }
 
   static String _ext(String mime) => switch (mime) {
+    'image/gif' => '.gif',
     'image/png' => '.png',
     'image/webp' => '.webp',
     'image/heic' => '.heic',
@@ -443,7 +598,8 @@ class RoomSession extends ChangeNotifier {
         ? messages.sublist(messages.length - 3000)
         : messages;
     final json = jsonEncode({
-      'members': members,
+      'meta': meta.toJson(),
+      'profiles': {for (final e in profiles.entries) e.key: e.value.toJson()},
       'lastSeen': _lastSeen,
       'myCount': _myCount,
       'messages': [for (final m in keep) m.toCache()],
@@ -456,7 +612,30 @@ class RoomSession extends ChangeNotifier {
     if (data == null) return;
     try {
       final j = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
-      members.addAll((j['members'] as Map).cast<String, String>());
+      if (j['meta'] is Map) {
+        meta = RoomMeta.fromJson(
+          (j['meta'] as Map).cast<String, dynamic>(),
+          fallbackName: meta.name,
+        );
+      }
+      final cached = j['profiles'];
+      if (cached is Map) {
+        for (final e in cached.entries) {
+          profiles[e.key as String] = MemberProfile.fromJson(
+            (e.value as Map).cast<String, dynamic>(),
+          );
+        }
+      }
+      // Caches written before profiles existed: names only.
+      final legacy = j['members'];
+      if (legacy is Map) {
+        for (final e in legacy.entries) {
+          profiles.putIfAbsent(
+            e.key as String,
+            () => MemberProfile(name: e.value as String),
+          );
+        }
+      }
       _lastSeen.addAll((j['lastSeen'] as Map).cast<String, int>());
       _myCount = j['myCount'] as int? ?? 0;
       for (final m in (j['messages'] as List).cast<Map<String, dynamic>>()) {
