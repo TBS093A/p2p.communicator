@@ -2,6 +2,12 @@ import 'package:flutter/painting.dart';
 
 import 'message.dart';
 
+/// Default bubble colors when a member has not picked their own: a clear
+/// messenger blue for your own messages, neutral grey for everyone else's.
+const defaultMyBubble = 0xFF0084FF;
+const defaultOtherBubbleLight = 0xFFE9E9EB;
+const defaultOtherBubbleDark = 0xFF303134;
+
 /// Shared look of a room, stored in roster subkey 0 next to the name. Any
 /// member can change it (rooms have no roles: everyone holding the invite is
 /// equal), and every member renders the same thing.
@@ -9,14 +15,21 @@ class RoomMeta {
   RoomMeta({
     required this.name,
     this.avatar,
+    this.background,
     this.accent,
     Map<String, MediaRef>? emoji,
   }) : emoji = emoji ?? {};
 
   final String name;
+
+  /// Uploaded room picture.
   final MediaRef? avatar;
 
-  /// ARGB seed of the room's color scheme; null = app default.
+  /// ARGB chat background; null = theme surface.
+  final int? background;
+
+  /// Legacy (v0.1.3) theme seed. Still read so old rooms keep their tint;
+  /// no longer set by the UI, which uses [background] instead.
   final int? accent;
 
   /// Custom emoji: `:code:` in message text renders as this image. GIF and
@@ -31,12 +44,15 @@ class RoomMeta {
     String? name,
     MediaRef? avatar,
     bool clearAvatar = false,
-    int? accent,
+    int? background,
+    bool clearBackground = false,
     Map<String, MediaRef>? emoji,
   }) => RoomMeta(
     name: name ?? this.name,
     avatar: clearAvatar ? null : (avatar ?? this.avatar),
-    accent: accent ?? this.accent,
+    background: clearBackground ? null : (background ?? this.background),
+    // A background choice (or reset) replaces the legacy tint.
+    accent: (background != null || clearBackground) ? null : accent,
     emoji: emoji ?? this.emoji,
   );
 
@@ -44,6 +60,7 @@ class RoomMeta {
     'v': 1,
     'name': name,
     if (avatar != null) 'avatar': avatar!.toJson(),
+    if (background != null) 'bg': background,
     if (accent != null) 'accent': accent,
     if (emoji.isNotEmpty)
       'emoji': {for (final e in emoji.entries) e.key: e.value.toJson()},
@@ -71,6 +88,7 @@ class RoomMeta {
       avatar: j['avatar'] is Map
           ? MediaRef.fromJson((j['avatar'] as Map).cast<String, dynamic>())
           : null,
+      background: j['bg'] as int?,
       accent: j['accent'] as int?,
       emoji: emoji,
     );
@@ -85,7 +103,8 @@ class MemberProfile {
   final String name;
   final MediaRef? avatar;
 
-  /// ARGB color of this member's message bubbles; null = theme default.
+  /// ARGB color of this member's bubbles (text, photos, voice notes);
+  /// null = the defaults above.
   final int? color;
 
   MemberProfile copyWith({
@@ -93,10 +112,11 @@ class MemberProfile {
     MediaRef? avatar,
     bool clearAvatar = false,
     int? color,
+    bool clearColor = false,
   }) => MemberProfile(
     name: name ?? this.name,
     avatar: clearAvatar ? null : (avatar ?? this.avatar),
-    color: color ?? this.color,
+    color: clearColor ? null : (color ?? this.color),
   );
 
   /// Fields merged into the outbox head (`count` is added by the session).
@@ -115,11 +135,10 @@ class MemberProfile {
   );
 }
 
-/// Colors offered for room accents and bubbles: readable in light and dark
-/// themes, distinct from each other.
+/// Quick presets in the RGB picker (any RGB value is allowed).
 const stylePalette = <int>[
+  0xFF0084FF, // messenger blue
   0xFF3F51B5, // indigo
-  0xFF1E88E5, // blue
   0xFF00897B, // teal
   0xFF43A047, // green
   0xFFC0CA33, // lime
@@ -130,6 +149,8 @@ const stylePalette = <int>[
   0xFF8E24AA, // purple
   0xFF6D4C41, // brown
   0xFF546E7A, // blue grey
+  0xFF1B1B1F, // near black
+  0xFFF5F5F5, // near white
 ];
 
 /// Text color with enough contrast on [background].

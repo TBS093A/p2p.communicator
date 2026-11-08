@@ -400,6 +400,7 @@ class RoomSession extends ChangeNotifier {
     File? avatar,
     bool clearAvatar = false,
     int? color,
+    bool clearColor = false,
   }) async {
     final ref = avatar == null
         ? null
@@ -409,6 +410,7 @@ class RoomSession extends ChangeNotifier {
       avatar: ref,
       clearAvatar: clearAvatar,
       color: color,
+      clearColor: clearColor,
     );
     notifyListeners();
     _scheduleSave();
@@ -424,7 +426,8 @@ class RoomSession extends ChangeNotifier {
     String? name,
     File? avatar,
     bool clearAvatar = false,
-    int? accent,
+    int? background,
+    bool clearBackground = false,
   }) async {
     final ref = avatar == null
         ? null
@@ -434,7 +437,8 @@ class RoomSession extends ChangeNotifier {
         name: name?.trim().isEmpty == true ? null : name?.trim(),
         avatar: ref,
         clearAvatar: clearAvatar,
-        accent: accent,
+        background: background,
+        clearBackground: clearBackground,
       ),
     );
   }

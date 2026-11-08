@@ -10,6 +10,7 @@ import 'package:record/record.dart';
 import '../app.dart';
 import '../room/message.dart';
 import '../room/room_session.dart';
+import '../room/room_style.dart';
 import '../vault/pin_vault.dart';
 import 'invite_screen.dart';
 import 'members_screen.dart';
@@ -239,29 +240,41 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Sub-screens get the room's accent too, and follow it live (changing the
-  /// color in room settings re-themes that screen at once).
-  Future<void> _open(Widget screen) => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (context) => ListenableBuilder(
-        listenable: _session,
-        builder: (context, child) =>
-            Theme(data: _roomTheme(context), child: child!),
-        child: screen,
-      ),
-    ),
-  );
+  /// Settings screens keep the normal app theme; the chosen background is
+  /// for the conversation itself (and shown in the pickers' previews).
+  Future<void> _open(Widget screen) => Navigator.of(
+    context,
+  ).push(MaterialPageRoute<void>(builder: (_) => screen));
 
-  /// The app theme re-seeded with the room's accent color, if it has one.
+  /// The room's chat background. When set, the screen switches to the light
+  /// or dark scheme that keeps text readable on it (a dark background gets
+  /// light text and inputs), and the background itself is exactly the
+  /// chosen RGB color. Rooms from v0.1.3 with only a theme tint keep it.
   ThemeData _roomTheme(BuildContext context) {
     final base = Theme.of(context);
+    final bg = _session.meta.background;
     final accent = _session.meta.accent;
-    if (accent == null) return base;
-    return ThemeData(
-      colorSchemeSeed: Color(accent),
-      brightness: base.brightness,
+    if (bg == null && accent == null) return base;
+    final brightness = bg == null
+        ? base.brightness
+        : (Color(bg).computeLuminance() > 0.45
+              ? Brightness.light
+              : Brightness.dark);
+    final themed = ThemeData(
+      colorSchemeSeed: Color(accent ?? 0xFF3F51B5),
+      brightness: brightness,
       useMaterial3: true,
     );
+    return bg == null
+        ? themed
+        : themed.copyWith(
+            scaffoldBackgroundColor: Color(bg),
+            appBarTheme: AppBarTheme(
+              backgroundColor: Color(bg),
+              foregroundColor: onColor(Color(bg)),
+              surfaceTintColor: Colors.transparent,
+            ),
+          );
   }
 
   Future<void> _pickEmoji() async {

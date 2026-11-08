@@ -5,11 +5,13 @@ import 'package:image_picker/image_picker.dart';
 
 import '../app.dart';
 import '../room/room_session.dart';
+import '../room/room_style.dart';
 import 'widgets/avatar.dart';
-import 'widgets/color_picker.dart';
+import 'widgets/rgb_color_dialog.dart';
 
-/// How I appear in this room: name, avatar, bubble color. Each room has its
-/// own profile, so rooms stay unlinkable.
+/// How I appear in this room: picture, name, bubble color (text, photos and
+/// voice notes alike). Each room has its own profile, so rooms stay
+/// unlinkable.
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key, required this.session});
 
@@ -22,6 +24,8 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   late final _name = TextEditingController(text: widget.session.myProfile.name);
   bool _busy = false;
+
+  RoomSession get s => widget.session;
 
   @override
   void dispose() {
@@ -44,7 +48,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<void> _pickAvatar() async {
+  Future<void> _uploadAvatar() async {
     final picked = await AutoLock.suppress(
       () => ImagePicker().pickImage(
         source: ImageSource.gallery,
@@ -54,80 +58,106 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
     );
     if (picked == null) return;
-    await _run(() => widget.session.updateMyProfile(avatar: File(picked.path)));
+    await _run(() => s.updateMyProfile(avatar: File(picked.path)));
+  }
+
+  Future<void> _editColor() async {
+    final choice = await showRgbColorDialog(
+      context,
+      title: 'Kolor moich dymków',
+      initial: s.myProfile.color,
+      fallback: defaultMyBubble,
+      preview: bubblePreview,
+    );
+    if (choice == null) return;
+    await _run(
+      () => choice.color == null
+          ? s.updateMyProfile(clearColor: true)
+          : s.updateMyProfile(color: choice.color),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final s = widget.session;
     return ListenableBuilder(
       listenable: s,
-      builder: (context, _) => Scaffold(
-        appBar: AppBar(title: const Text('Mój profil w pokoju')),
-        body: AbsorbPointer(
-          absorbing: _busy,
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (_busy) const LinearProgressIndicator(),
-              Center(
-                child: Stack(
+      builder: (context, _) {
+        final color = s.myProfile.color ?? defaultMyBubble;
+        return Scaffold(
+          appBar: AppBar(title: const Text('Mój profil w pokoju')),
+          body: AbsorbPointer(
+            absorbing: _busy,
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                if (_busy) const LinearProgressIndicator(),
+                const SizedBox(height: 8),
+                Center(child: Avatar.member(s, s.myOutbox, radius: 56)),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Avatar.member(s, s.myOutbox, radius: 48),
-                    Positioned(
-                      right: 0,
-                      bottom: 0,
-                      child: IconButton.filledTonal(
-                        tooltip: 'Zmień awatar',
-                        icon: const Icon(Icons.photo_camera),
-                        onPressed: _pickAvatar,
+                    FilledButton.icon(
+                      key: const ValueKey('profile-avatar-upload'),
+                      onPressed: _uploadAvatar,
+                      icon: const Icon(Icons.add_a_photo_outlined),
+                      label: Text(
+                        s.myProfile.avatar == null
+                            ? 'Wgraj zdjęcie'
+                            : 'Zmień zdjęcie',
                       ),
                     ),
+                    if (s.myProfile.avatar != null) ...[
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: 'Usuń zdjęcie',
+                        onPressed: () =>
+                            _run(() => s.updateMyProfile(clearAvatar: true)),
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ],
                   ],
                 ),
-              ),
-              if (s.myProfile.avatar != null)
-                Center(
-                  child: TextButton(
-                    onPressed: () =>
-                        _run(() => s.updateMyProfile(clearAvatar: true)),
-                    child: const Text('Usuń awatar'),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _name,
+                  maxLength: 40,
+                  decoration: InputDecoration(
+                    labelText: 'Nazwa w tym pokoju',
+                    suffixIcon: IconButton(
+                      tooltip: 'Zapisz nazwę',
+                      icon: const Icon(Icons.check),
+                      onPressed: () =>
+                          _run(() => s.updateMyProfile(name: _name.text)),
+                    ),
                   ),
                 ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _name,
-                maxLength: 40,
-                decoration: InputDecoration(
-                  labelText: 'Nazwa w tym pokoju',
-                  suffixIcon: IconButton(
-                    tooltip: 'Zapisz nazwę',
-                    icon: const Icon(Icons.check),
-                    onPressed: () =>
-                        _run(() => s.updateMyProfile(name: _name.text)),
+                const SizedBox(height: 8),
+                ListTile(
+                  key: const ValueKey('bubble-color-edit'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Kolor moich dymków'),
+                  subtitle: Text(
+                    s.myProfile.color == null
+                        ? 'domyślny'
+                        : '#${(color & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}',
                   ),
+                  trailing: const Icon(Icons.tune),
+                  onTap: _editColor,
                 ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Kolor moich dymków',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const SizedBox(height: 12),
-              ColorPicker(
-                selected: s.myProfile.color,
-                onChanged: (c) => _run(() => s.updateMyProfile(color: c)),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Tak widzą cię inni w tym pokoju. W innych pokojach masz '
-                'osobny profil.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
+                bubblePreview(Color(color)),
+                const SizedBox(height: 24),
+                Text(
+                  'Kolor dotyczy wszystkich twoich dymków: tekstu, zdjęć, '
+                  'wideo i głosówek. Tak widzą cię inni w tym pokoju; w innych '
+                  'pokojach masz osobny profil.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

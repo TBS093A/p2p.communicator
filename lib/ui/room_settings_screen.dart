@@ -9,11 +9,11 @@ import '../core/ui_prefs.dart';
 import '../room/room_session.dart';
 import '../room/room_style.dart';
 import 'widgets/avatar.dart';
-import 'widgets/color_picker.dart';
 import 'widgets/emoji_text.dart';
+import 'widgets/rgb_color_dialog.dart';
 
-/// Shared room look (every member sees the same): avatar, name, accent color
-/// and the custom emoji pack. Plus the app-wide light/dark choice.
+/// Shared room look (every member sees the same): picture, name, chat
+/// background and the custom emoji pack. Plus the app-wide light/dark choice.
 class RoomSettingsScreen extends StatefulWidget {
   const RoomSettingsScreen({super.key, required this.session});
 
@@ -50,7 +50,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     }
   }
 
-  Future<void> _pickAvatar() async {
+  Future<void> _uploadAvatar() async {
     final picked = await AutoLock.suppress(
       () => ImagePicker().pickImage(
         source: ImageSource.gallery,
@@ -61,6 +61,23 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     );
     if (picked == null) return;
     await _run(() => s.updateRoom(avatar: File(picked.path)));
+  }
+
+  Future<void> _editBackground() async {
+    final fallback = Theme.of(context).colorScheme.surface.toARGB32();
+    final choice = await showRgbColorDialog(
+      context,
+      title: 'Tło czatu',
+      initial: s.meta.background,
+      fallback: fallback,
+      preview: backgroundPreview,
+    );
+    if (choice == null) return;
+    await _run(
+      () => choice.color == null
+          ? s.updateRoom(clearBackground: true)
+          : s.updateRoom(background: choice.color),
+    );
   }
 
   Future<void> _addEmoji() async {
@@ -95,6 +112,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
       listenable: s,
       builder: (context, _) {
         final emoji = s.meta.emoji.keys.toList()..sort();
+        final bg = s.meta.background;
         return Scaffold(
           appBar: AppBar(title: const Text('Ustawienia pokoju')),
           body: AbsorbPointer(
@@ -103,30 +121,33 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 if (_busy) const LinearProgressIndicator(),
-                Center(
-                  child: Stack(
-                    children: [
-                      Avatar.room(s, radius: 48),
-                      Positioned(
-                        right: 0,
-                        bottom: 0,
-                        child: IconButton.filledTonal(
-                          tooltip: 'Zmień awatar pokoju',
-                          icon: const Icon(Icons.photo_camera),
-                          onPressed: _pickAvatar,
-                        ),
+                const SizedBox(height: 8),
+                Center(child: Avatar.room(s, radius: 56)),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    FilledButton.icon(
+                      key: const ValueKey('room-avatar-upload'),
+                      onPressed: _uploadAvatar,
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                      label: Text(
+                        s.meta.avatar == null
+                            ? 'Wgraj obrazek pokoju'
+                            : 'Zmień obrazek',
+                      ),
+                    ),
+                    if (s.meta.avatar != null) ...[
+                      const SizedBox(width: 8),
+                      IconButton(
+                        tooltip: 'Usuń obrazek pokoju',
+                        onPressed: () =>
+                            _run(() => s.updateRoom(clearAvatar: true)),
+                        icon: const Icon(Icons.delete_outline),
                       ),
                     ],
-                  ),
+                  ],
                 ),
-                if (s.meta.avatar != null)
-                  Center(
-                    child: TextButton(
-                      onPressed: () =>
-                          _run(() => s.updateRoom(clearAvatar: true)),
-                      child: const Text('Usuń awatar pokoju'),
-                    ),
-                  ),
                 const SizedBox(height: 16),
                 TextField(
                   controller: _name,
@@ -141,13 +162,23 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                _Section('Kolor pokoju'),
-                ColorPicker(
-                  selected: s.meta.accent,
-                  onChanged: (c) => _run(() => s.updateRoom(accent: c)),
+                const SizedBox(height: 8),
+                ListTile(
+                  key: const ValueKey('room-bg-edit'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: _Swatch(
+                    color: bg == null
+                        ? Theme.of(context).colorScheme.surface
+                        : Color(bg),
+                  ),
+                  title: const Text('Tło czatu'),
+                  subtitle: Text(
+                    bg == null ? 'domyślne' : '#${_hex(bg)} · RGB ${_rgb(bg)}',
+                  ),
+                  trailing: const Icon(Icons.tune),
+                  onTap: _editBackground,
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
                 Row(
                   children: [
                     Expanded(
@@ -156,13 +187,13 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                       ),
                     ),
                     FilledButton.tonalIcon(
+                      key: const ValueKey('emoji-add'),
                       onPressed: _addEmoji,
                       icon: const Icon(Icons.add_reaction_outlined),
                       label: const Text('Dodaj'),
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
                 Text(
                   'Obrazek lub GIF do 512 KB. W wiadomości wpisz :kod: albo '
                   'wybierz z przycisku emoji. GIF-y są animowane.',
@@ -215,7 +246,7 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'Awatar, nazwę, kolor i emoji pokoju widzą i mogą zmieniać '
+                  'Obrazek, nazwę, tło i emoji pokoju widzą i mogą zmieniać '
                   'wszyscy członkowie. Motyw dotyczy tylko tego telefonu.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
@@ -228,13 +259,35 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   }
 }
 
+String _hex(int argb) =>
+    (argb & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase();
+
+String _rgb(int argb) =>
+    '${(argb >> 16) & 0xFF}, ${(argb >> 8) & 0xFF}, ${argb & 0xFF}';
+
+class _Swatch extends StatelessWidget {
+  const _Swatch({required this.color});
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 40,
+    height: 40,
+    decoration: BoxDecoration(
+      color: color,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+    ),
+  );
+}
+
 class _Section extends StatelessWidget {
   const _Section(this.title);
   final String title;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.only(bottom: 8),
     child: Text(title, style: Theme.of(context).textTheme.titleSmall),
   );
 }
@@ -281,8 +334,8 @@ class _EmojiCodeDialogState extends State<_EmojiCodeDialog> {
           Image.file(widget.image, width: 96, height: 96, fit: BoxFit.contain),
           const SizedBox(height: 16),
           TextField(
+            key: const ValueKey('emoji-code'),
             controller: _code,
-            autofocus: true,
             onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
               labelText: 'Kod',
@@ -300,6 +353,7 @@ class _EmojiCodeDialogState extends State<_EmojiCodeDialog> {
           child: const Text('Anuluj'),
         ),
         FilledButton(
+          key: const ValueKey('emoji-confirm'),
           onPressed: valid ? () => Navigator.pop(context, _code.text) : null,
           child: const Text('Dodaj'),
         ),
