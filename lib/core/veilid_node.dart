@@ -67,10 +67,10 @@ class VeilidNode {
     crypto = await Veilid.instance.getCryptoSystem(bestCryptoKind);
     await Veilid.instance.attach();
 
-    // Safety routing hides which node is asking for or writing a record.
-    routing = await Veilid.instance.safeRoutingContext(
-      stability: Stability.reliable,
-    );
+    // The default context already uses safety routing (hides which node is
+    // reading or writing a record). Stability.reliable is avoided on purpose:
+    // a fresh node may not know enough long-uptime peers to build routes.
+    routing = await Veilid.instance.routingContext();
     _started = true;
   }
 

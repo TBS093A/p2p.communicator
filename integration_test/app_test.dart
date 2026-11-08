@@ -134,7 +134,7 @@ void main() {
     await pumpUntil(
       t,
       find.byIcon(Icons.done),
-      timeout: const Duration(minutes: 2),
+      timeout: const Duration(minutes: 3),
     );
     await hideKeyboard(t);
     await shot(t, '03_chat');

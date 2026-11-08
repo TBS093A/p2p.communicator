@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:veilid/veilid.dart';
 
 import '../core/veilid_node.dart';
@@ -12,23 +11,30 @@ class Dht {
 
   static VeilidRoutingContext get rc => VeilidNode.instance.routing;
 
-  /// Runs [op], retrying the errors Veilid documents as retryable.
+  /// Runs [op], retrying the errors Veilid documents as retryable. Bounded:
+  /// at most [attempts] tries and a few seconds of waiting in between.
   static Future<T> retry<T>(
     Future<T> Function() op, {
-    int attempts = 6,
-    Duration delay = const Duration(seconds: 2),
+    int attempts = 3,
+    String what = 'dht op',
   }) async {
     for (var i = 1; ; i++) {
+      final sw = Stopwatch()..start();
       try {
-        return await op();
-      } on VeilidAPIExceptionTryAgain {
+        final r = await op();
+        _log('$what ok in ${sw.elapsedMilliseconds} ms (try $i)');
+        return r;
+      } on VeilidAPIExceptionTryAgain catch (e) {
+        _log('$what try-again after ${sw.elapsedMilliseconds} ms: $e');
         if (i >= attempts) rethrow;
-      } on VeilidAPIExceptionTimeout {
+      } on VeilidAPIExceptionTimeout catch (e) {
+        _log('$what timeout after ${sw.elapsedMilliseconds} ms: $e');
         if (i >= attempts) rethrow;
-      } on VeilidAPIExceptionNoConnection {
+      } on VeilidAPIExceptionNoConnection catch (e) {
+        _log('$what no-connection after ${sw.elapsedMilliseconds} ms: $e');
         if (i >= attempts) rethrow;
       }
-      await Future<void>.delayed(delay * i);
+      await Future<void>.delayed(Duration(seconds: 2 * i));
     }
   }
 
@@ -39,6 +45,7 @@ class Dht {
   }) async {
     final v = await retry(
       () => rc.getDHTValue(key, subkey, forceRefresh: refresh),
+      what: 'get ${_short(key)}#$subkey',
     );
     if (v == null || v.data.isEmpty) return null;
     return v.data;
@@ -65,7 +72,10 @@ class Dht {
     int subkey,
     Uint8List data,
   ) async {
-    final newer = await retry(() => rc.setDHTValue(key, subkey, data));
+    final newer = await retry(
+      () => rc.setDHTValue(key, subkey, data),
+      what: 'set ${_short(key)}#$subkey (${data.length} B)',
+    );
     return newer?.data;
   }
 
@@ -74,6 +84,29 @@ class Dht {
     int subkey,
     Map<String, dynamic> json,
   ) => set(key, subkey, Uint8List.fromList(utf8.encode(jsonEncode(json))));
+
+  /// Local-first write for records only we write to (fresh rooms, our own
+  /// outbox): Veilid stores the value locally at once and pushes it to the
+  /// network itself, so wait at most [budget] for the push and let it finish
+  /// in the background.
+  static Future<void> setJsonSoon(
+    RecordKey key,
+    int subkey,
+    Map<String, dynamic> json, {
+    Duration budget = const Duration(seconds: 8),
+  }) async {
+    final write = setJson(key, subkey, json);
+    try {
+      await write.timeout(budget);
+    } on TimeoutException {
+      _log('set ${_short(key)}#$subkey continues in background');
+      unawaited(
+        write.catchError(
+          (Object e) => _log('background set ${_short(key)}#$subkey: $e'),
+        ),
+      );
+    }
+  }
 
   static Future<void> close(RecordKey key) async {
     try {
@@ -99,4 +132,13 @@ class Dht {
 
     await Future.wait(List.generate(parallel, (_) => worker()));
   }
+
+  /// Short, non-secret record label for logs: the start of the opaque key
+  /// only, never the encryption secret.
+  static String _short(RecordKey key) {
+    final s = key.opaque.value.toString();
+    return s.length > 8 ? s.substring(0, 8) : s;
+  }
+
+  static void _log(String msg) => debugPrint('[dht] $msg');
 }
