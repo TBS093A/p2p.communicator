@@ -193,7 +193,8 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                     segments: const [
                       ButtonSegment(
                         value: ThemeMode.system,
-                        label: Text('Systemowy'),
+                        label: Text('Auto'),
+                        tooltip: 'Jak w systemie',
                         icon: Icon(Icons.brightness_auto),
                       ),
                       ButtonSegment(

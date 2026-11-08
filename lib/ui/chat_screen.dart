@@ -239,10 +239,16 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Sub-screens get the room's accent too.
+  /// Sub-screens get the room's accent too, and follow it live (changing the
+  /// color in room settings re-themes that screen at once).
   Future<void> _open(Widget screen) => Navigator.of(context).push(
     MaterialPageRoute<void>(
-      builder: (context) => Theme(data: _roomTheme(context), child: screen),
+      builder: (context) => ListenableBuilder(
+        listenable: _session,
+        builder: (context, child) =>
+            Theme(data: _roomTheme(context), child: child!),
+        child: screen,
+      ),
     ),
   );
 

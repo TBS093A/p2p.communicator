@@ -177,17 +177,16 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
-    services:
-      mobsf:
-        image: opensecurity/mobile-security-framework-mobsf:v4.6.4@sha256:cf1465a3cc0c95488b9a6cdb1c7799d4b576d391ee28232c221f6a196bf2f74c
-        ports:
-          - 8000:8000
-        env:
-          MOBSF_API_KEY: ci-local-only-key
     env:
       MOBSF: http://localhost:8000
       KEY: ci-local-only-key
+      MOBSF_IMAGE: opensecurity/mobile-security-framework-mobsf:v4.6.4@sha256:cf1465a3cc0c95488b9a6cdb1c7799d4b576d391ee28232c221f6a196bf2f74c
     steps:
+      # Not a `services:` container: MobSF starts slower than the runner's
+      # service health wait allows, so start it here and poll its API.
+      - name: Start MobSF
+        run: docker run -d --name mobsf -p 8000:8000 -e MOBSF_API_KEY="$KEY" "$MOBSF_IMAGE"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-apk
@@ -221,6 +220,10 @@ jobs:
               echo "| $s | $(jq -r --arg s "$s" '(.[$s] // []) | length' mobsf-scorecard.json) |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: MobSF logs
+        if: failure()
+        run: docker logs --tail 200 mobsf
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
