@@ -55,11 +55,15 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
       _busy = true;
       _status = 'Sprawdzam PIN…';
     });
+    final sw = Stopwatch()..start();
+    void step(String what) =>
+        debugPrint('[new-room] $what at ${sw.elapsedMilliseconds} ms');
     try {
       if (!await PinVault.instance.isPinFree(pin)) {
         _fail('Ten PIN jest już zajęty przez inny pokój. Wybierz inny.');
         return;
       }
+      step('slot checked');
       RoomSecrets secrets;
       if (_join) {
         setState(() => _status = 'Szukam pokoju w sieci…');
@@ -74,7 +78,9 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
           myName: _myName.text.trim(),
         );
       }
+      step('room records ready');
       final room = await PinVault.instance.store(pin, secrets);
+      step('vault slot written');
       if (!mounted) return;
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(builder: (_) => ChatScreen(room: room)),
@@ -89,6 +95,7 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
   }
 
   void _fail(String msg) {
+    debugPrint('[new-room] failed: $msg');
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -112,112 +119,119 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
         absorbing: _busy,
         child: Form(
           key: _form,
-          child: ListView(
+          // Not a ListView: a lazy list does not build off-screen fields, and
+          // Form.validate() silently skips fields that are not built.
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(16),
-            children: [
-              SegmentedButton<bool>(
-                segments: const [
-                  ButtonSegment(
-                    value: false,
-                    label: Text('Utwórz'),
-                    icon: Icon(Icons.add_home),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(
+                      value: false,
+                      label: Text('Utwórz'),
+                      icon: Icon(Icons.add_home),
+                    ),
+                    ButtonSegment(
+                      value: true,
+                      label: Text('Dołącz'),
+                      icon: Icon(Icons.qr_code_scanner),
+                    ),
+                  ],
+                  selected: {_join},
+                  onSelectionChanged: (s) => setState(() => _join = s.first),
+                ),
+                const SizedBox(height: 16),
+                if (!_join)
+                  TextFormField(
+                    controller: _roomName,
+                    decoration: const InputDecoration(
+                      labelText: 'Nazwa pokoju',
+                    ),
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Podaj nazwę' : null,
+                  )
+                else
+                  TextFormField(
+                    controller: _invite,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      labelText: 'Zaproszenie',
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.content_paste),
+                            onPressed: _paste,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.qr_code_scanner),
+                            onPressed: _scan,
+                          ),
+                        ],
+                      ),
+                    ),
+                    validator: (v) => Invite.tryParse(v ?? '') == null
+                        ? 'To nie jest poprawne zaproszenie'
+                        : null,
                   ),
-                  ButtonSegment(
-                    value: true,
-                    label: Text('Dołącz'),
-                    icon: Icon(Icons.qr_code_scanner),
-                  ),
-                ],
-                selected: {_join},
-                onSelectionChanged: (s) => setState(() => _join = s.first),
-              ),
-              const SizedBox(height: 16),
-              if (!_join)
+                const SizedBox(height: 12),
                 TextFormField(
-                  controller: _roomName,
-                  decoration: const InputDecoration(labelText: 'Nazwa pokoju'),
+                  controller: _myName,
+                  decoration: const InputDecoration(
+                    labelText: 'Twoja nazwa w tym pokoju',
+                  ),
                   validator: (v) =>
                       (v == null || v.trim().isEmpty) ? 'Podaj nazwę' : null,
-                )
-              else
+                ),
+                const SizedBox(height: 24),
                 TextFormField(
-                  controller: _invite,
-                  minLines: 2,
-                  maxLines: 4,
-                  decoration: InputDecoration(
-                    labelText: 'Zaproszenie',
-                    suffixIcon: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.content_paste),
-                          onPressed: _paste,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.qr_code_scanner),
-                          onPressed: _scan,
-                        ),
-                      ],
-                    ),
+                  controller: _pin,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'PIN do tego pokoju',
                   ),
-                  validator: (v) => Invite.tryParse(v ?? '') == null
-                      ? 'To nie jest poprawne zaproszenie'
-                      : null,
+                  validator: _pinValidator,
                 ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _myName,
-                decoration: const InputDecoration(
-                  labelText: 'Twoja nazwa w tym pokoju',
+                TextFormField(
+                  controller: _pin2,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Powtórz PIN'),
+                  validator: (v) => v != _pin.text ? 'PIN-y się różnią' : null,
                 ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Podaj nazwę' : null,
-              ),
-              const SizedBox(height: 24),
-              TextFormField(
-                controller: _pin,
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'PIN do tego pokoju',
+                const SizedBox(height: 8),
+                Text(
+                  'Ten PIN otworzy ten pokój z ekranu PIN-u. Każdy pokój ma '
+                  'własny PIN. Nie da się go odzyskać: zapomniany PIN oznacza '
+                  'utratę dostępu do pokoju na tym telefonie.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
-                validator: _pinValidator,
-              ),
-              TextFormField(
-                controller: _pin2,
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Powtórz PIN'),
-                validator: (v) => v != _pin.text ? 'PIN-y się różnią' : null,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Ten PIN otworzy ten pokój z ekranu PIN-u. Każdy pokój ma '
-                'własny PIN. Nie da się go odzyskać: zapomniany PIN oznacza '
-                'utratę dostępu do pokoju na tym telefonie.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 24),
-              FilledButton(
-                onPressed: _busy ? null : _submit,
-                child: Text(_join ? 'Dołącz' : 'Utwórz'),
-              ),
-              if (_status != null) ...[
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(_status!),
-                  ],
+                const SizedBox(height: 24),
+                FilledButton(
+                  onPressed: _busy ? null : _submit,
+                  child: Text(_join ? 'Dołącz' : 'Utwórz'),
                 ),
+                if (_status != null) ...[
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(_status!),
+                    ],
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

@@ -1,0 +1,50 @@
+# Project-specific SAST rules. Semgrep's registry has few Dart rules, so these
+# encode the invariants this app's security model depends on.
+rules:
+  - id: insecure-random-in-security-code
+    languages: [dart]
+    severity: ERROR
+    message: >-
+      Random() is not cryptographically secure. Use Random.secure() or
+      Crypto.randomBytes() in vault, crypto and room code.
+    paths:
+      include: [lib/vault/, lib/core/, lib/room/]
+    patterns:
+      - pattern: Random(...)
+      - pattern-not: Random.secure()
+
+  - id: secret-in-log
+    languages: [dart]
+    severity: ERROR
+    message: >-
+      Do not log PINs, keys, secrets or invites; logs leave the device
+      (logcat, crash reports).
+    paths:
+      include: [lib/]
+    pattern-regex: '(?i)\b(debugPrint|print)\s*\([^;]*\b(pin|secret|writer|password|pepper|invite|keypair)\b'
+
+  - id: cleartext-url
+    languages: [dart]
+    severity: ERROR
+    message: Cleartext http:// URL. All traffic must be encrypted.
+    paths:
+      include: [lib/]
+    pattern-regex: '[''"]http://(?!localhost|127\.0\.0\.1)'
+
+  - id: android-cleartext-traffic
+    languages: [generic]
+    severity: ERROR
+    message: Do not enable cleartext traffic in the Android manifest.
+    paths:
+      include: [android/app/src/main/AndroidManifest.xml]
+    pattern: android:usesCleartextTraffic="true"
+
+  - id: android-allow-backup
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      android:allowBackup="true" lets adb/cloud backups copy the encrypted
+      vault; keep it off.
+    paths:
+      include: [android/app/src/main/AndroidManifest.xml]
+    pattern: android:allowBackup="true"

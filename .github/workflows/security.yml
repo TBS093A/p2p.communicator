@@ -1,0 +1,130 @@
+name: security
+
+# Reusable SAST + SCA, called from premerge and postmerge. Findings go to the
+# repository's Security tab (code scanning) as well as failing the job.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: SAST (semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Registry rules (Dart, Kotlin, YAML, GitHub Actions) + project rules in
+      # .semgrep/ that encode this app's security invariants.
+      - name: Scan (SARIF for the Security tab)
+        run: >-
+          semgrep scan --metrics=off
+          --config p/default --config .semgrep/
+          --sarif --output semgrep.sarif
+
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        if: always() && hashFiles('semgrep.sarif') != ''
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Gate on findings
+        run: >-
+          semgrep scan --metrics=off
+          --config p/default --config .semgrep/
+          --error
+
+  codeql:
+    name: SAST (codeql, workflows)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # CodeQL has no Dart support; it covers the CI itself (script
+      # injection, untrusted checkout, excessive permissions).
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: actions
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: codeql-actions
+
+  gitleaks:
+    name: SAST (gitleaks, secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  osv:
+    name: SCA (osv-scanner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # veilid comes from git, so its Rust dependency tree is in the veilid
+      # repo's Cargo.lock at the commit pubspec.lock resolved to.
+      - name: Fetch veilid Cargo.lock
+        run: |
+          ref=$(grep -A10 '^  veilid:' pubspec.lock | sed -n 's/.*resolved-ref: "\{0,1\}\([0-9a-f]\{40\}\)"\{0,1\}/\1/p' | head -1)
+          if [ -z "$ref" ]; then echo "veilid resolved-ref not found in pubspec.lock" >&2; exit 1; fi
+          mkdir -p .osv/veilid
+          curl -sSfL -o .osv/veilid/Cargo.lock "https://gitlab.com/veilid/veilid/-/raw/$ref/Cargo.lock"
+          echo "veilid @ $ref: $(grep -c '^\[\[package\]\]' .osv/veilid/Cargo.lock) Rust packages"
+
+      # Our own Dart dependencies: vulnerabilities here block the merge.
+      - name: Scan pub dependencies (gating)
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        with:
+          scan-args: |-
+            --lockfile=pubspec.lock
+            --format=sarif
+            --output=osv-pub.sarif
+
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        if: always() && hashFiles('osv-pub.sarif') != ''
+        with:
+          sarif_file: osv-pub.sarif
+          category: osv-pub
+
+      # veilid's Rust tree is upstream's to fix: report, do not block.
+      - name: Scan veilid Rust dependencies (report only)
+        if: always()
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        with:
+          scan-args: |-
+            --lockfile=.osv/veilid/Cargo.lock
+            --format=markdown
+            --output=osv-veilid.md
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## veilid (Rust) dependencies"
+            if [ -s osv-veilid.md ]; then cat osv-veilid.md; else echo "No known vulnerabilities."; fi
+          } >> "$GITHUB_STEP_SUMMARY"

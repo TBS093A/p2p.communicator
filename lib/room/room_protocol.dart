@@ -39,30 +39,34 @@ class RoomProtocol {
     required String roomName,
     required String myName,
   }) async {
+    // A random owner key per record, i.e. per room: rooms are unlinkable.
+    // Local-first: both records are brand new and only reachable through our
+    // invite, so nobody can race us. Write locally, let Veilid publish in the
+    // background, and leave the records open for the room session (which
+    // re-opens them; closing now would wait on the pending pushes).
     final rc = Dht.rc;
     final roster = await rc.createDHTRecord(
       bestCryptoKind,
       const DHTSchema.dflt(oCnt: RoomLayout.rosterSubkeys),
     );
-    try {
-      await Dht.setJson(roster.key, 0, {'name': roomName, 'v': 1});
-      final outbox = await _createOutbox(myName);
-      await Dht.setJson(roster.key, 1, {
-        'o': outbox.key.toString(),
-        'n': myName,
-      });
-      return RoomSecrets(
-        roomName: roomName,
-        rosterKey: roster.key.toString(),
-        rosterWriter: roster.ownerKeyPair!.toString(),
-        myName: myName,
-        outboxKey: outbox.key.toString(),
-        outboxWriter: outbox.ownerKeyPair!.toString(),
-        rosterSlot: 1,
-      );
-    } finally {
-      await Dht.close(roster.key);
-    }
+    final outbox = await rc.createDHTRecord(
+      bestCryptoKind,
+      const DHTSchema.dflt(oCnt: 1 + RoomLayout.outboxRing),
+    );
+    await Future.wait([
+      Dht.setJsonSoon(roster.key, 0, {'name': roomName, 'v': 1}),
+      Dht.setJsonSoon(roster.key, 1, {'o': outbox.key.toString(), 'n': myName}),
+      Dht.setJsonSoon(outbox.key, 0, {'count': 0, 'name': myName}),
+    ]);
+    return RoomSecrets(
+      roomName: roomName,
+      rosterKey: roster.key.toString(),
+      rosterWriter: roster.ownerKeyPair!.toString(),
+      myName: myName,
+      outboxKey: outbox.key.toString(),
+      outboxWriter: outbox.ownerKeyPair!.toString(),
+      rosterSlot: 1,
+    );
   }
 
   static Future<RoomSecrets> join({
@@ -108,8 +112,8 @@ class RoomProtocol {
       bestCryptoKind,
       const DHTSchema.dflt(oCnt: 1 + RoomLayout.outboxRing),
     );
-    await Dht.setJson(outbox.key, 0, {'count': 0, 'name': myName});
-    await Dht.close(outbox.key);
+    // Only we write here: local-first, left open for the room session.
+    await Dht.setJsonSoon(outbox.key, 0, {'count': 0, 'name': myName});
     return outbox;
   }
 

@@ -1,104 +1,132 @@
 # p2p.communicator
 
-Komunikator bez serwera: tekst, zdjęcia, wideo i głosówki. Każdy telefon z
-aplikacją jest pełnym węzłem sieci [Veilid](https://veilid.com) (Rust, wbudowany
-w aplikację). Pokoje otwiera się PIN-em: jeden ekran PIN-u, każdy PIN otwiera
-inny pokój, a zły PIN nie otwiera niczego.
+A serverless messenger for text, photos, video and voice notes. Every phone
+running the app is a full node of the [Veilid](https://veilid.com) network
+(Rust, embedded in the app). Rooms are unlocked with a PIN: a single PIN pad,
+where each PIN opens a different room and a wrong PIN opens nothing at all.
 
-> Status: szkielet v0.1. Przechodzi `flutter analyze` i testy jednostkowe,
-> rdzeń Veilid (`v0.5.8`) kompiluje się. Nie był jeszcze testowany na
-> telefonie (sieć, dwa urządzenia).
+> Status: v0.1 skeleton. Passes `flutter analyze` and unit tests, and the
+> Veilid core (`v0.5.8`) builds. Not yet tested on real phones (network,
+> two devices).
 
-**Pobierz APK:** [najnowszy release](https://github.com/TBS093A/p2p.communicator/releases/latest)
-(arm64, Android 7+). Przy instalacji Android poprosi o zgodę na instalację z
-nieznanego źródła.
+**Download the APK:** [latest release](https://github.com/TBS093A/p2p.communicator/releases/latest)
+(arm64, Android 7+). Android will ask you to allow installs from an unknown
+source.
+
+| PIN | New room | Chat | Invite |
+|---|---|---|---|
+| ![PIN](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/01_pin.png) | ![New room](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/02_new_room.png) | ![Chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/03_chat.png) | ![Invite](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/04_invite.png) |
+
+Screenshots are taken by CI on an emulator (`integration_test/app_test.dart`)
+and refreshed on the `screenshots` branch only when the UI changes.
 
 ## CI/CD (GitHub Actions)
 
-| Workflow | Kiedy | Co robi |
+| Workflow | When | What it does |
 |---|---|---|
-| [`premerge`](.github/workflows/premerge.yml) | każdy PR do `main` | format, `flutter analyze`, testy, debug APK (artefakt na 7 dni) |
-| [`postmerge`](.github/workflows/postmerge.yml) | każdy push do `main` | analyze + testy, podpisany release APK, GitHub Release |
+| [`premerge`](.github/workflows/premerge.yml) | every PR into `main` | format, `flutter analyze`, tests, debug APK, SAST + SCA, DAST (when app code changed) |
+| [`postmerge`](.github/workflows/postmerge.yml) | every push to `main` | the same checks, then a signed release APK + GitHub Release, MobSF, DAST, screenshots |
 
-* Praca na gałęziach `feature/...`, PR do `main`, merge po zielonym `premerge`.
-* Wersja release'u: `major.minor` z `pubspec.yaml` + numer przebiegu jako patch
-  (np. `v0.1.7`). Żeby zacząć `0.2.x`, zmień `version:` w `pubspec.yaml`.
-* APK podpisuje klucz release'owy z sekretów repo (`ANDROID_KEYSTORE_BASE64`,
-  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`).
-  Oryginał klucza trzymaj poza repo i zrób kopię zapasową. Bez tego samego
-  klucza nowe APK nie zaktualizują już zainstalowanej aplikacji.
-* Pierwszy build w CI kompiluje Veilid z kodu (długo), kolejne korzystają z cache.
+### Security in the pipeline
 
-## Jak to działa
+| Type | Tool | What it checks | Blocking? |
+|---|---|---|---|
+| SAST | Semgrep (`p/default` + [`.semgrep/`](.semgrep/p2p-rules.yml)) | Dart, Kotlin, YAML, Actions; project rules: `Random()` in crypto code, logging secrets, `http://`, backup/cleartext in the manifest | yes |
+| SAST | CodeQL (`actions`) | security of the workflows themselves (injection, permissions) | yes |
+| SAST | Gitleaks | secrets in git history | yes |
+| SCA | OSV-Scanner | vulnerabilities in `pubspec.lock` (blocking) and in Veilid's `Cargo.lock` (report only) | pub: yes |
+| SCA | Dependabot | weekly update PRs for pub and Actions (7-day cooldown) | n/a |
+| DAST | emulator + [`integration_test`](integration_test/app_test.dart) | the real app on the Veilid network: a wrong PIN opens nothing, each PIN opens only its own room, no crashes | yes |
+| MAST | MobSF | analysis of the signed APK, PDF report attached to the release | report |
+
+SAST and SCA results also show up under **Security → Code scanning**. All
+actions are pinned to commit SHAs.
+
+* Work on `feature/...` branches, open a PR into `main`, merge once
+  `premerge` is green.
+* Release version: `major.minor` from `pubspec.yaml` plus the run number as
+  the patch (e.g. `v0.1.7`). To start `0.2.x`, change `version:` in
+  `pubspec.yaml`.
+* The APK is signed with the release key from the repo secrets
+  (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+  `ANDROID_KEY_PASSWORD`). Keep the original key outside the repo and back it
+  up. Without the same key, new APKs cannot update an installed app.
+* The first CI build compiles Veilid from source (slow); later builds use the
+  cache.
+
+## How it works
 
 ```
- Telefon A                 sieć Veilid (DHT)                   Telefon B
-┌──────────┐   zapis    ┌──────────────────────┐   watch     ┌──────────┐
-│ outbox A │──────────▶ │ rekordy szyfrowane   │ ──────────▶ │ czyta A  │
-│ czyta B  │ ◀───────── │ (przechowują je inne │ ◀────────── │ outbox B │
-└──────────┘   watch    │  węzły, bez treści)  │   zapis     └──────────┘
+ Phone A                 Veilid network (DHT)                  Phone B
+┌──────────┐   write    ┌──────────────────────┐   watch     ┌──────────┐
+│ outbox A │──────────▶ │ encrypted records    │ ──────────▶ │ reads A  │
+│ reads B  │ ◀───────── │ (stored by other     │ ◀────────── │ outbox B │
+└──────────┘   watch    │  nodes, no content)  │   write     └──────────┘
                         └──────────────────────┘
 ```
 
-* **Pokój** to rekord DHT „roster”: nazwa pokoju i lista członków (subkey 1..63).
-  Klucz zapisu do rostera jest w zaproszeniu, więc **zaproszenie = członkostwo**.
-* **Każdy członek** ma własny rekord „outbox”: subkey 0 to licznik wiadomości,
-  subkey 1..200 to bufor cykliczny wiadomości. Pisze do niego tylko właściciel,
-  pozostali obserwują go (`watchDHTValues`) i dostają powiadomienie o zmianie.
-* **Media** dzielone są na kawałki po 32 000 B, po 30 kawałków na rekord
-  (limity Veilid: 32 KiB na subkey, 1 MiB na rekord). Wideo 20 MB to około 21
-  rekordów. Klucze tych rekordów są tylko w wiadomości, więc pliki znajdą
-  wyłącznie członkowie pokoju.
-* **Szyfrowanie**: każdy rekord DHT ma własny sekret (Veilid szyfruje wartości),
-  a węzły przechowujące dane widzą tylko szyfrogram. Lokalnie wszystko
-  (wiadomości, media, klucze) jest zaszyfrowane kluczem z PIN-u.
-* **Offline**: wiadomość zostaje w DHT, więc odbiorca pobierze ją po
-  włączeniu telefonu, nawet gdy nadawca jest już offline. Jeśli wyślesz coś bez
-  sieci, Veilid zapisze to lokalnie i wypchnie po połączeniu.
+* **A room** is a "roster" DHT record: the room name and the member list
+  (subkeys 1..63). The roster writer key is part of the invite, so
+  **the invite is the membership**.
+* **Each member** has their own "outbox" record: subkey 0 is the message
+  counter, subkeys 1..200 are a ring buffer of messages. Only the owner writes
+  to it; the others watch it (`watchDHTValues`) and get notified of changes.
+* **Media** is split into 32,000-byte chunks, 30 chunks per record (Veilid
+  limits: 32 KiB per subkey, 1 MiB per record). A 20 MB video is about 21
+  records. The record keys exist only inside the message, so only room
+  members can find the files.
+* **Encryption**: every DHT record has its own secret (Veilid encrypts the
+  values), so the nodes storing data see only ciphertext. Locally, everything
+  (messages, media, keys) is encrypted with the PIN-derived key.
+* **Offline**: a message stays in the DHT, so the recipient fetches it after
+  turning their phone on, even if the sender is offline by then. Anything you
+  send without a connection is stored locally by Veilid and pushed once you
+  are back online.
 
-### PIN-y (`lib/vault/pin_vault.dart`)
+### PINs (`lib/vault/pin_vault.dart`)
 
-* `master = Argon2(PIN ‖ pepper, sól)`. **Pepper** to 32 losowe bajty w
-  Android Keystore (`flutter_secure_storage`). Sama kopia plików aplikacji nie
-  wystarczy do łamania PIN-ów offline.
-* Nazwa pliku slotu jest wyliczana z `master`, więc jeden PIN to jedno
-  Argon2 i bezpośredni odczyt pliku. Nigdzie nie ma listy pokoi.
-* Sloty mają stały rozmiar, a obok prawdziwych leżą sloty-wabiki, więc katalog
-  nie zdradza wprost, ile jest pokoi. To utrudnia ocenę, ale nie daje pewności.
-* Po 5 błędnych próbach: 30 s blokady, potem podwajana do 1 h.
-* Aplikacja blokuje się (wraca do PIN-u), gdy schodzi z ekranu.
-* Każdy pokój ma osobną tożsamość (klucze), więc pokoi nie da się powiązać
-  ze sobą w sieci.
+* `master = Argon2(PIN ‖ pepper, salt)`. The **pepper** is 32 random bytes in
+  the Android Keystore (`flutter_secure_storage`). A copy of the app's files
+  alone is not enough to brute-force PINs offline.
+* The slot file name is derived from `master`, so one PIN means one Argon2 run
+  and a direct file read. There is no list of rooms anywhere.
+* Slots have a fixed size and decoy slots sit next to the real ones, so the
+  folder does not plainly reveal how many rooms exist. This makes it harder to
+  tell, not impossible.
+* After 5 failed attempts: a 30 s lockout, doubling up to 1 h.
+* The app locks (back to the PIN pad) whenever it leaves the screen.
+* Each room has its own identity (keys), so rooms cannot be linked to each
+  other on the network.
 
-## Struktura
+## Layout
 
 ```
 lib/
-  core/veilid_node.dart     start węzła Veilid, strumień zdarzeń, status sieci
-  core/crypto.dart          AEAD / Argon2 / BLAKE3 z kryptografii Veilid
-  vault/pin_vault.dart      PIN → pokój, wabiki, limit prób, dane per pokój
-  vault/room_secrets.dart   co jest zapisane w slocie
-  room/room_protocol.dart   układ rekordów, tworzenie i dołączanie do pokoju
-  room/room_session.dart    synchronizacja, wysyłanie, cache, media
-  room/blob_store.dart      pliki w DHT (kawałki)
-  room/invite.dart          zaproszenie (QR / tekst)
-  room/message.dart         model wiadomości
-  ui/                       PIN pad, nowy pokój, czat, zaproszenie, skaner QR
+  core/veilid_node.dart     Veilid node startup, update stream, network status
+  core/crypto.dart          AEAD / Argon2 / BLAKE3 via Veilid's crypto
+  vault/pin_vault.dart      PIN → room, decoys, attempt limit, per-room data
+  vault/room_secrets.dart   what a slot stores
+  room/room_protocol.dart   record layout, creating and joining rooms
+  room/room_session.dart    sync, sending, cache, media
+  room/blob_store.dart      files in the DHT (chunks)
+  room/invite.dart          invite (QR / text)
+  room/message.dart         message model
+  ui/                       PIN pad, new room, chat, invite, QR scanner
 ```
 
-## Uruchomienie (Android)
+## Running it (Android)
 
-Wymagania: Flutter ≥ 3.47.1, Android SDK + NDK oraz **rustup**. Build hook
-pakietu `veilid` kompiluje rdzeń w Ruście dla Androida. Systemowe `cargo` bez
-rustup nie doda celów Androida.
+Requirements: Flutter ≥ 3.47.1, Android SDK + NDK, and **rustup**. The
+`veilid` package's build hook compiles the Rust core for Android. A system
+`cargo` without rustup cannot add the Android targets.
 
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 ```
 
-Folder `android/` (z uprawnieniami i konfiguracją podpisu) jest w repo.
-Lokalny podpis release'owy: plik `android/key.properties` (`storeFile`,
-`storePassword`, `keyAlias`, `keyPassword`), który nie trafia do repo.
+The `android/` folder (with permissions and signing config) is in the repo.
+For local release signing, create `android/key.properties` (`storeFile`,
+`storePassword`, `keyAlias`, `keyPassword`); it is git-ignored.
 
 ```bash
 flutter pub get
@@ -108,31 +136,35 @@ flutter pub get
 flutter run
 ```
 
-Pierwszy build kompiluje Veilid z kodu i trwa kilka do kilkunastu minut.
+The first build compiles Veilid from source and takes several minutes or
+more.
 
-Test: dwa telefony (albo telefon + emulator). Na pierwszym „+ → Utwórz”, ustaw
-PIN, potem „Zaproś”. Na drugim „+ → Dołącz”, zeskanuj QR i ustaw własny PIN.
+To try it: two phones (or a phone and an emulator). On the first, tap
+"+ → Create", set a PIN, then "Invite". On the second, tap "+ → Join", scan
+the QR code and set your own PIN.
 
-## Ograniczenia (świadome, do zrobienia)
+## Known limitations (deliberate, planned)
 
-* **Tło**: Android usypia aplikację. Bez usługi pierwszoplanowej (foreground
-  service) wiadomości przychodzą tylko przy otwartej aplikacji. Do zrobienia w v0.2.
-* **Brak pushy**: bez serwera Google nic nie obudzi telefonu. Wiadomość czeka
-  w DHT do otwarcia aplikacji.
-* **Bufor 200 wiadomości na osobę**: kto był offline dłużej niż 200 wiadomości
-  danej osoby, starszych już nie pobierze.
-* **Trwałość DHT**: rekordy żyją, dopóki sieć je przechowuje i odświeża. Stare
-  media mogą kiedyś zniknąć z sieci, ale lokalne kopie zostają.
-* **Wideo** jest wysyłane bez rekompresji (limit 25 MB, 2 min). Przesyłanie
-  przez DHT jest wolniejsze niż przez serwer.
-* **Zaproszenie** to klucz do pokoju. Nie ma usuwania członków ani rotacji
-  kluczy (można to dodać, zakładając nowy pokój).
-* Veilid jest w wersji 0.x i jego API się zmienia. Zależność jest przypięta do
-  tagu `v0.5.8`.
+* **Background**: Android puts the app to sleep. Without a foreground service,
+  messages arrive only while the app is open. Planned for v0.2.
+* **No push**: without Google's servers nothing wakes the phone. A message
+  waits in the DHT until the app is opened.
+* **200-message buffer per person**: if you were offline for more than 200
+  messages from someone, their older ones can no longer be fetched.
+* **DHT durability**: records live as long as the network stores and refreshes
+  them. Old media may eventually disappear from the network; local copies
+  remain.
+* **Video** is sent without re-encoding (25 MB, 2 min limit). Transfers over
+  the DHT are slower than through a server.
+* **The invite** is the key to the room. There is no member removal or key
+  rotation yet (the workaround is to create a new room).
+* Veilid is at 0.x and its API changes. The dependency is pinned to tag
+  `v0.5.8`.
 
-## Roadmapa
+## Roadmap
 
-1. v0.1: pierwszy build, test na dwóch telefonach, poprawki API
-2. v0.2: foreground service (węzeł działa w tle) i lokalne powiadomienia
-3. v0.3: miniatury wideo, kompresja wideo, ponawianie nieudanych wysyłek
-4. v0.4: rozmowy audio/wideo (WebRTC z sygnalizacją przez Veilid `appMessage`)
+1. v0.1: first build, test on two phones, API fixes
+2. v0.2: foreground service (node runs in the background) and local
+   notifications
+3. v0.3: video thumbnails, video compression, retrying failed sends
+4. v0.4: audio/video calls (WebRTC, signalling over Veilid `appMessage`)

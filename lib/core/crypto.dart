@@ -15,20 +15,28 @@ class Crypto {
   static Future<Uint8List> randomBytes(int n) => _cs.randomBytes(n);
 
   /// Encrypts [plain]; output is `nonce || ciphertext+tag`.
+  ///
+  /// [context] binds the ciphertext to its purpose: data sealed for one
+  /// context does not open under another. It is applied as a per-context key
+  /// rather than AEAD associated data, because veilid-flutter 0.5.8 passes
+  /// associated data over FFI as a JSON array where veilid-core expects
+  /// base64, so every call with associated data fails with a ParseError.
   static Future<Uint8List> seal(
     SharedSecret key,
     Uint8List plain, {
     String? context,
   }) async {
+    final k = await _contextKey(key, context);
     final nonce = await _cs.randomNonce();
-    final ct = await _cs.encryptAead(plain, nonce, key, _ad(context));
+    final ct = await _cs.encryptAead(plain, nonce, k, null);
     return (BytesBuilder(copy: false)
           ..add(nonce.toBytes())
           ..add(ct))
         .toBytes();
   }
 
-  /// Reverses [seal]. Throws if the key is wrong or the data was altered.
+  /// Reverses [seal]. Throws if the key or context is wrong or the data was
+  /// altered.
   static Future<Uint8List> open(
     SharedSecret key,
     Uint8List sealed, {
@@ -38,14 +46,15 @@ class Crypto {
     if (sealed.length <= n) {
       throw const FormatException('sealed data too short');
     }
+    final k = await _contextKey(key, context);
     final nonce = Nonce.fromBytes(Uint8List.sublistView(sealed, 0, n));
-    return _cs.decryptAead(
-      Uint8List.sublistView(sealed, n),
-      nonce,
-      key,
-      _ad(context),
-    );
+    return _cs.decryptAead(Uint8List.sublistView(sealed, n), nonce, k, null);
   }
+
+  static Future<SharedSecret> _contextKey(
+    SharedSecret key,
+    String? context,
+  ) async => context == null ? key : subsecret(key, 'aead:$context');
 
   /// Argon2 over [password] and [salt] (native, in veilid-core).
   static Future<SharedSecret> deriveFromPassword(
@@ -82,7 +91,4 @@ class Crypto {
 
   static String hex(Uint8List b) =>
       b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
-
-  static Uint8List? _ad(String? context) =>
-      context == null ? null : Uint8List.fromList(utf8.encode(context));
 }
