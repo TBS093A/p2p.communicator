@@ -164,15 +164,26 @@ void main() {
   }
 
   /// Opens an RGB picker via [editKey], types [hex] and saves.
+  ///
+  /// The emulator's real keyboard (IME) can push its own, older copy of the
+  /// field back after `enterText`, reverting the typed value; so check the
+  /// field actually holds [hex] (retyping if not) and save while the keyboard
+  /// is still up, before hiding it can trigger another sync.
   Future<void> pickColor(WidgetTester t, String editKey, String hex) async {
     await tapKey(t, editKey);
-    await pumpUntil(t, find.byKey(const ValueKey('rgb-hex')));
+    final field = find.byKey(const ValueKey('rgb-hex'));
+    await pumpUntil(t, field);
     await settle(t);
-    await t.enterText(find.byKey(const ValueKey('rgb-hex')), hex);
-    await t.pump();
-    await hideKeyboard(t);
+    String current() => t.widget<TextField>(field).controller!.text;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      await t.enterText(field, hex);
+      await idle(t, const Duration(milliseconds: 800));
+      if (current().toUpperCase() == hex.toUpperCase()) break;
+    }
+    expect(current().toUpperCase(), hex.toUpperCase(), reason: 'IME reverted');
     await tapKey(t, 'rgb-save');
     await settle(t);
+    await hideKeyboard(t);
     await waitSaved(t);
   }
 
