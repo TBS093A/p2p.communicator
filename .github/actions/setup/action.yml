@@ -1,0 +1,39 @@
+name: Setup toolchain
+description: Java, Flutter, Rust build caches and pub dependencies.
+
+inputs:
+  cache-key:
+    description: Distinguishes Rust build caches per job (host tests, android debug, android release).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: "17"
+
+    - uses: subosito/flutter-action@v2
+      with:
+        # Same version as local development; keep in sync when upgrading.
+        flutter-version: 3.47.9
+        channel: stable
+        cache: true
+
+    # The veilid build hook compiles veilid-core (Rust) with the toolchain the
+    # veilid repo pins (rust-toolchain.toml); rustup on the runner fetches it.
+    # Cache crates and the compiled targets: a cold veilid build takes long.
+    - uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          .dart_tool/hooks_runner
+        key: rust-${{ inputs.cache-key }}-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+        restore-keys: |
+          rust-${{ inputs.cache-key }}-${{ runner.os }}-
+
+    - name: Pub get
+      shell: bash
+      run: flutter pub get

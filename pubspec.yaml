@@ -1,0 +1,45 @@
+name: p2p_communicator
+description: Serverless P2P messenger on the Veilid network, with PIN-unlocked rooms.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.47.1"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Veilid core (Rust) + Dart bindings. The package's build hook compiles
+  # veilid-flutter/rust for the target, or bundles a prebuilt library.
+  # Pinned to a release tag: the API still moves between 0.x versions.
+  veilid:
+    git:
+      url: https://gitlab.com/veilid/veilid.git
+      ref: v0.5.8
+      path: veilid-flutter
+
+  # Device-bound secret (Android Keystore) mixed into every PIN derivation.
+  flutter_secure_storage: ^10.0.0
+  path: ^1.9.1
+  path_provider: ^2.1.6
+  uuid: ^4.5.3
+
+  # Media
+  image_picker: ^1.2.0
+  video_player: ^2.10.0
+  record: ^6.1.0
+  audioplayers: ^6.8.1
+
+  # Invites
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,54 @@
+name: premerge
+
+# Every pull request into main: static analysis, unit tests and a debug APK
+# build, so a broken Android build never reaches main.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: premerge-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: analyze + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: host-debug
+
+      - name: Format
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+  build-apk:
+    name: build debug apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: android-debug
+
+      - name: Build debug APK (arm64)
+        run: flutter build apk --debug --target-platform android-arm64
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-debug-pr${{ github.event.pull_request.number || 'manual' }}
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
