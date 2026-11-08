@@ -60,6 +60,11 @@ void main() {
     }
   }
 
+  /// Lets route and menu transitions finish. Screens below the top route
+  /// stay in the tree, so "finder found" alone does not mean "on top".
+  Future<void> settle(WidgetTester t) =>
+      idle(t, const Duration(milliseconds: 1200));
+
   Future<void> shot(WidgetTester t, String name) async {
     await idle(t, const Duration(milliseconds: 800));
     await binding.takeScreenshot(name);
@@ -107,6 +112,7 @@ void main() {
   }) async {
     await t.tap(find.byTooltip('Nowy pokój'));
     await pumpUntil(t, find.byType(NewRoomScreen));
+    await settle(t);
     await fill(t, 'Nazwa pokoju', room);
     await fill(t, 'Twoja nazwa w tym pokoju', me);
     await fill(t, 'PIN do tego pokoju', pin);
@@ -118,12 +124,14 @@ void main() {
     await t.tap(submit);
     await pumpUntil(t, find.byType(ChatScreen));
     await pumpUntil(t, find.text(room));
+    await settle(t);
   }
 
   Future<void> lock(WidgetTester t) async {
+    await settle(t);
     await t.tap(find.byTooltip('Zablokuj'));
     await pumpUntil(t, find.byType(PinScreen));
-    await idle(t, const Duration(milliseconds: 500));
+    await settle(t);
   }
 
   testWidgets('rooms, PIN isolation and screenshots', (t) async {
@@ -159,11 +167,12 @@ void main() {
 
     await t.tap(find.byType(PopupMenuButton<String>));
     await pumpUntil(t, find.text('Zaproś'));
+    await settle(t); // the menu animates in; taps before that hit its barrier
     await t.tap(find.text('Zaproś'));
     await pumpUntil(t, find.byType(InviteScreen));
     await shot(t, '04_invite');
     await t.pageBack();
-    await pumpUntil(t, find.byType(ChatScreen));
+    await settle(t);
 
     // Room B under another PIN.
     await lock(t);
