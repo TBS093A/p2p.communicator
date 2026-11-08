@@ -55,9 +55,20 @@ void main() {
     await t.pump();
   }
 
+  /// ListView builds only what is on screen, so scroll a widget into the
+  /// tree before touching it.
+  Future<void> reveal(WidgetTester t, Finder finder) async {
+    await t.scrollUntilVisible(
+      finder,
+      120,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await t.pump();
+  }
+
   Future<void> fill(WidgetTester t, String label, String value) async {
     final field = find.widgetWithText(TextFormField, label);
-    await t.ensureVisible(field);
+    await reveal(t, field);
     await t.enterText(field, value);
     await t.pump();
   }
@@ -78,7 +89,7 @@ void main() {
     FocusManager.instance.primaryFocus?.unfocus();
     if (screenshot) await shot(t, '02_new_room');
     final submit = find.widgetWithText(FilledButton, 'Utwórz');
-    await t.ensureVisible(submit);
+    await reveal(t, submit);
     await t.tap(submit);
     await pumpUntil(t, find.byType(ChatScreen));
     await pumpUntil(t, find.text(room));
