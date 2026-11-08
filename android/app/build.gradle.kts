@@ -57,6 +57,13 @@ android {
 
     buildTypes {
         release {
+            // R8 shrinking stays on; proguard-rules.pro keeps the classes
+            // veilid-core reaches over JNI (protected store, plugin init).
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             signingConfig = if (releaseStoreFile != null) {
                 signingConfigs.getByName("release")
             } else {

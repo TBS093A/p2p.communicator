@@ -42,9 +42,17 @@ class _P2PAppState extends State<P2PApp> with WidgetsBindingObserver {
   late final Future<void> _init = _start();
 
   Future<void> _start() async {
-    await UiPrefs.instance.load();
-    await VeilidNode.instance.start();
-    await PinVault.instance.init();
+    // One line in logcat either way (also in release builds), which the
+    // CI release smoke test waits for.
+    try {
+      await UiPrefs.instance.load();
+      await VeilidNode.instance.start();
+      await PinVault.instance.init();
+      debugPrint('[startup] ready');
+    } on Object catch (e) {
+      debugPrint('[startup] failed: $e');
+      rethrow;
+    }
   }
 
   @override

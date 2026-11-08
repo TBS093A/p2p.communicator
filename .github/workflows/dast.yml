@@ -1,11 +1,15 @@
 name: dast
 
-# Reusable dynamic test: the real app (debug build, x86_64) runs on an Android
-# emulator, joins the live Veilid network and goes through the security-
-# relevant flows in integration_test/app_test.dart (room creation, wrong PIN
-# opens nothing, each PIN opens only its own room). Fails on any crash of our
-# process. Screenshots taken along the way are uploaded as the `screenshots`
-# artifact; publishing them is up to the caller.
+# Reusable dynamic test on an Android emulator (x86_64):
+#   1. The real app (debug build) joins the live Veilid network and goes
+#      through the security-relevant flows in integration_test/app_test.dart
+#      (room creation, wrong PIN opens nothing, each PIN opens only its own
+#      room). Fails on any crash of our process.
+#   2. Release smoke test: the R8-minified release build must start up too
+#      (.github/scripts/release_smoke.sh), since R8 can break native/JNI code
+#      that debug builds never exercise.
+# Screenshots taken along the way are uploaded as the `screenshots` artifact;
+# publishing them is up to the caller.
 on:
   workflow_call:
 
@@ -30,6 +34,15 @@ jobs:
         with:
           cache-key: android-emulator
 
+      # The integration test runs a debug build, which skips R8. Shipped APKs
+      # are release builds, so also build one (same R8 rules, x86_64 for the
+      # emulator, debug-signed: no secrets needed on PRs) and smoke-test it.
+      - name: Build release APK for the smoke test
+        run: |
+          flutter build apk --release --target-platform android-x64
+          mkdir -p build/release-smoke
+          cp build/app/outputs/flutter-apk/app-release.apk build/release-smoke/app-release.apk
+
       - name: Run app on emulator
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
@@ -47,6 +60,17 @@ jobs:
             flutter drive --driver=test_driver/integration_test.dart --target=integration_test/app_test.dart || (adb logcat -d > build/logcat.txt; exit 1)
             adb logcat -d > build/logcat.txt
             ! grep -E "Process: com\.p2pcommunicator|Fatal signal.*p2pcommunicator" build/logcat.txt
+            bash .github/scripts/release_smoke.sh build/release-smoke/app-release.apk build/release-smoke
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: release-smoke
+          path: |
+            build/release-smoke/release_smoke.png
+            build/release-smoke/release_logcat.txt
+          if-no-files-found: ignore
+          retention-days: 14
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
