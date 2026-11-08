@@ -55,14 +55,8 @@ void main() {
     await t.pump();
   }
 
-  /// ListView builds only what is on screen, so scroll a widget into the
-  /// tree before touching it.
   Future<void> reveal(WidgetTester t, Finder finder) async {
-    await t.scrollUntilVisible(
-      finder,
-      120,
-      scrollable: find.byType(Scrollable).first,
-    );
+    await t.ensureVisible(finder);
     await t.pump();
   }
 
