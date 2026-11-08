@@ -31,7 +31,25 @@ void main() {
       if (finder.evaluate().isNotEmpty) return;
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
-    throw TestFailure('Timed out after $timeout waiting for $finder');
+    // Say what the user would have seen (SnackBar errors included) and keep
+    // a picture of it in the screenshots artifact.
+    final onScreen = find
+        .byType(Text)
+        .evaluate()
+        .map((e) => (e.widget as Text).data)
+        .whereType<String>()
+        .where((s) => s.trim().isNotEmpty)
+        .toSet()
+        .join(' | ');
+    try {
+      await binding.takeScreenshot('zz_failure');
+    } on Object {
+      // Best effort only.
+    }
+    throw TestFailure(
+      'Timed out after $timeout waiting for $finder\n'
+      'On screen: $onScreen',
+    );
   }
 
   Future<void> idle(WidgetTester t, Duration d) async {

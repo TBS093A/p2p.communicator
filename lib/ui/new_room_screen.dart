@@ -55,11 +55,15 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
       _busy = true;
       _status = 'Sprawdzam PIN…';
     });
+    final sw = Stopwatch()..start();
+    void step(String what) =>
+        debugPrint('[new-room] $what at ${sw.elapsedMilliseconds} ms');
     try {
       if (!await PinVault.instance.isPinFree(pin)) {
         _fail('Ten PIN jest już zajęty przez inny pokój. Wybierz inny.');
         return;
       }
+      step('slot checked');
       RoomSecrets secrets;
       if (_join) {
         setState(() => _status = 'Szukam pokoju w sieci…');
@@ -74,7 +78,9 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
           myName: _myName.text.trim(),
         );
       }
+      step('room records ready');
       final room = await PinVault.instance.store(pin, secrets);
+      step('vault slot written');
       if (!mounted) return;
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(builder: (_) => ChatScreen(room: room)),
@@ -89,6 +95,7 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
   }
 
   void _fail(String msg) {
+    debugPrint('[new-room] failed: $msg');
     if (!mounted) return;
     setState(() {
       _busy = false;
