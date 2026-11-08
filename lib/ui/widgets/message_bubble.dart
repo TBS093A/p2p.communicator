@@ -30,22 +30,24 @@ class MessageBubble extends StatelessWidget {
     final hhmm =
         '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
 
-    // Each member picks their bubble color; everyone sees it the same way.
+    // Each member picks their bubble color (any RGB); everyone sees it the
+    // same way. Defaults: messenger blue for mine, neutral grey for others.
+    final dark = Theme.of(context).brightness == Brightness.dark;
     final custom = profile.color == null ? null : Color(profile.color!);
     final jumbo =
         message.type == MsgType.text &&
         EmojiCode.isJumbo(
           EmojiCode.split(message.text ?? '', session.meta.emoji.keys.toSet()),
         );
-    final bg = jumbo
-        ? Colors.transparent
-        : custom ??
-              (mine ? scheme.primaryContainer : scheme.surfaceContainerHigh);
-    final fg = jumbo
-        ? scheme.onSurface
-        : custom != null
-        ? onColor(custom)
-        : (mine ? scheme.onPrimaryContainer : scheme.onSurface);
+    final fill =
+        custom ??
+        Color(
+          mine
+              ? defaultMyBubble
+              : (dark ? defaultOtherBubbleDark : defaultOtherBubbleLight),
+        );
+    final bg = jumbo ? Colors.transparent : fill;
+    final fg = jumbo ? scheme.onSurface : onColor(fill);
 
     final bubble = Container(
       constraints: BoxConstraints(
@@ -424,7 +426,14 @@ class _VoicePlayerState extends State<_VoicePlayer> {
             onPressed: _toggle,
           ),
           Expanded(
-            child: LinearProgressIndicator(value: progress.clamp(0.0, 1.0)),
+            child: LinearProgressIndicator(
+              value: progress.clamp(0.0, 1.0),
+              // Follow the bubble's text color so it shows on any bubble.
+              color: DefaultTextStyle.of(context).style.color,
+              backgroundColor: DefaultTextStyle.of(
+                context,
+              ).style.color?.withAlpha(60),
+            ),
           ),
           const SizedBox(width: 8),
           Text(

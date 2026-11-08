@@ -43,7 +43,7 @@ class Avatar extends StatelessWidget {
     session: session,
     name: session.meta.name,
     image: session.meta.avatar,
-    color: session.meta.accent,
+    color: session.meta.background ?? session.meta.accent,
     radius: radius,
   );
 
