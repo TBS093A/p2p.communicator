@@ -27,7 +27,14 @@ class VeilidNode {
   StreamSubscription<VeilidUpdate>? _sub;
   bool _started = false;
 
-  Future<void> start() async {
+  /// [storageDirectory], [attach] and [insecureKeyStorage] exist for tests,
+  /// which run without platform channels, without the network, and without an
+  /// OS keyring. The app always uses the platform's protected key storage.
+  Future<void> start({
+    String? storageDirectory,
+    bool attach = true,
+    bool insecureKeyStorage = false,
+  }) async {
     if (_started) return;
 
     try {
@@ -45,10 +52,18 @@ class VeilidNode {
       // Hot restart: the native side survives, that is fine.
     }
 
-    final config = await getDefaultVeilidConfig(
+    var config = await getDefaultVeilidConfig(
       isWeb: false,
       programName: _programName,
+      storageDirectory: storageDirectory,
     );
+    if (insecureKeyStorage) {
+      config = config.copyWith(
+        protectedStore: config.protectedStore.copyWith(
+          alwaysUseInsecureStorage: true,
+        ),
+      );
+    }
 
     Stream<VeilidUpdate> stream;
     try {
@@ -65,7 +80,7 @@ class VeilidNode {
     });
 
     crypto = await Veilid.instance.getCryptoSystem(bestCryptoKind);
-    await Veilid.instance.attach();
+    if (attach) await Veilid.instance.attach();
 
     // The default context already uses safety routing (hides which node is
     // reading or writing a record). Stability.reliable is avoided on purpose:
