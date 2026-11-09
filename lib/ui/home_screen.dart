@@ -46,45 +46,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // --------------------------------------------------------- private mode
 
   Future<void> _privateMode() async {
-    final pass = TextEditingController();
     final password = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Tryb prywatny'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Wpisz hasło pokoju prywatnego. Każde hasło otwiera tylko '
-              'swój pokój; takich pokoi nie ma na żadnej liście.',
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              key: const ValueKey('private-password'),
-              controller: pass,
-              obscureText: true,
-              autofocus: true,
-              decoration: const InputDecoration(labelText: 'Hasło'),
-              onSubmitted: (v) => Navigator.pop(context, v),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            key: const ValueKey('private-new'),
-            onPressed: () => Navigator.pop(context, '\u0000new'),
-            child: const Text('Nowy pokój prywatny'),
-          ),
-          FilledButton(
-            key: const ValueKey('private-open'),
-            onPressed: () => Navigator.pop(context, pass.text),
-            child: const Text('Otwórz'),
-          ),
-        ],
-      ),
+      builder: (_) => const _PrivateModeDialog(),
     );
-    pass.dispose();
     if (password == null || !mounted) return;
     if (password == '\u0000new') {
       await _push(NewRoomScreen(app: app, initialKind: RoomKind.private));
@@ -274,6 +239,65 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+/// Password prompt for private mode. Returns the password, or `\0new` for
+/// "create a private room". It owns its text controller, which therefore
+/// lives until the dialog's closing animation has finished (disposing it
+/// right after `showDialog` returned crashed the still-animating field).
+class _PrivateModeDialog extends StatefulWidget {
+  const _PrivateModeDialog();
+
+  @override
+  State<_PrivateModeDialog> createState() => _PrivateModeDialogState();
+}
+
+class _PrivateModeDialogState extends State<_PrivateModeDialog> {
+  final _pass = TextEditingController();
+
+  @override
+  void dispose() {
+    _pass.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Tryb prywatny'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Wpisz hasło pokoju prywatnego. Każde hasło otwiera tylko '
+            'swój pokój; takich pokoi nie ma na żadnej liście.',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('private-password'),
+            controller: _pass,
+            obscureText: true,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Hasło'),
+            onSubmitted: (v) => Navigator.pop(context, v),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          key: const ValueKey('private-new'),
+          onPressed: () => Navigator.pop(context, '\u0000new'),
+          child: const Text('Nowy pokój prywatny'),
+        ),
+        FilledButton(
+          key: const ValueKey('private-open'),
+          onPressed: () => Navigator.pop(context, _pass.text),
+          child: const Text('Otwórz'),
+        ),
+      ],
     );
   }
 }
