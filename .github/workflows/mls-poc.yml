@@ -116,11 +116,13 @@ jobs:
       - name: cargo-ndk
         run: cargo install cargo-ndk --version =4.1.2 --locked
 
+      # cargo-ndk reads Cargo.toml from the current directory.
       - name: Build libmls_poc.so (arm64-v8a, release)
+        working-directory: native/mls_poc
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
           cargo ndk -t arm64-v8a --platform 24 -o "$RUNNER_TEMP/jniLibs" \
-            build --manifest-path native/mls_poc/Cargo.toml --locked --release
+            build --locked --release
 
       - name: Bench app
         run: |
