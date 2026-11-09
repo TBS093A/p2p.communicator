@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:p2p_communicator/core/image_prep.dart';
 
 import '../integration_test/test_images.dart';
 
@@ -34,6 +35,21 @@ void main() {
     expect(path, endsWith('party.gif')); // the app suggests :party: from it
     // ignore: avoid_print
     print('DAST image: $path');
+  });
+
+  test('GIF avatar and GIF background pass ImagePrep as animations', () async {
+    for (final (path, use, frames) in [
+      (await portraitGif(), ImageUse.avatar, 2),
+      (await snowfallGif(), ImageUse.background, 10),
+    ]) {
+      final bytes = await File(path).readAsBytes();
+      expect(img.decodeGif(bytes)!.numFrames, frames);
+      final prepared = await ImagePrep.prepare(bytes, use);
+      expect(prepared.animated, isTrue, reason: path);
+      expect(prepared.bytes, bytes, reason: 'kept byte for byte');
+      // ignore: avoid_print
+      print('DAST image: $path (${bytes.length} B)');
+    }
   });
 
   test('fake picker hands out queued files in order, then nothing', () async {

@@ -16,6 +16,8 @@ class RoomMeta {
     required this.name,
     this.avatar,
     this.background,
+    this.backgroundImage,
+    this.dim,
     this.accent,
     Map<String, MediaRef>? emoji,
   }) : emoji = emoji ?? {};
@@ -25,8 +27,21 @@ class RoomMeta {
   /// Uploaded room picture.
   final MediaRef? avatar;
 
-  /// ARGB chat background; null = theme surface.
+  /// ARGB chat background; null = theme surface. Shown under
+  /// [backgroundImage] and wherever the image does not cover.
   final int? background;
+
+  /// Picture or (animated) GIF behind the conversation.
+  final MediaRef? backgroundImage;
+
+  /// Darkening over [backgroundImage], 0–80 %, so bubbles stay readable;
+  /// null = [defaultDim].
+  final int? dim;
+
+  static const defaultDim = 30;
+  static const maxDim = 80;
+
+  int get effectiveDim => (dim ?? defaultDim).clamp(0, maxDim);
 
   /// Legacy (v0.1.3) theme seed. Still read so old rooms keep their tint;
   /// no longer set by the UI, which uses [background] instead.
@@ -46,11 +61,18 @@ class RoomMeta {
     bool clearAvatar = false,
     int? background,
     bool clearBackground = false,
+    MediaRef? backgroundImage,
+    bool clearBackgroundImage = false,
+    int? dim,
     Map<String, MediaRef>? emoji,
   }) => RoomMeta(
     name: name ?? this.name,
     avatar: clearAvatar ? null : (avatar ?? this.avatar),
     background: clearBackground ? null : (background ?? this.background),
+    backgroundImage: clearBackgroundImage
+        ? null
+        : (backgroundImage ?? this.backgroundImage),
+    dim: dim ?? this.dim,
     // A background choice (or reset) replaces the legacy tint.
     accent: (background != null || clearBackground) ? null : accent,
     emoji: emoji ?? this.emoji,
@@ -61,6 +83,8 @@ class RoomMeta {
     'name': name,
     if (avatar != null) 'avatar': avatar!.toJson(),
     if (background != null) 'bg': background,
+    if (backgroundImage != null) 'bgImg': backgroundImage!.toJson(),
+    if (dim != null) 'dim': dim,
     if (accent != null) 'accent': accent,
     if (emoji.isNotEmpty)
       'emoji': {for (final e in emoji.entries) e.key: e.value.toJson()},
@@ -89,6 +113,10 @@ class RoomMeta {
           ? MediaRef.fromJson((j['avatar'] as Map).cast<String, dynamic>())
           : null,
       background: j['bg'] as int?,
+      backgroundImage: j['bgImg'] is Map
+          ? MediaRef.fromJson((j['bgImg'] as Map).cast<String, dynamic>())
+          : null,
+      dim: j['dim'] as int?,
       accent: j['accent'] as int?,
       emoji: emoji,
     );

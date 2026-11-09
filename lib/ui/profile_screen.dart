@@ -49,13 +49,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _uploadAvatar() async {
+    // No resize options: re-encoding in the picker would flatten a GIF. The
+    // session scales static photos itself and keeps GIFs animated.
     final picked = await AutoLock.suppress(
-      () => ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 256,
-        maxHeight: 256,
-        imageQuality: 85,
-      ),
+      () => ImagePicker().pickImage(source: ImageSource.gallery),
     );
     if (picked == null) return;
     await _run(() => s.updateMyProfile(avatar: File(picked.path)));
