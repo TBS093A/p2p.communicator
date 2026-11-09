@@ -61,6 +61,8 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
   final List<PublicRoom> rooms = [];
   final List<PendingInvite> pendingInvites = [];
   final Set<String> _handledInvites = {};
+  final Map<String, ChatMessage> _awaitingSender = {}; // message id -> invite
+  bool _recheckingInvites = false;
   Timer? _heartbeat;
   Timer? _saveTimer;
   bool _closed = false;
@@ -128,6 +130,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
 
     directory
       ..setMine(_me)
+      ..addListener(_recheckInvites)
       ..start();
     for (final raw in ((data['rooms'] as List?) ?? const [])) {
       final j = (raw as Map).cast<String, dynamic>();
@@ -176,6 +179,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     for (final r in rooms) {
       await r.session.close();
     }
+    directory.removeListener(_recheckInvites);
     await directory.close();
     await Dht.close(_profileRecord);
     await _media.close();
@@ -365,7 +369,27 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     unawaited(_tryInvite(message));
   }
 
-  Future<void> _tryInvite(ChatMessage message) async {
+  /// Re-checks invites whose sender's profile could not be read yet, each
+  /// time the directory changes (a profile arrived or was refreshed). The
+  /// room session hands a hidden message over only once, so without this an
+  /// invite whose sender was briefly unreachable would never be shown.
+  void _recheckInvites() {
+    if (_awaitingSender.isEmpty || _recheckingInvites || _closed) return;
+    _recheckingInvites = true;
+    unawaited(() async {
+      try {
+        for (final m in _awaitingSender.values.toList()) {
+          await _tryInvite(m, patient: false);
+        }
+      } finally {
+        _recheckingInvites = false;
+      }
+    }());
+  }
+
+  /// [patient]: fetch the sender's profile from the network and retry for
+  /// about a minute. Otherwise use only what the directory already holds.
+  Future<void> _tryInvite(ChatMessage message, {bool patient = true}) async {
     final sealed = message.extra?['s'];
     if (sealed is! String) return;
     final Map<String, dynamic> j;
@@ -407,9 +431,13 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
       from: from,
       to: _identity.key.toString(),
     );
+    // Not patient: make sure the directory follows the sender (opening the
+    // record may have failed before), so its arrival triggers a recheck.
+    if (!patient) directory.track(from);
     for (var attempt = 0; ; attempt++) {
-      final profile = await directory.load(from);
+      final profile = patient ? await directory.load(from) : directory[from];
       if (profile != null && profile.identity.isNotEmpty) {
+        _awaitingSender.remove(message.id);
         if (!await Crypto.verify(profile.identity, signed, sig)) {
           debugPrint('[app] dropped a DM invite with a forged sender');
           _markHandled(message.id);
@@ -417,10 +445,11 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
         }
         break;
       }
-      // Profile not reachable yet: try for about a minute, then give up
-      // without showing it (the sender can invite again).
-      if (attempt >= 4 || _closed) {
-        debugPrint('[app] DM invite sender unverifiable, not shown');
+      // Profile not reachable yet: retry for about a minute, then wait for
+      // the directory to bring it in (_recheckInvites). Kept in memory only:
+      // an invite still unverified when the app locks is not shown.
+      if (!patient || attempt >= 4 || _closed) {
+        if (!_closed) _awaitingSender[message.id] = message;
         return;
       }
       await Future<void>.delayed(Duration(seconds: 5 * (attempt + 1)));
