@@ -136,6 +136,14 @@ Time per operation, release build, x86-64 desktop:
    rejects groups with another ciphersuite. CI has a 3-month exception with
    a justification (`osv-scanner.toml`). Before v2 ships: a provider without
    the NIST curves (libcrux) or an OpenMLS release on `elliptic-curve 0.14`.
+   `Cargo.lock` also lists `libcrux-kem 0.0.9`.
+   * It has RUSTSEC-2026-0330 and RUSTSEC-2026-0331 (CVSS 8.7, a panic on
+     decoding too-short ML-KEM keys).
+   * It is only an optional dependency of `hpke-rs` (the `libcrux` feature),
+     which nothing enables, so it is not compiled.
+   * CI fails if it ever becomes part of the build.
+   * The fix (`hpke-rs 0.8`) needs an `openmls_rust_crypto` release that
+     accepts it.
 7. **Retention works as specified:** keep 1 past epoch, and delete it
    explicitly after 24 h (`delete_past_epoch_secrets`). 100 skipped keys
    per sender is confirmed as the limit.
