@@ -21,7 +21,7 @@ import 'room_settings_screen.dart';
 import 'widgets/avatar.dart';
 import 'widgets/emoji_text.dart';
 import 'widgets/media_image.dart';
-import 'widgets/message_bubble.dart';
+import 'widgets/message_list.dart';
 import 'widgets/network_dot.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -486,19 +486,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       );
                     }
-                    return ListView.builder(
-                      reverse: true,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: msgs.length,
-                      itemBuilder: (context, i) {
-                        final m = msgs[msgs.length - 1 - i];
-                        return MessageBubble(
-                          key: ValueKey(m.id),
-                          message: m,
-                          session: _session,
-                        );
-                      },
-                    );
+                    return MessageList(session: _session);
                   },
                 ),
               ),

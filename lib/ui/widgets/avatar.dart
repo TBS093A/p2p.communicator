@@ -33,16 +33,20 @@ class Avatar extends StatelessWidget {
     RoomSession session,
     String outbox, {
     double radius = 20,
+    Key? key,
   }) {
     final p = session.profileOf(outbox);
-    final key = session.profileKeyOf(outbox);
+    final profileKey = session.profileKeyOf(outbox);
     return Avatar(
+      key: key,
       session: session,
       name: p.name,
       image: p.avatar,
       color: p.color,
       radius: radius,
-      presence: key == null ? null : session.app?.directory[key]?.presence,
+      presence: profileKey == null
+          ? null
+          : session.app?.directory[profileKey]?.presence,
     );
   }
 

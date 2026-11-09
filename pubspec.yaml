@@ -33,6 +33,12 @@ dependencies:
   record: ^7.1.2
   audioplayers: ^6.8.1
 
+  # Sender avatars that stick to the bottom of their message group while
+  # scrolling (Telegram style). Pinned exactly to 0.8.0 (May 2025, reviewed:
+  # pure Dart rendering, no I/O): 0.9-0.11 were all published within hours
+  # on 2026-11-03 after 18 months of silence, so they wait for review.
+  flutter_sticky_header: 0.8.0
+
   # Invites
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.1.0
