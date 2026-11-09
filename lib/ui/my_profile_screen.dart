@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../app.dart';
 import '../app_state/app_session.dart';
 import '../app_state/global_profile.dart';
+import 'migration_screens.dart';
 import 'widgets/avatar.dart';
 
 /// The one profile everyone in your DMs and groups sees: picture (GIF ok),
@@ -142,7 +143,23 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 8),
+                ListTile(
+                  key: const ValueKey('move-out'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.phonelink_setup),
+                  title: const Text('Przenieś na nowy telefon'),
+                  subtitle: const Text(
+                    'Rozmowy, grupy, media i wybrane pokoje prywatne',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => MigrationSendScreen(app: app),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 Text(
                   'Ten profil widzą osoby z twoich rozmów i grup. Pokoje '
                   'prywatne mają osobną tożsamość, niepowiązaną z tą.',

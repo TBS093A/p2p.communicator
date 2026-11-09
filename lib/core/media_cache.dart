@@ -71,6 +71,12 @@ class MediaCache {
     }
   }
 
+  /// Content hashes of everything cached here (for migration).
+  Future<List<String>> hashes() async => [
+    await for (final e in _dir.list())
+      if (e is File) p.basename(e.path),
+  ];
+
   Future<void> close() async {
     if (await _tmp.exists()) await _tmp.delete(recursive: true);
   }

@@ -4,9 +4,12 @@ import '../app_state/app_session.dart';
 
 /// First run: your name (one profile for all DMs and groups) and the app PIN.
 class SetupScreen extends StatefulWidget {
-  const SetupScreen({super.key, required this.onReady});
+  const SetupScreen({super.key, required this.onReady, this.onMoveHere});
 
   final ValueChanged<AppSession> onReady;
+
+  /// "I already use the app on another phone": receive everything from it.
+  final VoidCallback? onMoveHere;
 
   @override
   State<SetupScreen> createState() => _SetupScreenState();
@@ -114,6 +117,15 @@ class _SetupScreenState extends State<SetupScreen> {
                   if (_busy) ...[
                     const SizedBox(height: 16),
                     const Center(child: CircularProgressIndicator()),
+                  ],
+                  if (widget.onMoveHere != null) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      key: const ValueKey('move-receive'),
+                      onPressed: _busy ? null : widget.onMoveHere,
+                      icon: const Icon(Icons.phonelink_setup),
+                      label: const Text('Przenieś z innego telefonu'),
+                    ),
                   ],
                   const SizedBox(height: 24),
                   Text(

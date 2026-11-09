@@ -39,6 +39,11 @@ dependencies:
   # on 2026-11-03 after 18 months of silence, so they wait for review.
   flutter_sticky_header: 0.8.0
 
+  # Moving to a new phone: send the sealed file (Quick Share, Bluetooth,
+  # cable…) and pick it on the other side.
+  share_plus: ^13.3.1
+  file_selector: ^1.1.0
+
   # Invites
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.1.0
@@ -54,6 +59,9 @@ dev_dependencies:
   # DAST: feed generated images through the real ImagePicker code path
   # instead of the system gallery UI.
   image_picker_platform_interface: ^2.11.2
+  # DAST: capture the shared migration file and feed it to the file picker.
+  share_plus_platform_interface: ^7.2.0
+  file_selector_platform_interface: ^2.7.0
 
 flutter:
   uses-material-design: true

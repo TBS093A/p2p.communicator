@@ -234,6 +234,19 @@ class PinVault {
     return UnlockedRoom(slot.id, slot.key, secrets);
   }
 
+  /// Removes everything the vault holds on this phone (after moving to a
+  /// new one): every slot, data file and media, the salt, and the device
+  /// pepper in the Keystore, so nothing left on disk can be opened again.
+  /// [init] then starts a fresh, empty vault.
+  Future<void> wipe() async {
+    if (await _dir.exists()) await _dir.delete(recursive: true);
+    for (final k in [_pepperKey, _appSetKey, _failsKey, _lockUntilKey]) {
+      await _secure.delete(key: k);
+    }
+    _pepper = null;
+    await init();
+  }
+
   /// Forget a private room on this device. Its files are overwritten by a
   /// decoy of the same shape so the folder looks the same as before.
   Future<void> forget(UnlockedRoom room) async {

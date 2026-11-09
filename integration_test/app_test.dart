@@ -8,12 +8,16 @@
 //                 --target=integration_test/app_test.dart
 import 'dart:io';
 
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:p2p_communicator/core/crypto.dart';
 import 'package:p2p_communicator/main.dart' as app;
+import 'package:p2p_communicator/migration/migration_archive.dart';
+import 'package:share_plus_platform_interface/share_plus_platform_interface.dart';
 import 'package:p2p_communicator/ui/chat_screen.dart';
 import 'package:p2p_communicator/ui/home_screen.dart';
 import 'package:p2p_communicator/ui/invite_screen.dart';
@@ -26,6 +30,7 @@ import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
 
 import 'test_images.dart';
+import 'test_platforms.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -471,6 +476,130 @@ void main() {
     await t.tap(find.text('Wyprawa w Tatry'));
     await pumpUntil(t, find.text(hello));
     await backToHome(t);
+
+    // Moving to a new phone, with this emulator playing both. The old phone
+    // seals everything to the new phone's one-time key, shares the file and
+    // wipes itself; the new phone imports it under a new app PIN.
+    final share = FakeShare();
+    SharePlatform.instance = share;
+    final picker = FakeFileSelector();
+    FileSelectorPlatform.instance = picker;
+    final testKey = await Crypto.newIdentity();
+
+    await tapKey(t, 'my-profile');
+    await pumpUntil(t, find.byType(MyProfileScreen));
+    await settle(t);
+    final moveOut = find.byKey(const ValueKey('move-out'));
+    await t.scrollUntilVisible(
+      moveOut,
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(MyProfileScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tapKey(t, 'move-out');
+    final codeInput = find.byKey(const ValueKey('move-code-input'));
+    await pumpUntil(t, codeInput);
+    await settle(t);
+    await t.enterText(codeInput, MoveCode.encode(testKey.key));
+    await idle(t, const Duration(milliseconds: 600));
+    await hideKeyboard(t);
+
+    // The private room goes along only when added with its password.
+    await tapKey(t, 'move-add-private');
+    final privatePass = find.byKey(const ValueKey('move-private-password'));
+    await pumpUntil(t, privatePass);
+    await settle(t);
+    await t.enterText(privatePass, 'tajne haslo');
+    await idle(t, const Duration(milliseconds: 600));
+    await tapKey(t, 'move-private-add');
+    await settle(t);
+    await hideKeyboard(t);
+    await pumpUntil(t, find.text('Pamiętnik'));
+
+    await tapKey(t, 'move-export');
+    await pumpUntil(t, find.byKey(const ValueKey('move-wipe')));
+    await settle(t);
+    final sealed = share.last;
+    expect(sealed, isNotNull, reason: 'nothing was shared');
+
+    // Only that key opens it, and it holds the whole account.
+    final names = <String>[];
+    await for (final (name, _) in (await MigrationReader.open(
+      sealed!,
+      testKey,
+    )).entries()) {
+      names.add(name);
+    }
+    expect(names, containsAll(['app/payload', 'app/data', 'priv/0/secrets']));
+    expect(
+      names.where((n) => n.startsWith('pub/') && n.endsWith('/secrets')),
+      hasLength(greaterThanOrEqualTo(2)),
+      reason: 'the group and the DM',
+    );
+    expect(names.any((n) => n.contains('/media/')), isTrue);
+    await shot(t, '10_move_send');
+
+    await tapKey(t, 'move-wipe');
+    await pumpUntil(t, find.byKey(const ValueKey('move-wipe-confirm')));
+    await settle(t);
+    await tapKey(t, 'move-wipe-confirm');
+    await pumpUntil(t, find.byType(SetupScreen));
+    await settle(t);
+
+    // The "new phone": its code is a different one-time key, so the test
+    // passes the file on sealed to that key, as the old phone would have.
+    await tapKey(t, 'move-receive');
+    final codeText = find.byKey(const ValueKey('move-code-text'));
+    await pumpUntil(t, codeText);
+    await settle(t);
+    final newPhone = MoveCode.tryParse(
+      t.widget<SelectableText>(codeText).data!,
+    );
+    expect(newPhone, isNotNull);
+    final received = File('${sealed.parent.path}/z-nowego-telefonu.p2pc');
+    final rewrap = await MigrationWriter.create(received, newPhone!);
+    await for (final (name, data) in (await MigrationReader.open(
+      sealed,
+      testKey,
+    )).entries()) {
+      await rewrap.add(name, data);
+    }
+    await rewrap.close();
+    picker.file = received;
+
+    await tapKey(t, 'move-pick-file');
+    await pumpUntil(t, find.text('z-nowego-telefonu.p2pc'));
+    await fill(t, 'Nowy PIN aplikacji', '1357');
+    await fill(t, 'Powtórz PIN', '1357');
+    await hideKeyboard(t);
+    await tapKey(t, 'move-import');
+    await pumpUntil(t, find.byType(HomeScreen));
+    await settle(t);
+
+    // Everything is there: the group with its history, and the private room
+    // by its unchanged password.
+    await t.tap(find.textContaining('Grupy ('));
+    await settle(t);
+    await pumpUntil(t, find.text('Wyprawa w Tatry'));
+    await t.tap(find.text('Wyprawa w Tatry'));
+    await pumpUntil(t, find.text(hello));
+    await backToHome(t);
+    await privateMode(t, 'tajne haslo');
+    await pumpUntil(t, find.byType(ChatScreen));
+    await pumpUntil(t, find.text(secret));
+    await backToHome(t);
+
+    // The new PIN opens it; the old one no longer does.
+    await lock(t);
+    await enterPin(t, '2468');
+    await idle(t, const Duration(seconds: 5));
+    expect(find.byType(HomeScreen), findsNothing);
+    await enterPin(t, '1357');
+    await pumpUntil(t, find.byType(HomeScreen));
     await lock(t);
   });
 }

@@ -691,6 +691,12 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     _saveTimer = Timer(const Duration(seconds: 1), _saveCache);
   }
 
+  /// Writes the local cache now (before a migration export reads it).
+  Future<void> flush() async {
+    _saveTimer?.cancel();
+    await _saveCache();
+  }
+
   Future<void> _saveCache() async {
     final keep = messages.length > 3000
         ? messages.sublist(messages.length - 3000)

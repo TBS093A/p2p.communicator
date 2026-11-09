@@ -4,6 +4,7 @@ import 'app_state/app_session.dart';
 import 'core/ui_prefs.dart';
 import 'core/veilid_node.dart';
 import 'ui/home_screen.dart';
+import 'ui/migration_screens.dart';
 import 'ui/pin_screen.dart';
 import 'ui/setup_screen.dart';
 import 'vault/pin_vault.dart';
@@ -33,6 +34,14 @@ class AutoLock {
   static void lockNow() {
     navigatorKey.currentState?.popUntil((route) => route.isFirst);
     _onLock?.call();
+  }
+
+  /// Set by [AppGate]: back to first-run setup (after this phone was wiped).
+  static VoidCallback? _onRestart;
+
+  static void restart() {
+    navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    _onRestart?.call();
   }
 
   static void onBackground() {
@@ -138,21 +147,40 @@ class AppGate extends StatefulWidget {
 }
 
 class _AppGateState extends State<AppGate> {
-  late final Future<bool> _isSet = PinVault.instance.isAppSet();
+  Future<bool> _isSet = PinVault.instance.isAppSet();
   bool _setUpNow = false;
+
+  /// Receiving everything from the old phone. Shown in place (not pushed),
+  /// so leaving the app to accept the file does not close it.
+  bool _moving = false;
   AppSession? _app;
 
   @override
   void initState() {
     super.initState();
     AutoLock._onLock = _lock;
+    AutoLock._onRestart = _restart;
   }
 
   @override
   void dispose() {
     if (AutoLock._onLock == _lock) AutoLock._onLock = null;
+    if (AutoLock._onRestart == _restart) AutoLock._onRestart = null;
     super.dispose();
   }
+
+  void _restart() => setState(() {
+    _app = null;
+    _setUpNow = false;
+    _moving = false;
+    _isSet = PinVault.instance.isAppSet();
+  });
+
+  void _ready(AppSession a) => setState(() {
+    _setUpNow = true;
+    _moving = false;
+    _app = a;
+  });
 
   void _lock() {
     final app = _app;
@@ -182,11 +210,15 @@ class _AppGateState extends State<AppGate> {
           );
         }
         if (!snap.data! && !_setUpNow) {
+          if (_moving) {
+            return MigrationReceiveScreen(
+              onReady: _ready,
+              onCancel: () => setState(() => _moving = false),
+            );
+          }
           return SetupScreen(
-            onReady: (a) => setState(() {
-              _setUpNow = true;
-              _app = a;
-            }),
+            onReady: _ready,
+            onMoveHere: () => setState(() => _moving = true),
           );
         }
         return PinScreen(onSubmit: _unlock);

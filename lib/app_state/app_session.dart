@@ -422,6 +422,17 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     _saveTimer = Timer(const Duration(seconds: 1), _save);
   }
 
+  /// For moving to a new phone: the app slot, its data area, and every
+  /// public room, with all pending state written to disk first.
+  Future<UnlockedApp> exportState() async {
+    _saveTimer?.cancel();
+    await _save();
+    for (final r in rooms) {
+      await r.session.flush();
+    }
+    return _unlocked;
+  }
+
   Future<void> _save() async {
     final json = jsonEncode({
       'me': _me.toJson(),
