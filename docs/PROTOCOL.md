@@ -352,7 +352,26 @@ it accepted, and applies these rules:
    the header is rejected.
 5. Application messages are accepted only from current members, for the
    current epoch or one still inside the retention window (§B12).
+6. A member that sees a peer report (in `ctl`, §B8) the same `gen` and
+   `logCount` with a different `logHash` stops accepting new commits and
+   shows "group history differs". The group is then treated as a fork (F14,
+   F19).
 
+**Who vouches for `logHash`.** The header and every log subkey are DHT
+values signed by the owner key of `C_g`, and Veilid rejects writes signed
+by anyone else. Members learn `C_g` only inside E2EE messages (Welcome,
+`Move`). A storage node can therefore withhold values or serve stale ones
+(rules 3–4) but cannot forge them. `logHash` has no signature of its own:
+it is authentic because the header is signed by the owner key, and every
+commit inside the log carries the admin's MLS signature (rule 1).
+
+**Diverging histories.** What the owner signature does not stop is the
+admin itself (or whoever holds its owner key) rewriting a log position
+after some members read it, so that members end up with different logs.
+Different commits for the same epoch would eventually stop members from
+decrypting each other's messages, but that failure gives no explanation.
+Rule 6 detects it explicitly: every application message carries the
+sender's accepted `{gen, logCount, logHash}`, and members compare them.
 ### B5.3 Removal and the move to a fresh generation
 
 A removal always moves the group to generation `g + 1`, so the removed
@@ -486,8 +505,12 @@ outbox it came from):
 {"v": 2, "id": "<random 128-bit>", "seq": 17, "ts": 1731150000000,
  "t": "text", "text": "...",
  "m": {"mime", "size", "hash", "rec": [...], "key": "<media key>", ...},
- "prev": "<hash of my previous message>"}
+ "prev": "<hash of my previous message>",
+ "ctl": {"gen": 3, "logCount": 41, "logHash": "<hex>"}}
 ```
+
+* `ctl` is the control-log state the sender has accepted (§B5.2 rule 6).
+  It is inside the E2EE payload, so only members see it.
 
 * `prev` chains each sender's messages, so a withheld or swapped message is
   detected (THREAT_MODEL S9).
@@ -550,7 +573,8 @@ v2 group.
 ## B12. Failure scenarios
 
 Each row is expected behaviour, tested by the PoC on a mocked DHT (column
-"PoC"; tests in `native/mls_poc/tests/failures.rs`, all passing).
+"PoC"; tests in `native/mls_poc/tests/failures.rs`, all passing). F19 was
+added after the PoC and is tested in the implementation.
 
 | # | Scenario | Expected behaviour | PoC |
 | --- | --- | --- | --- |
@@ -572,10 +596,12 @@ Each row is expected behaviour, tested by the PoC on a mocked DHT (column
 | F16 | **Storage node drops writes** | Detected via `prev` chain, `logHash` and log counts; never silently accepted. A lost outbox write is re-sent by its writer; a lost control-log write is only waited for (repair by the admin: before v2.0) | Partly |
 | F17 | **Oversized MLS message** (Welcome for a large group) | Split across subkeys and reassembled (§B3, chunking) | Yes |
 | F18 | **Malformed data** from a member or node: invites, heads, commits, messages, chunk headers | Rejected without crashing or changing state (fuzz tests of every parser) | Yes |
+| F19 | **Diverging histories**: the admin rewrites a log position after some members read it | Members compare `ctl` in messages (§B5.2 r6); a mismatch stops new commits and shows a warning | No: test in the implementation |
 
 ## B13. Proof of concept
 
-**Status: done** in `native/mls_poc` (OpenMLS 0.9.2), except phone timings.
+**Status: done** in `native/mls_poc` (OpenMLS 0.9.2), except phone
+timings and memory use.
 Every item below passes except the last measurement: timings so far are
 from an x86-64 desktop (all operations under 3 ms) because the crate has no
 Android build yet. The findings are folded into §B3, §B4, §B5.1, §B5.2,
@@ -598,7 +624,9 @@ Scope:
 * A Flutter test that calls the same scenario through FFI.
 * The failure scenarios F1–F18 where the mock allows.
 * Measurements: sizes of KeyPackage, Welcome, commit and application
-  messages against the 32 KiB subkey limit; time per operation on a phone.
+  messages against the 32 KiB subkey limit; time per operation on a
+  physical Android phone (OpenMLS initialisation, join, epoch change,
+  restoring state after a restart) and memory use.
 
 Acceptance: every item above passes, and nothing in the app's `lib/` changes.
 
