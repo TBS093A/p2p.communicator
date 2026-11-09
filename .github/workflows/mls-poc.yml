@@ -48,6 +48,15 @@ jobs:
       - name: Format
         run: cargo fmt --manifest-path native/mls_poc/Cargo.toml --check
 
+      # osv-scanner.toml ignores libcrux-kem 0.0.9 advisories because the
+      # crate is only an optional, never-compiled dependency. Keep it so.
+      - name: libcrux-kem stays out of the build
+        run: |
+          if cargo tree --manifest-path native/mls_poc/Cargo.toml --locked --target all -e normal,build -i libcrux-kem 2>/dev/null | grep -q '^libcrux-kem v'; then
+            echo "libcrux-kem is now compiled: the osv-scanner.toml exception no longer holds" >&2
+            exit 1
+          fi
+
       - name: Clippy
         run: cargo clippy --manifest-path native/mls_poc/Cargo.toml --locked --all-targets -- -D warnings
 
