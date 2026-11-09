@@ -9,7 +9,9 @@ import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
 import 'chat_screen.dart';
 import 'my_profile_screen.dart';
+import '../update/update_service.dart';
 import 'new_room_screen.dart';
+import 'update_screen.dart';
 import 'widgets/avatar.dart';
 import 'widgets/network_dot.dart';
 
@@ -29,6 +31,13 @@ class _HomeScreenState extends State<HomeScreen> {
   RoomKind _tab = RoomKind.dm;
 
   AppSession get app => widget.app;
+
+  @override
+  void initState() {
+    super.initState();
+    // Release builds only; GitHub at most about once a day, if allowed.
+    UpdateService.instance.autoCheck();
+  }
 
   Future<void> _openChat(RoomSession session) => Navigator.of(context).push(
     MaterialPageRoute<void>(
@@ -161,6 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           body: Column(
             children: [
+              UpdateBanner(onOpen: () => _push(const UpdateScreen())),
               for (final inv in app.pendingInvites)
                 _InviteBanner(app: app, invite: inv, onOpen: _openChat),
               if (others.isNotEmpty)

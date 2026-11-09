@@ -27,6 +27,7 @@ import 'package:p2p_communicator/ui/new_room_screen.dart';
 import 'package:p2p_communicator/ui/pin_screen.dart';
 import 'package:p2p_communicator/ui/room_settings_screen.dart';
 import 'package:p2p_communicator/ui/setup_screen.dart';
+import 'package:p2p_communicator/ui/update_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
 
 import 'test_images.dart';
@@ -512,6 +513,60 @@ void main() {
     await t.tap(find.text('Wyprawa w Tatry'));
     await pumpUntil(t, find.text(hello));
     await backToHome(t);
+
+    // Updates (GitHub flavor): the installed version comes from Android, and
+    // a check against the real latest release offers it (this debug build
+    // is 0.1.0). Shared CI IPs may hit GitHub's anonymous rate limit; that
+    // must then show as a readable message, not hang or crash.
+    await tapKey(t, 'my-profile');
+    await pumpUntil(t, find.byType(MyProfileScreen));
+    await settle(t);
+    final updatesTile = find.byKey(const ValueKey('updates'));
+    await t.scrollUntilVisible(
+      updatesTile,
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(MyProfileScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tapKey(t, 'updates');
+    await pumpUntil(t, find.byType(UpdateScreen));
+    await settle(t);
+    await pumpUntil(
+      t,
+      find.text('Wersja 0.1.0'),
+      timeout: const Duration(seconds: 15),
+    );
+    expect(find.text('Źródło: wydania na GitHubie'), findsOneWidget);
+    await tapKey(t, 'update-check');
+    final offered = find.byKey(const ValueKey('update-available'));
+    final status = find.byKey(const ValueKey('update-status'));
+    await pumpUntil(
+      t,
+      find.byWidgetPredicate(
+        (w) =>
+            w.key == const ValueKey('update-available') ||
+            (w is Text &&
+                w.key == const ValueKey('update-status') &&
+                (w.data ?? '').startsWith('Nie udało się')),
+      ),
+      timeout: const Duration(minutes: 1),
+    );
+    if (offered.evaluate().isNotEmpty) {
+      expect(find.byKey(const ValueKey('update-install')), findsOneWidget);
+      await shot(t, '11_update');
+    } else {
+      final why = t.widget<Text>(status).data!;
+      expect(why, anyOf(contains('403'), contains('429')), reason: why);
+      debugPrint('[dast] update check rate-limited by GitHub: $why');
+    }
+    await t.pageBack();
+    await settle(t);
+    await t.pageBack();
+    await settle(t);
 
     // Moving to a new phone, with this emulator playing both. The old phone
     // seals everything to the new phone's one-time key, shares the file and

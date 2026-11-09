@@ -55,6 +55,17 @@ android {
         }
     }
 
+    // Where updates come from. "github" (the default, see pubspec.yaml
+    // default-flavor) updates itself from the latest GitHub release; "play"
+    // is the Google Play build: Play forbids self-updating, so it has no
+    // install permission and uses Play's in-app update flow instead. Same
+    // application id and signing key, so either can update the other.
+    flavorDimensions += "store"
+    productFlavors {
+        create("github") { dimension = "store" }
+        create("play") { dimension = "store" }
+    }
+
     buildTypes {
         release {
             // R8 shrinking stays on; proguard-rules.pro keeps the classes
@@ -81,4 +92,9 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Play in-app updates, only in the Play build (2.1.0, Google, 2023).
+    "playImplementation"("com.google.android.play:app-update:2.1.0")
 }

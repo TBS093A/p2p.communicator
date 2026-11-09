@@ -141,9 +141,31 @@ jobs:
           BUILD_NUMBER: ${{ steps.version.outputs.code }}
         run: |
           flutter build apk --release \
+            --flavor github \
             --target-platform android-arm64 \
             --build-name "$BUILD_NAME" \
             --build-number "$BUILD_NUMBER"
+
+      # Same version, Play flavor (no self-update permission, Play in-app
+      # updates), as the app bundle Google Play takes.
+      - name: Build Play app bundle (arm64)
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          BUILD_NAME: ${{ steps.version.outputs.name }}
+          BUILD_NUMBER: ${{ steps.version.outputs.code }}
+        run: |
+          flutter build appbundle --release \
+            --flavor play \
+            --target-platform android-arm64 \
+            --build-name "$BUILD_NAME" \
+            --build-number "$BUILD_NUMBER"
+
+      - name: Check 16 KB page alignment
+        run: |
+          bash .github/scripts/check_16k.sh build/app/outputs/flutter-apk/app-github-release.apk
+          bash .github/scripts/check_16k.sh build/app/outputs/bundle/playRelease/app-play-release.aab
 
       - name: Prepare assets
         id: assets
@@ -151,15 +173,53 @@ jobs:
           BUILD_NAME: ${{ steps.version.outputs.name }}
         run: |
           apk="p2p-communicator-${BUILD_NAME}-arm64.apk"
-          cp build/app/outputs/flutter-apk/app-release.apk "$apk"
+          cp build/app/outputs/flutter-apk/app-github-release.apk "$apk"
           sha256sum "$apk" > "$apk.sha256"
           echo "apk=$apk" >> "$GITHUB_OUTPUT"
+          aab="p2p-communicator-${BUILD_NAME}-play.aab"
+          cp build/app/outputs/bundle/playRelease/app-play-release.aab "$aab"
+          echo "aab=$aab" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-apk
           path: ${{ steps.assets.outputs.apk }}
           retention-days: 7
+
+      # Not attached to the GitHub release (an .aab cannot be installed);
+      # kept as an artifact for a manual upload to Play Console.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: play-aab
+          path: ${{ steps.assets.outputs.aab }}
+          retention-days: 30
+
+      # Once the app exists in Play Console (the first upload is manual) and
+      # the PLAY_SERVICE_ACCOUNT_JSON secret is set, each release also goes to
+      # Play's internal testing track. Repository variable PLAY_RELEASE_STATUS:
+      # "draft" (default; required while the app is still a draft in Play
+      # Console) or "completed".
+      - name: Is Google Play set up
+        id: play
+        env:
+          PLAY_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$PLAY_JSON" ]; then
+            echo "configured=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=no" >> "$GITHUB_OUTPUT"
+            echo "PLAY_SERVICE_ACCOUNT_JSON not set: skipping the Play upload."
+          fi
+
+      - name: Upload to Google Play (internal testing)
+        if: steps.play.outputs.configured == 'yes'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.p2pcommunicator.p2p_communicator
+          releaseFiles: ${{ steps.assets.outputs.aab }}
+          track: internal
+          status: ${{ vars.PLAY_RELEASE_STATUS || 'draft' }}
 
       - name: Publish GitHub release
         env:

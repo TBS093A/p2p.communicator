@@ -44,6 +44,10 @@ dependencies:
   share_plus: ^13.3.1
   file_selector: ^1.1.0
 
+  # SHA-256 of a downloaded update (dart-lang; was already in the lock as a
+  # transitive dependency).
+  crypto: ^3.0.7
+
   # Invites
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.1.0
@@ -65,3 +69,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # Android flavors: "github" (self-updating from GitHub releases) and
+  # "play" (Google Play). Plain `flutter run/build` means github.
+  default-flavor: github

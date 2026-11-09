@@ -110,6 +110,36 @@ your own outbox, images in encrypted DHT records like any other media.
 NFC would only be fast enough for the key, which the QR already carries, so
 it is not used.
 
+## Updates
+
+Two builds of the same app (Android product flavors, same application id
+and signing key):
+
+| | `github` (APK from Releases) | `play` (Google Play) |
+|---|---|---|
+| Where updates come from | the latest GitHub release | Google Play |
+| Check | about once a day (can be turned off), or *Mój profil → Aktualizacje → Sprawdź teraz* | Play's in-app update API |
+| Install | downloads the arm64 APK, checks it against the release's SHA-256 file and that it is the same app, newer and signed with the same key, then Android asks you to confirm | Play's own update screen |
+| Extra permission | `REQUEST_INSTALL_PACKAGES` (you also allow "install from this source" once) | none (Play forbids self-updating) |
+
+The GitHub check is an anonymous request to `api.github.com`; GitHub sees
+your IP address, nothing else is sent. Your chats stay through an update.
+
+### Publishing on Google Play
+
+CI builds both: the signed `github` APK goes to the GitHub release, and the
+`play` app bundle (`.aab`) is kept as the `play-aab` workflow artifact. It
+is uploaded to Play's internal testing track automatically once the
+`PLAY_SERVICE_ACCOUNT_JSON` secret is set (the first upload is manual).
+
+Google Play requires 64-bit native libraries aligned to **16 KB pages**.
+Veilid's Rust library used to be linked with 4 KB pages; CI now links it
+with `-z max-page-size=16384` (via `~/.cargo/config.toml`, because Flutter
+build hooks only receive `HOME`, not `CARGO_*` variables) and fails a
+release whose libraries are not aligned (`.github/scripts/check_16k.sh`).
+For a local Play build, add the same lines to your `~/.cargo/config.toml`
+(see `.github/actions/setup/action.yml`).
+
 ## CI/CD (GitHub Actions)
 
 | Workflow | When | What it does |
@@ -209,7 +239,9 @@ lib/
   room/invite.dart          invite (QR / text)
   room/message.dart         message model
   room/room_style.dart      room meta, member profiles, palette, :emoji: parser
-  core/ui_prefs.dart        app-wide light/dark choice
+  core/ui_prefs.dart        app-wide light/dark choice, update checks
+  update/                   versions, GitHub release check, download, install
+  migration/                moving everything to a new phone
   ui/                       PIN pad, new room, chat, invite, QR scanner,
                             room settings, profile, members
 ```
