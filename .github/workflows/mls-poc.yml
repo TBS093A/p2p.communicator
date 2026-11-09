@@ -1,0 +1,75 @@
+name: mls-poc
+
+# v2 proof of concept (docs/PROTOCOL.md B13): OpenMLS over a mocked DHT,
+# the failure scenarios F1–F18, and the same scenario called from Flutter
+# through FFI. Runs only when the PoC changes.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "native/mls_poc/**"
+      - ".github/workflows/mls-poc.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mls-poc-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: MLS PoC (Rust + FFI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          cargo --version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/mls_poc/target
+          key: mls-poc-${{ runner.os }}-${{ hashFiles('native/mls_poc/Cargo.lock') }}
+          restore-keys: |
+            mls-poc-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --manifest-path native/mls_poc/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path native/mls_poc/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Tests (scenario + F1–F18)
+        run: cargo test --manifest-path native/mls_poc/Cargo.toml --locked
+
+      - name: Sizes and timings (release build)
+        run: |
+          {
+            echo "## MLS PoC measurements (CI runner, release build)"
+            echo '```'
+            cargo test --manifest-path native/mls_poc/Cargo.toml --locked --release --test minimal -- --nocapture | grep -E '^(size|time)'
+            cargo test --manifest-path native/mls_poc/Cargo.toml --locked --release --test failures f17 -- --nocapture | grep -E '^Welcome'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the FFI library
+        run: cargo build --manifest-path native/mls_poc/Cargo.toml --locked
+
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: host-debug
+
+      - name: Flutter → Rust through FFI
+        run: flutter test native/mls_poc/flutter_test

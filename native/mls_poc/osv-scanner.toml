@@ -1,0 +1,23 @@
+# Exceptions for the MLS proof of concept's Rust dependencies. Each one is
+# time-limited and must be re-checked when it expires; anything else found
+# in native/mls_poc/Cargo.lock fails the SCA job.
+
+[[IgnoredVulns]]
+# crypto-bigint 0.5.5: timing variability in "constant-time" operations.
+# Pulled in only through elliptic-curve 0.13 (p256 / p384 / k256), which
+# openmls_rust_crypto and hpke-rs-rust-crypto always link for the NIST
+# ciphersuites. The PoC uses only 0x0003 (X25519 / Ed25519 /
+# ChaCha20-Poly1305, curve25519-dalek) and refuses groups with any other
+# ciphersuite, so this code is never executed. No fixed version is
+# reachable: elliptic-curve 0.13 requires crypto-bigint 0.5.
+# Before v2 ships: a provider without the NIST curves (e.g. libcrux) or an
+# OpenMLS release on elliptic-curve 0.14.
+id = "RUSTSEC-2026-0387"
+ignoreUntil = 2027-02-09T00:00:00Z
+reason = "Only in NIST-curve code paths; the PoC uses and enforces ciphersuite 0x0003 (X25519/Ed25519). No compatible fixed version."
+
+[[IgnoredVulns]]
+# proc-macro-error2: unmaintained (informational, compile-time proc macro).
+id = "RUSTSEC-2026-0173"
+ignoreUntil = 2027-02-09T00:00:00Z
+reason = "Unmaintained notice for a build-time proc-macro dependency; no runtime code."
