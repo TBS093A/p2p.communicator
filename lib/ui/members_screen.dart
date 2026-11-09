@@ -38,11 +38,18 @@ class MembersScreen extends StatelessWidget {
                   ? null
                   : app?.directory[key]?.presence;
               final sent = session.messages.where((m) => m.author == o).length;
+              final global = session.globalNameOf(o);
               return ListTile(
+                key: ValueKey('member-$o'),
                 leading: Avatar.member(session, o),
                 title: Text(me ? '${p.name} (ty)' : p.name),
                 subtitle: Text(
-                  [?presence?.label, 'wiadomości: $sent'].join(' · '),
+                  [
+                    if (global != null && global != p.name)
+                      'globalnie: $global',
+                    ?presence?.label,
+                    'wiadomości: $sent',
+                  ].join(' · '),
                 ),
               );
             },

@@ -101,7 +101,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   controller: _name,
                   maxLength: 40,
                   decoration: InputDecoration(
-                    labelText: 'Nazwa w tym pokoju',
+                    labelText: 'Pseudonim w tym pokoju',
                     suffixIcon: IconButton(
                       tooltip: 'Zapisz nazwę',
                       icon: const Icon(Icons.check),

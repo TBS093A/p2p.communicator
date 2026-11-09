@@ -227,4 +227,14 @@ void main() {
       );
     }
   });
+
+  test('nicknames: trimmed, blank means none, cut on whole characters', () {
+    expect(cleanNick('  Marta z Tatr  '), 'Marta z Tatr');
+    expect(cleanNick('   '), isNull);
+    expect(cleanNick(null), isNull);
+    expect(cleanNick(42), isNull, reason: 'garbage from another head');
+    expect(cleanNick('a' * 50), 'a' * 40);
+    // Emoji are never cut in half (one 🏔️ is several UTF-16 units).
+    expect(cleanNick('🏔️' * 5, max: 3), '🏔️🏔️🏔️');
+  });
 }

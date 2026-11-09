@@ -1,4 +1,5 @@
 import 'package:flutter/painting.dart';
+import 'package:flutter/widgets.dart' show StringCharacters;
 
 import 'message.dart';
 
@@ -199,6 +200,17 @@ class MemberProfile {
         : null,
     color: j['color'] as int?,
   );
+}
+
+/// A nickname as typed or as another member's head carries it: trimmed,
+/// cut to [max] characters (whole characters, emoji included), blank or not
+/// a string = no nickname.
+String? cleanNick(Object? raw, {int max = 40}) {
+  if (raw is! String) return null;
+  final s = raw.trim();
+  if (s.isEmpty) return null;
+  final chars = s.characters;
+  return chars.length > max ? chars.take(max).toString().trimRight() : s;
 }
 
 /// Quick presets in the RGB picker (any RGB value is allowed).
