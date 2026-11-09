@@ -18,6 +18,7 @@ import 'blob_store.dart';
 import 'dht.dart';
 import 'invite.dart';
 import 'message.dart';
+import 'outbox_cursor.dart';
 import 'room_protocol.dart';
 import 'room_style.dart';
 
@@ -56,7 +57,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   final Map<String, double> progress = {};
 
   final _ids = <String>{};
-  final _lastSeen = <String, int>{}; // outbox key -> messages read
+  final _cursors = <String, OutboxCursor>{}; // outbox key -> read position
   final _watched = <String, RecordKey>{}; // other members' outboxes
   final _profileKeys = <String, String>{}; // outbox -> global profile key
   final _nicks = <String, String>{}; // outbox -> nickname in this room
@@ -329,28 +330,46 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       _scheduleSave();
     }
 
-    var from = _lastSeen[outbox] ?? 0;
-    if (count - from > RoomLayout.outboxRing) {
-      from = count - RoomLayout.outboxRing; // older ones were overwritten
-    }
+    final cursor = _cursors.putIfAbsent(outbox, OutboxCursor.new);
+    final due = cursor.due(count, RoomLayout.outboxRing);
+    final missed = <int>{};
     var added = false;
-    for (var i = from; i < count; i++) {
-      final j = await Dht.getJson(key, 1 + i % RoomLayout.outboxRing);
-      if (j == null) continue;
+    for (final i in due) {
+      final Map<String, dynamic>? j;
+      try {
+        j = await Dht.getJson(key, 1 + i % RoomLayout.outboxRing);
+      } on VeilidAPIException catch (e) {
+        debugPrint('outbox ${e.runtimeType} at #$i, retrying later');
+        missed.add(i);
+        continue;
+      }
+      // Not propagated to the replica we asked yet: try again next sync.
+      if (j == null) {
+        missed.add(i);
+        continue;
+      }
       final ChatMessage msg;
       try {
         msg = ChatMessage.fromWire(outbox, j);
       } on FormatException {
         continue; // a type from a newer app version
       }
-      if (msg.seq != i) continue; // slot already reused by a newer message
+      final seq = msg.seq;
+      if (seq == null) continue; // malformed: nothing to wait for
+      if (seq < i) {
+        missed.add(i); // still the previous lap's message: not propagated yet
+        continue;
+      }
+      if (seq > i) continue; // slot already reused by a newer message
       if (msg.type.hidden) {
         if (_ids.add(msg.id)) app?.onHiddenMessage(this, msg);
         continue;
       }
       added |= _insert(msg);
     }
-    _lastSeen[outbox] = count;
+    final hadMissing = cursor.missing.isNotEmpty;
+    cursor.settle(count, due, missed);
+    if (cursor.missing.isNotEmpty || hadMissing) _scheduleSave();
     if (added) {
       notifyListeners();
       _scheduleSave();
@@ -772,7 +791,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       'meta': meta.toJson(),
       'profiles': {for (final e in profiles.entries) e.key: e.value.toJson()},
       'nicks': _nicks,
-      'lastSeen': _lastSeen,
+      'lastSeen': {for (final e in _cursors.entries) e.key: e.value.toJson()},
       'myCount': _myCount,
       'messages': [for (final m in keep) m.toCache()],
     });
@@ -816,7 +835,9 @@ class RoomSession extends ChangeNotifier implements MediaSource {
           );
         }
       }
-      _lastSeen.addAll((j['lastSeen'] as Map).cast<String, int>());
+      for (final e in (j['lastSeen'] as Map).entries) {
+        _cursors[e.key as String] = OutboxCursor.fromJson(e.value);
+      }
       _myCount = j['myCount'] as int? ?? 0;
       for (final m in (j['messages'] as List).cast<Map<String, dynamic>>()) {
         _insert(ChatMessage.fromCache(m));
