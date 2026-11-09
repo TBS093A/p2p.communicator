@@ -21,6 +21,7 @@ import 'message.dart';
 import 'outbox_cursor.dart';
 import 'room_protocol.dart';
 import 'room_style.dart';
+import 'sync_gate.dart';
 
 class StyleException implements Exception {
   StyleException(this.message);
@@ -81,6 +82,15 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   bool _connected = false;
   Future<void> _sendChain = Future.value();
   Future<void>? _syncing;
+  Future<void> _rosterChain = Future.value();
+  final _fresh = FreshnessGate();
+  final _backoff = RetryBackoff();
+  final _retryTimers = <String, Timer>{}; // outbox -> pending quick retry
+  // One sync per member at a time; a request arriving meanwhile is kept
+  // (newest notified value wins) and run right after, never dropped.
+  final _memberRuns = <String, Future<void>>{};
+  final _memberAgain = <String, ValueData?>{};
+  final _memberAgainExpect = <String, bool>{};
   StreamSubscription<VeilidUpdate>? _sub;
   Timer? _poll;
   Timer? _saveTimer;
@@ -214,6 +224,10 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     if (_closed) return;
     _closed = true;
     _poll?.cancel();
+    for (final t in _retryTimers.values) {
+      t.cancel();
+    }
+    _retryTimers.clear();
     await _sub?.cancel();
     _saveTimer?.cancel();
     app?.directory.removeListener(notifyListeners);
@@ -241,14 +255,38 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   void _onUpdate(VeilidUpdate u) {
     if (u is! VeilidUpdateValueChange || _closed) return;
     if (u.key.opaque == _rosterKey.opaque) {
-      unawaited(_sync(roster: true));
+      _rosterChain = _rosterChain
+          .then((_) => _rosterChanged(u))
+          .catchError((Object e) => debugPrint('roster update: $e'));
       return;
     }
     for (final e in _watched.entries) {
       if (e.value.opaque == u.key.opaque) {
-        unawaited(_syncMember(e.key, e.value));
+        // The notification usually carries the new head itself: use it and
+        // save a network read (which could also hit a lagging replica).
+        unawaited(
+          _syncMember(e.key, e.value, update: u.value, expectNew: true),
+        );
         return;
       }
+    }
+  }
+
+  /// A roster change: read only the subkeys that changed, and sync only
+  /// members that just appeared, instead of the whole room.
+  Future<void> _rosterChanged(VeilidUpdateValueChange u) async {
+    if (_closed) return;
+    final changed = <int>{
+      for (final r in u.subkeys)
+        for (var i = r.low; i <= r.high && i < RoomLayout.rosterSubkeys; i++) i,
+    };
+    final added = await _refreshRoster(
+      only: changed.isEmpty ? null : changed,
+      meta0: changed.contains(0) ? u.value : null,
+    );
+    for (final outbox in added) {
+      final key = _watched[outbox];
+      if (key != null) unawaited(_syncMember(outbox, key));
     }
   }
 
@@ -268,16 +306,35 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     }();
   }
 
-  Future<void> _refreshRoster() async {
-    final metaJson = await Dht.getJson(_rosterKey, 0);
-    if (metaJson != null) {
-      meta = RoomMeta.fromJson(metaJson, fallbackName: meta.name);
+  /// Applies the room look from subkey 0 unless it is older than what is
+  /// shown already.
+  void _applyMeta(ValueData v) {
+    if (_fresh.check(_rosterKey.toString(), 0, v.seq) == Freshness.older) {
+      return;
+    }
+    final j = Dht.decodeJson(v.data);
+    if (j != null) meta = RoomMeta.fromJson(j, fallbackName: meta.name);
+  }
+
+  /// Reads the roster: all subkeys, or [only] those (subkey 0 taken from
+  /// [meta0] when the change notification carried it). Returns the outboxes
+  /// that were not watched before.
+  Future<List<String>> _refreshRoster({
+    Set<int>? only,
+    ValueData? meta0,
+  }) async {
+    final wanted =
+        only ?? {for (var i = 0; i < RoomLayout.rosterSubkeys; i++) i};
+    if (wanted.contains(0)) {
+      final v = meta0 ?? await Dht.getValue(_rosterKey, 0);
+      if (v != null) _applyMeta(v);
     }
     final entries = <Map<String, dynamic>?>[];
     await Future.wait([
-      for (var i = 1; i < RoomLayout.rosterSubkeys; i++)
-        Dht.getJson(_rosterKey, i).then(entries.add),
+      for (final i in wanted)
+        if (i > 0) Dht.getJson(_rosterKey, i).then(entries.add),
     ]);
+    final added = <String>[];
     for (final e in entries.whereType<Map<String, dynamic>>()) {
       final outbox = e['o'] as String?;
       if (outbox == null || outbox == myOutbox) continue;
@@ -299,15 +356,87 @@ class RoomSession extends ChangeNotifier implements MediaSource {
           subkeys: [const ValueSubkeyRange(low: 0, high: 0)],
         );
         _watched[outbox] = key;
+        added.add(outbox);
       } on VeilidAPIException catch (err) {
         debugPrint('cannot open outbox of ${e['n']}: $err');
       }
     }
     notifyListeners();
+    return added;
   }
 
-  Future<void> _syncMember(String outbox, RecordKey key) async {
-    final head = await Dht.getJson(key, 0);
+  /// Syncs one member. At most one run per member at a time; a request
+  /// arriving meanwhile runs right after (with the newest notified head),
+  /// so a notification is never lost to an overlapping sync.
+  Future<void> _syncMember(
+    String outbox,
+    RecordKey key, {
+    ValueData? update,
+    bool expectNew = false,
+  }) {
+    final running = _memberRuns[outbox];
+    if (running != null) {
+      final prev = _memberAgain[outbox];
+      if (!_memberAgain.containsKey(outbox) ||
+          (update != null && (prev == null || update.seq > prev.seq))) {
+        _memberAgain[outbox] = update;
+      }
+      _memberAgainExpect[outbox] =
+          (_memberAgainExpect[outbox] ?? false) || expectNew;
+      return running;
+    }
+    final run = () async {
+      try {
+        var u = update;
+        var expect = expectNew;
+        while (true) {
+          await _syncMemberOnce(outbox, key, u, expect);
+          if (_closed || !_memberAgain.containsKey(outbox)) break;
+          u = _memberAgain.remove(outbox);
+          expect = _memberAgainExpect.remove(outbox) ?? false;
+        }
+      } on Object catch (e) {
+        debugPrint('member sync failed: $e');
+      } finally {
+        // This run itself; it never completes with an error.
+        _memberRuns.remove(outbox)?.ignore();
+      }
+    }();
+    _memberRuns[outbox] = run;
+    return run;
+  }
+
+  /// Retries a member soon (1, 2, 4 s) when something it announced has not
+  /// reached the replicas we read yet, instead of waiting for the 20 s poll.
+  void _retrySoon(String outbox, RecordKey key) {
+    if (_closed || _retryTimers.containsKey(outbox)) return;
+    final delay = _backoff.next(outbox);
+    if (delay == null) return; // the slow poll takes over
+    _retryTimers[outbox] = Timer(delay, () {
+      _retryTimers.remove(outbox);
+      if (!_closed) unawaited(_syncMember(outbox, key, expectNew: true));
+    });
+  }
+
+  Future<void> _syncMemberOnce(
+    String outbox,
+    RecordKey key,
+    ValueData? update,
+    bool expectNew,
+  ) async {
+    // A notification may carry no value (only the subkey list): read it.
+    final v = update ?? await Dht.getValue(key, 0);
+    if (v == null) {
+      if (expectNew) _retrySoon(outbox, key);
+      return;
+    }
+    final fresh = _fresh.check(outbox, 0, v.seq);
+    if (fresh == Freshness.older) {
+      // A late notification or a lagging replica: never roll back.
+      if (expectNew) _retrySoon(outbox, key);
+      return;
+    }
+    final head = Dht.decodeJson(v.data);
     if (head == null) return;
     final count = head['count'] as int? ?? 0;
     // Public rooms show the global profile; the head only carries a name
@@ -370,6 +499,15 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     final hadMissing = cursor.missing.isNotEmpty;
     cursor.settle(count, due, missed);
     if (cursor.missing.isNotEmpty || hadMissing) _scheduleSave();
+    if (cursor.missing.isNotEmpty) {
+      // Slots the head announced but our replica does not have yet.
+      _retrySoon(outbox, key);
+    } else if (expectNew && update == null && fresh == Freshness.same) {
+      // Notified, but the head we read was not newer: lagging replica.
+      _retrySoon(outbox, key);
+    } else if (fresh == Freshness.newer || added) {
+      _backoff.reset(outbox);
+    }
     if (added) {
       notifyListeners();
       _scheduleSave();
