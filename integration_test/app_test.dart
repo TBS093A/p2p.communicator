@@ -183,14 +183,24 @@ void main() {
 
   /// Waits until a settings screen's save (upload + DHT write) is done,
   /// i.e. its progress bar is gone again, and no error was shown.
+  ///
+  /// Busy screens also block input (AbsorbPointer). On a long, scrolled list
+  /// the progress bar at its top may not be built at all, so the blocked
+  /// input is what really tells that the save is still running.
   Future<void> waitSaved(WidgetTester t) async {
+    final blocked = find.byWidgetPredicate(
+      (w) => w is AbsorbPointer && w.absorbing,
+    );
+    bool busy() =>
+        find.byType(LinearProgressIndicator).evaluate().isNotEmpty ||
+        blocked.evaluate().isNotEmpty;
     await idle(t, const Duration(milliseconds: 400));
     final end = DateTime.now().add(const Duration(minutes: 3));
-    while (find.byType(LinearProgressIndicator).evaluate().isNotEmpty &&
-        DateTime.now().isBefore(end)) {
+    while (busy() && DateTime.now().isBefore(end)) {
       await idle(t, const Duration(milliseconds: 250));
     }
     expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(blocked, findsNothing, reason: 'screen still busy');
     expect(find.byType(SnackBar), findsNothing, reason: 'save failed');
   }
 
