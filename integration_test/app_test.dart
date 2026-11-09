@@ -222,6 +222,15 @@ void main() {
   Finder avatarImage() =>
       find.descendant(of: find.byType(Avatar), matching: find.byType(Image));
 
+  /// Waits for the uploaded picture at the top of a settings list. Tapping
+  /// the upload button (ensureVisible) can scroll a long list until the
+  /// picture above it is no longer built, so scroll back up first.
+  Future<void> topAvatarShows(WidgetTester t) async {
+    await t.drag(find.byType(ListView).first, const Offset(0, 1500));
+    await settle(t);
+    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+  }
+
   Future<void> lock(WidgetTester t) async {
     await settle(t);
     await t.tap(find.byTooltip('Zablokuj'));
@@ -292,7 +301,7 @@ void main() {
     gallery.queue.add(roomPicture);
     await tapKey(t, 'room-avatar-upload');
     await waitSaved(t);
-    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+    await topAvatarShows(t);
 
     await pickColor(t, 'room-bg-edit', '1B2A41');
     await pumpUntil(t, find.textContaining('#1B2A41'));
@@ -348,7 +357,7 @@ void main() {
     gallery.queue.add(myPicture);
     await tapKey(t, 'profile-avatar-upload');
     await waitSaved(t);
-    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+    await topAvatarShows(t);
     await tapKey(t, 'status-away');
     await waitSaved(t);
     await t.drag(find.byType(ListView).first, const Offset(0, 1500));
