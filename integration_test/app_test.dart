@@ -206,7 +206,9 @@ void main() {
     final gallery = FakeImagePicker();
     ImagePickerPlatform.instance = gallery;
     final roomPicture = await mountainAvatar();
-    final myPicture = await portraitAvatar();
+    // Animated on purpose: GIF avatars and backgrounds must stay GIFs.
+    final myPicture = await portraitGif();
+    final chatBackground = await snowfallGif();
     final partyEmoji = await partyGif();
 
     app.main();
@@ -258,6 +260,11 @@ void main() {
     await pickColor(t, 'room-bg-edit', '1B2A41');
     await pumpUntil(t, find.textContaining('#1B2A41'));
 
+    gallery.queue.add(chatBackground);
+    await tapKey(t, 'room-bgimg-upload');
+    await waitSaved(t);
+    await pumpUntil(t, find.byKey(const ValueKey('room-bgimg-dim')));
+
     gallery.queue.add(partyEmoji); // party.gif -> suggested code :party:
     await tapKey(t, 'emoji-add');
     await pumpUntil(t, find.byKey(const ValueKey('emoji-confirm')));
@@ -294,6 +301,15 @@ void main() {
     }
     // Rich text with an inline image: match the plain part only.
     await pumpUntil(t, find.textContaining('Jedziemy!', findRichText: true));
+    // The animated background is drawn behind the conversation.
+    await pumpUntil(
+      t,
+      find.descendant(
+        of: find.byKey(const ValueKey('chat-background-image')),
+        matching: find.byType(Image),
+      ),
+      timeout: const Duration(seconds: 30),
+    );
     await hideKeyboard(t);
     await shot(t, '06_chat_styled');
 

@@ -93,6 +93,19 @@ void main() {
       expect(old.copyWith(clearBackground: true).accent, isNull);
     });
 
+    test('background image and dim round-trip, clamp and reset', () {
+      final m = RoomMeta(name: 'x', backgroundImage: _ref('bg'), dim: 45);
+      final back = RoomMeta.fromJson(m.toJson());
+      expect(back.backgroundImage!.hash, 'bg');
+      expect(back.backgroundImage!.mime, 'image/gif');
+      expect(back.effectiveDim, 45);
+      expect(RoomMeta(name: 'x').effectiveDim, RoomMeta.defaultDim);
+      expect(RoomMeta(name: 'x', dim: 99).effectiveDim, RoomMeta.maxDim);
+      final cleared = back.copyWith(clearBackgroundImage: true);
+      expect(cleared.backgroundImage, isNull);
+      expect(back.copyWith(name: 'y').backgroundImage!.hash, 'bg');
+    });
+
     test('background can be reset to the default', () {
       final m = RoomMeta(name: 'x', background: 0xFF123456);
       expect(m.copyWith(clearBackground: true).background, isNull);

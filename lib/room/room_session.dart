@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import 'package:veilid/veilid.dart';
 
 import '../core/crypto.dart';
+import '../core/image_prep.dart';
 import '../core/veilid_node.dart';
 import '../vault/pin_vault.dart';
 import 'blob_store.dart';
@@ -42,7 +43,6 @@ class RoomSession extends ChangeNotifier {
   /// before [open] finishes (the chat app bar renders right away).
   late RoomMeta meta = RoomMeta(name: room.secrets.roomName);
 
-  static const maxAvatarBytes = 200 * 1024;
   static const maxEmojiBytes = 512 * 1024;
 
   /// Upload/download progress per message id, 0..1.
@@ -404,7 +404,7 @@ class RoomSession extends ChangeNotifier {
   }) async {
     final ref = avatar == null
         ? null
-        : await _uploadSmall(avatar, maxAvatarBytes, 'Awatar');
+        : await _uploadImage(avatar, ImageUse.avatar);
     profiles[myOutbox] = myProfile.copyWith(
       name: name?.trim().isEmpty == true ? null : name?.trim(),
       avatar: ref,
@@ -428,10 +428,16 @@ class RoomSession extends ChangeNotifier {
     bool clearAvatar = false,
     int? background,
     bool clearBackground = false,
+    File? backgroundImage,
+    bool clearBackgroundImage = false,
+    int? dim,
   }) async {
     final ref = avatar == null
         ? null
-        : await _uploadSmall(avatar, maxAvatarBytes, 'Awatar');
+        : await _uploadImage(avatar, ImageUse.avatar);
+    final bgRef = backgroundImage == null
+        ? null
+        : await _uploadImage(backgroundImage, ImageUse.background);
     await _editMeta(
       (m) => m.copyWith(
         name: name?.trim().isEmpty == true ? null : name?.trim(),
@@ -439,6 +445,9 @@ class RoomSession extends ChangeNotifier {
         clearAvatar: clearAvatar,
         background: background,
         clearBackground: clearBackground,
+        backgroundImage: bgRef,
+        clearBackgroundImage: clearBackgroundImage,
+        dim: dim?.clamp(0, RoomMeta.maxDim),
       ),
     );
   }
@@ -487,13 +496,24 @@ class RoomSession extends ChangeNotifier {
     );
   }
 
-  /// Stores a small image (avatar, emoji) in the DHT and locally.
+  /// Stores a small image (emoji, as picked) in the DHT and locally.
   Future<MediaRef> _uploadSmall(File file, int maxBytes, String what) async {
     final bytes = await file.readAsBytes();
     if (bytes.length > maxBytes) {
       throw StyleException('$what jest za duży (max ${maxBytes ~/ 1024} KB)');
     }
-    final ref = await BlobStore.upload(bytes, mime: _imageMime(file.path));
+    return _uploadBytes(bytes, _imageMime(file.path));
+  }
+
+  /// Avatar or background: GIFs kept as-is (animated), static images
+  /// scaled down first (see [ImagePrep]).
+  Future<MediaRef> _uploadImage(File file, ImageUse use) async {
+    final prepared = await ImagePrep.prepare(await file.readAsBytes(), use);
+    return _uploadBytes(prepared.bytes, prepared.mime);
+  }
+
+  Future<MediaRef> _uploadBytes(Uint8List bytes, String mime) async {
+    final ref = await BlobStore.upload(bytes, mime: mime);
     await _storeMedia(ref.hash, bytes);
     return ref;
   }

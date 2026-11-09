@@ -18,6 +18,7 @@ import 'profile_screen.dart';
 import 'room_settings_screen.dart';
 import 'widgets/avatar.dart';
 import 'widgets/emoji_text.dart';
+import 'widgets/media_image.dart';
 import 'widgets/message_bubble.dart';
 import 'widgets/network_dot.dart';
 
@@ -392,7 +393,8 @@ class _ChatScreenState extends State<ChatScreen> {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());
           }
-          return Column(
+          final bgImage = _session.meta.backgroundImage;
+          final conversation = Column(
             children: [
               ValueListenableBuilder<String?>(
                 valueListenable: _session.networkError,
@@ -409,8 +411,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   builder: (context, _) {
                     final msgs = _session.messages;
                     if (msgs.isEmpty) {
-                      return const Center(
-                        child: Text('Brak wiadomości. Zaproś kogoś z menu.'),
+                      return Center(
+                        child: Text(
+                          'Brak wiadomości. Zaproś kogoś z menu.',
+                          style: bgImage == null
+                              ? null
+                              : const TextStyle(
+                                  color: Colors.white,
+                                  shadows: [Shadow(blurRadius: 4)],
+                                ),
+                        ),
                       );
                     }
                     return ListView.builder(
@@ -429,7 +439,35 @@ class _ChatScreenState extends State<ChatScreen> {
                   },
                 ),
               ),
-              _composer(context),
+              // Over a picture the composer gets its own bar to stay legible.
+              bgImage == null
+                  ? _composer(context)
+                  : Material(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surface.withAlpha(235),
+                      child: _composer(context),
+                    ),
+            ],
+          );
+          if (bgImage == null) return conversation;
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: MediaImage(
+                  key: const ValueKey('chat-background-image'),
+                  session: _session,
+                  ref: bgImage,
+                ),
+              ),
+              Positioned.fill(
+                child: ColoredBox(
+                  color: Colors.black.withAlpha(
+                    (_session.meta.effectiveDim * 255 / 100).round(),
+                  ),
+                ),
+              ),
+              conversation,
             ],
           );
         },

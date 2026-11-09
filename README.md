@@ -29,8 +29,13 @@ and refreshed on the `screenshots` branch only when the UI changes.
 Rooms are customizable, Discord-style, and every member sees the same thing:
 
 * **Room look** (shared, any member can change it): an **uploaded room
-  picture**, the name, the **chat background color** (any RGB value: sliders
-  or HEX), and a **custom emoji pack** of up to 80 images. Animated
+  picture** (GIF allowed), the name, the **chat background**: any RGB color
+  (sliders or HEX) and/or a **picture or animated GIF** with adjustable
+  dimming, and a **custom emoji pack** of up to 80 images.
+* **GIFs everywhere**: room pictures, profile pictures and backgrounds can be
+  animated GIF/WebP; they are stored as-is so the animation survives. Static
+  photos are scaled down on the phone first (avatars 256×256, backgrounds
+  1440 px), so a 12 MP photo costs tens of KB on the network. Animated
   **GIF/WebP emoji** play inline; type `:code:` or pick from the emoji
   button. A message of only 1–3 emoji is shown large.
 * **Your profile per room**: an uploaded picture, display name and **bubble

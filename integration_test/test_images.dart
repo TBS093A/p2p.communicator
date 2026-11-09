@@ -69,17 +69,22 @@ Future<String> mountainAvatar() async {
   return _write('tatry.png', Uint8List.fromList(img.encodePng(im)));
 }
 
-/// 256×256 PNG portrait silhouette on a warm background.
-Future<String> portraitAvatar() async {
+img.Image _portrait({required bool eyesOpen}) {
   const s = 256;
   final im = img.Image(width: s, height: s);
   img.fill(im, color: _rgb(255, 183, 77));
   final hair = _rgb(93, 64, 55);
+  final eye = _rgb(60, 40, 30);
   img.fillCircle(im, x: 128, y: 300, radius: 120, color: _rgb(0, 121, 107));
   img.fillCircle(im, x: 128, y: 104, radius: 66, color: hair);
   img.fillCircle(im, x: 128, y: 126, radius: 54, color: _rgb(255, 224, 189));
-  img.fillCircle(im, x: 108, y: 126, radius: 6, color: _rgb(60, 40, 30));
-  img.fillCircle(im, x: 148, y: 126, radius: 6, color: _rgb(60, 40, 30));
+  for (final x in [108, 148]) {
+    if (eyesOpen) {
+      img.fillCircle(im, x: x, y: 126, radius: 6, color: eye);
+    } else {
+      img.fillRect(im, x1: x - 7, y1: 125, x2: x + 7, y2: 128, color: eye);
+    }
+  }
   img.fillRect(
     im,
     x1: 112,
@@ -88,7 +93,73 @@ Future<String> portraitAvatar() async {
     y2: 154,
     color: _rgb(214, 96, 96),
   );
-  return _write('marta.png', Uint8List.fromList(img.encodePng(im)));
+  return im;
+}
+
+/// 256×256 PNG portrait on a warm background.
+Future<String> portraitAvatar() async => _write(
+  'marta.png',
+  Uint8List.fromList(img.encodePng(_portrait(eyesOpen: true))),
+);
+
+/// The same portrait as an animated GIF that blinks: a GIF avatar.
+Future<String> portraitGif() async {
+  final anim = _portrait(eyesOpen: true)..frameDuration = 1800;
+  anim.addFrame(_portrait(eyesOpen: false)..frameDuration = 160);
+  return _write('marta_blink.gif', Uint8List.fromList(img.encodeGif(anim)));
+}
+
+/// 360×640 animated GIF chat background: night sky over the Tatras with
+/// falling snow, 10 frames.
+Future<String> snowfallGif() async {
+  const w = 360;
+  const h = 640;
+  const frames = 10;
+  final rnd = Random(7);
+  final flakes = [
+    for (var i = 0; i < 90; i++)
+      (rnd.nextInt(w), rnd.nextInt(h), 1 + rnd.nextInt(3)),
+  ];
+  img.Image? anim;
+  for (var f = 0; f < frames; f++) {
+    final im = img.Image(width: w, height: h);
+    for (var y = 0; y < h; y++) {
+      final t = y / h;
+      img.drawLine(
+        im,
+        x1: 0,
+        y1: y,
+        x2: w - 1,
+        y2: y,
+        color: _rgb(
+          (14 + 40 * t).round(),
+          (24 + 50 * t).round(),
+          (52 + 70 * t).round(),
+        ),
+      );
+    }
+    img.fillPolygon(
+      im,
+      vertices: [img.Point(-60, h), img.Point(120, 420), img.Point(300, h)],
+      color: _rgb(30, 42, 66),
+    );
+    img.fillPolygon(
+      im,
+      vertices: [img.Point(120, h), img.Point(280, 380), img.Point(460, h)],
+      color: _rgb(22, 32, 52),
+    );
+    for (final (x, y, r) in flakes) {
+      final fy = (y + f * h ~/ frames * r ~/ 2) % h;
+      img.fillCircle(im, x: x, y: fy, radius: r, color: _rgb(235, 242, 255));
+    }
+    im.frameDuration = 120;
+    if (anim == null) {
+      anim = im;
+    } else {
+      anim.addFrame(im);
+    }
+  }
+  return _write('snieg.gif', Uint8List.fromList(img.encodeGif(anim!)));
 }
 
 /// 96×96 animated GIF, 12 frames: a spinning, color-cycling party star on a

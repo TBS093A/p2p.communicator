@@ -10,6 +10,7 @@ import '../room/room_session.dart';
 import '../room/room_style.dart';
 import 'widgets/avatar.dart';
 import 'widgets/emoji_text.dart';
+import 'widgets/media_image.dart';
 import 'widgets/rgb_color_dialog.dart';
 
 /// Shared room look (every member sees the same): picture, name, chat
@@ -26,6 +27,9 @@ class RoomSettingsScreen extends StatefulWidget {
 class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   late final _name = TextEditingController(text: widget.session.meta.name);
   bool _busy = false;
+
+  /// Dim value while the slider is being dragged (saved on release).
+  int? _dim;
 
   RoomSession get s => widget.session;
 
@@ -50,17 +54,25 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
     }
   }
 
-  Future<void> _uploadAvatar() async {
+  /// No resize options on the picker: re-encoding there would flatten a GIF.
+  /// The session scales static pictures itself and keeps GIFs animated.
+  Future<File?> _pickOriginal() async {
     final picked = await AutoLock.suppress(
-      () => ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 256,
-        maxHeight: 256,
-        imageQuality: 85,
-      ),
+      () => ImagePicker().pickImage(source: ImageSource.gallery),
     );
-    if (picked == null) return;
-    await _run(() => s.updateRoom(avatar: File(picked.path)));
+    return picked == null ? null : File(picked.path);
+  }
+
+  Future<void> _uploadAvatar() async {
+    final file = await _pickOriginal();
+    if (file == null) return;
+    await _run(() => s.updateRoom(avatar: file));
+  }
+
+  Future<void> _uploadBackgroundImage() async {
+    final file = await _pickOriginal();
+    if (file == null) return;
+    await _run(() => s.updateRoom(backgroundImage: file));
   }
 
   Future<void> _editBackground() async {
@@ -178,6 +190,74 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                   trailing: const Icon(Icons.tune),
                   onTap: _editBackground,
                 ),
+                const SizedBox(height: 8),
+                _Section('Obraz tła (może być GIF)'),
+                Row(
+                  children: [
+                    if (s.meta.backgroundImage != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: SizedBox(
+                          width: 56,
+                          height: 96,
+                          child: MediaImage(
+                            session: s,
+                            ref: s.meta.backgroundImage!,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ),
+                    if (s.meta.backgroundImage != null)
+                      const SizedBox(width: 12),
+                    Expanded(
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          FilledButton.tonalIcon(
+                            key: const ValueKey('room-bgimg-upload'),
+                            onPressed: _uploadBackgroundImage,
+                            icon: const Icon(Icons.wallpaper),
+                            label: Text(
+                              s.meta.backgroundImage == null
+                                  ? 'Wgraj obraz tła'
+                                  : 'Zmień obraz',
+                            ),
+                          ),
+                          if (s.meta.backgroundImage != null)
+                            IconButton(
+                              tooltip: 'Usuń obraz tła',
+                              onPressed: () => _run(
+                                () => s.updateRoom(clearBackgroundImage: true),
+                              ),
+                              icon: const Icon(Icons.delete_outline),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                if (s.meta.backgroundImage != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Przyciemnienie: ${_dim ?? s.meta.effectiveDim}%',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  Slider(
+                    key: const ValueKey('room-bgimg-dim'),
+                    value: (_dim ?? s.meta.effectiveDim).toDouble(),
+                    max: RoomMeta.maxDim.toDouble(),
+                    divisions: RoomMeta.maxDim ~/ 5,
+                    label: '${_dim ?? s.meta.effectiveDim}%',
+                    onChanged: (v) => setState(() => _dim = v.round()),
+                    // One network write when the finger lifts, not per tick.
+                    onChangeEnd: (v) async {
+                      await _run(() => s.updateRoom(dim: v.round()));
+                      if (mounted) setState(() => _dim = null);
+                    },
+                  ),
+                ],
                 const SizedBox(height: 16),
                 Row(
                   children: [
