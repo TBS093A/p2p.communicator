@@ -1,7 +1,19 @@
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
-enum ImageUse { avatar, background }
+enum ImageUse {
+  avatar(maxAnimated: 1024 * 1024, sizes: [256, 192, 128]),
+  background(maxAnimated: 4 * 1024 * 1024, sizes: [720, 540, 360]),
+  emoji(maxAnimated: 512 * 1024, sizes: [128, 96, 64]);
+
+  const ImageUse({required this.maxAnimated, required this.sizes});
+
+  /// Animated files up to this size are kept byte for byte.
+  final int maxAnimated;
+
+  /// Longest-side sizes tried, in order, when an animation must shrink.
+  final List<int> sizes;
+}
 
 class PreparedImage {
   const PreparedImage(this.bytes, this.mime, {required this.animated});
@@ -17,24 +29,29 @@ class ImagePrepException implements Exception {
   String toString() => message;
 }
 
-/// Turns a picked file into what gets uploaded.
+/// Turns a picked file into what gets uploaded, automatically: nobody has
+/// to resize anything by hand.
 ///
-/// * GIF and animated WebP are kept byte for byte, so they stay animated
-///   (re-encoding would keep only the first frame); they are size-limited.
+/// * GIF and animated WebP within the use's limit are kept byte for byte.
+///   Bigger ones are re-encoded as a smaller GIF: frames scaled down (e.g.
+///   emoji to 128, then 96, 64 px) and, if needed, every 2nd/3rd/4th frame
+///   kept with its timing merged so the speed stays the same, until it fits.
 /// * Static images get their EXIF rotation applied and are scaled down:
-///   avatars to a 256×256 square crop, backgrounds to 1440 px on the long
-///   side, both as JPEG. A 12 MP photo becomes a few tens of KB.
+///   avatars to a 256×256 square crop (JPEG), backgrounds to 1440 px on the
+///   long side (JPEG), emoji to 128 px keeping transparency (PNG).
 ///
-/// Runs in a background isolate so decoding big photos does not stutter
+/// Runs in a background isolate so decoding big files does not stutter
 /// the UI.
 class ImagePrep {
   ImagePrep._();
 
-  static const maxAnimatedAvatar = 1024 * 1024;
-  static const maxAnimatedBackground = 4 * 1024 * 1024;
+  static final maxAnimatedAvatar = ImageUse.avatar.maxAnimated;
+  static final maxAnimatedBackground = ImageUse.background.maxAnimated;
+  static final maxEmoji = ImageUse.emoji.maxAnimated;
   static const maxSource = 25 * 1024 * 1024;
   static const avatarSize = 256;
   static const backgroundLongSide = 1440;
+  static const emojiSize = 128;
 
   static Future<PreparedImage> prepare(Uint8List bytes, ImageUse use) =>
       compute(_prepare, (bytes, use));
@@ -47,15 +64,10 @@ class ImagePrep {
 
     final animatedMime = _animatedMime(bytes);
     if (animatedMime != null) {
-      final limit = use == ImageUse.avatar
-          ? maxAnimatedAvatar
-          : maxAnimatedBackground;
-      if (bytes.length > limit) {
-        throw ImagePrepException(
-          'GIF jest za duży (max ${limit ~/ (1024 * 1024)} MB)',
-        );
+      if (bytes.length <= use.maxAnimated) {
+        return PreparedImage(bytes, animatedMime, animated: true);
       }
-      return PreparedImage(bytes, animatedMime, animated: true);
+      return _shrinkAnimation(bytes, use);
     }
 
     final decoded = img.decodeImage(bytes);
@@ -65,18 +77,75 @@ class ImagePrep {
       );
     }
     final upright = img.bakeOrientation(decoded);
-    final out = switch (use) {
-      ImageUse.avatar => img.copyResizeCropSquare(
-        upright,
-        size: avatarSize,
-        interpolation: img.Interpolation.average,
-      ),
-      ImageUse.background => _fitLongSide(upright, backgroundLongSide),
-    };
-    return PreparedImage(
-      img.encodeJpg(out, quality: use == ImageUse.avatar ? 85 : 82),
-      'image/jpeg',
-      animated: false,
+    switch (use) {
+      case ImageUse.avatar:
+        final out = img.copyResizeCropSquare(
+          upright,
+          size: avatarSize,
+          interpolation: img.Interpolation.average,
+        );
+        return PreparedImage(
+          img.encodeJpg(out, quality: 85),
+          'image/jpeg',
+          animated: false,
+        );
+      case ImageUse.background:
+        return PreparedImage(
+          img.encodeJpg(_fitLongSide(upright, backgroundLongSide), quality: 82),
+          'image/jpeg',
+          animated: false,
+        );
+      case ImageUse.emoji:
+        // PNG keeps transparency; a 128 px emoji is a few KB.
+        final png = img.encodePng(_fitLongSide(upright, emojiSize));
+        if (png.length <= use.maxAnimated) {
+          return PreparedImage(png, 'image/png', animated: false);
+        }
+        return PreparedImage(
+          img.encodeJpg(_fitLongSide(upright, emojiSize), quality: 85),
+          'image/jpeg',
+          animated: false,
+        );
+    }
+  }
+
+  /// Re-encodes an animation that is over the use's limit: smaller frames
+  /// first, then fewer frames (timing merged so the speed is unchanged),
+  /// until it fits.
+  static PreparedImage _shrinkAnimation(Uint8List bytes, ImageUse use) {
+    final anim = img.decodeImage(bytes);
+    if (anim == null) {
+      throw ImagePrepException('Nie udało się odczytać animacji');
+    }
+    final frames = anim.frames;
+    for (final step in const [1, 2, 3, 4]) {
+      for (final size in use.sizes) {
+        img.Image? out;
+        for (var i = 0; i < frames.length; i += step) {
+          var duration = 0;
+          for (var j = i; j < i + step && j < frames.length; j++) {
+            duration += frames[j].frameDuration;
+          }
+          // Frame 0 is the animation itself (it holds the frame list), and
+          // copyResize walks all frames: copy one bare frame first.
+          final single = img.Image.from(frames[i], noAnimation: true);
+          final f = _fitLongSide(single, size)
+            ..frameDuration = duration == 0 ? 100 * step : duration;
+          if (out == null) {
+            out = f;
+          } else {
+            out.addFrame(f);
+          }
+        }
+        final gif = img.encodeGif(out!);
+        if (gif.length <= use.maxAnimated) {
+          return PreparedImage(gif, 'image/gif', animated: true);
+        }
+      }
+    }
+    throw ImagePrepException(
+      'Animacja jest zbyt duża nawet po zmniejszeniu '
+      '(limit ${use.maxAnimated ~/ 1024} KB)',
     );
   }
 

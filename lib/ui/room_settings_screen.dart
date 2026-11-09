@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../app.dart';
 import '../core/ui_prefs.dart';
+import '../room/emoji_codes.dart';
 import '../room/room_session.dart';
 import '../room/room_style.dart';
 import 'widgets/avatar.dart';
@@ -27,6 +28,9 @@ class RoomSettingsScreen extends StatefulWidget {
 class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   late final _name = TextEditingController(text: widget.session.meta.name);
   bool _busy = false;
+
+  /// Progress of a bulk emoji upload ("Wgrywam 3/12…").
+  String? _bulkStatus;
 
   /// Dim value while the slider is being dragged (saved on release).
   int? _dim;
@@ -118,6 +122,47 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
           : (choice.color == null
                 ? s.updateRoom(clearOtherBubble: true)
                 : s.updateRoom(otherBubble: choice.color)),
+    );
+  }
+
+  /// Pick many images/GIFs, review the suggested codes, upload them all and
+  /// write the room once.
+  Future<void> _addManyEmoji() async {
+    // No resize options: re-encoding would flatten GIFs.
+    final picked = await AutoLock.suppress(
+      () => ImagePicker().pickMultiImage(),
+    );
+    if (picked.isEmpty || !mounted) return;
+    final files = [for (final x in picked) File(x.path)];
+    final codes = suggestEmojiCodes([
+      for (final f in files) f.path,
+    ], s.meta.emoji.keys.toSet());
+    final chosen = await showDialog<Map<String, File>>(
+      context: context,
+      builder: (_) => _BulkEmojiDialog(files: files, codes: codes),
+    );
+    if (chosen == null || chosen.isEmpty) return;
+    Map<String, String> skipped = {};
+    await _run(() async {
+      skipped = await s.addEmojis(
+        chosen,
+        onProgress: (done, total) {
+          if (mounted) setState(() => _bulkStatus = 'Wgrywam $done/$total…');
+        },
+      );
+    });
+    if (!mounted) return;
+    setState(() => _bulkStatus = null);
+    final added = chosen.length - skipped.length;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          skipped.isEmpty
+              ? 'Dodano $added emoji'
+              : 'Dodano $added, pominięto ${skipped.length}: '
+                    '${skipped.entries.map((e) => ':${e.key}: (${e.value})').join(', ')}',
+        ),
+      ),
     );
   }
 
@@ -344,9 +389,24 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                     ),
                   ],
                 ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    key: const ValueKey('emoji-add-many'),
+                    onPressed: _addManyEmoji,
+                    icon: const Icon(Icons.collections_outlined),
+                    label: const Text('Dodaj wiele naraz'),
+                  ),
+                ),
+                if (_bulkStatus != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(_bulkStatus!),
+                  ),
                 Text(
-                  'Obrazek lub GIF do 512 KB. W wiadomości wpisz :kod: albo '
-                  'wybierz z przycisku emoji. GIF-y są animowane.',
+                  'Dowolny obrazek lub GIF: za duże zmniejszymy automatycznie '
+                  '(GIF-y zostają animowane). W wiadomości wpisz :kod: albo '
+                  'wybierz z przycisku emoji.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 12),
@@ -452,6 +512,108 @@ class _Section extends StatelessWidget {
     padding: const EdgeInsets.only(bottom: 8),
     child: Text(title, style: Theme.of(context).textTheme.titleSmall),
   );
+}
+
+/// Review step for bulk emoji: each picked image with its suggested code
+/// (editable) and a checkbox. Returns code -> file for the checked ones.
+class _BulkEmojiDialog extends StatefulWidget {
+  const _BulkEmojiDialog({required this.files, required this.codes});
+
+  final List<File> files;
+  final List<String> codes;
+
+  @override
+  State<_BulkEmojiDialog> createState() => _BulkEmojiDialogState();
+}
+
+class _BulkEmojiDialogState extends State<_BulkEmojiDialog> {
+  late final _controllers = [
+    for (final c in widget.codes) TextEditingController(text: c),
+  ];
+  late final _on = List<bool>.filled(widget.files.length, true);
+
+  @override
+  void dispose() {
+    for (final c in _controllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Checked rows; a duplicate code keeps only its first row.
+  Map<String, File> get _result {
+    final out = <String, File>{};
+    for (var i = 0; i < widget.files.length; i++) {
+      final code = _controllers[i].text.trim();
+      if (_on[i] && EmojiCode.isValid(code)) {
+        out.putIfAbsent(code, () => widget.files[i]);
+      }
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final count = _result.length;
+    return AlertDialog(
+      title: Text('Nowe emoji (${widget.files.length})'),
+      content: SizedBox(
+        width: 360,
+        height: 420,
+        child: ListView.builder(
+          itemCount: widget.files.length,
+          itemBuilder: (context, i) {
+            final code = _controllers[i].text.trim();
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Checkbox(
+                    value: _on[i],
+                    onChanged: (v) => setState(() => _on[i] = v ?? false),
+                  ),
+                  Image.file(
+                    widget.files[i],
+                    width: 40,
+                    height: 40,
+                    fit: BoxFit.contain,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      key: ValueKey('bulk-emoji-code-$i'),
+                      controller: _controllers[i],
+                      enabled: _on[i],
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        prefixText: ':',
+                        suffixText: ':',
+                        errorText: _on[i] && !EmojiCode.isValid(code)
+                            ? 'a–z, 0–9, _'
+                            : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Anuluj'),
+        ),
+        FilledButton(
+          key: const ValueKey('bulk-emoji-confirm'),
+          onPressed: count == 0 ? null : () => Navigator.pop(context, _result),
+          child: Text('Dodaj $count'),
+        ),
+      ],
+    );
+  }
 }
 
 class _EmojiCodeDialog extends StatefulWidget {

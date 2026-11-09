@@ -236,6 +236,9 @@ void main() {
     final myPicture = await portraitGif();
     final chatBackground = await snowfallGif();
     final partyEmoji = await partyGif();
+    // Bulk add: three GIFs plus one far over the 512 KB emoji limit, which
+    // must be shrunk automatically rather than refused.
+    final bulkEmoji = [...await emojiPack(), await bigGif()];
 
     app.main();
     await pumpUntil(t, find.byType(SetupScreen));
@@ -308,6 +311,23 @@ void main() {
     await settle(t);
     await waitSaved(t);
     await pumpUntil(t, find.text(':party:'));
+
+    // Several at once: codes suggested from file names, one room write.
+    gallery.queue.addAll(bulkEmoji);
+    await tapKey(t, 'emoji-add-many');
+    await pumpUntil(t, find.byKey(const ValueKey('bulk-emoji-confirm')));
+    await settle(t);
+    await tapKey(t, 'bulk-emoji-confirm');
+    // All four added, none skipped (the big one was shrunk, not refused).
+    await pumpUntil(
+      t,
+      find.text('Dodano 4 emoji'),
+      timeout: const Duration(minutes: 3),
+    );
+    await idle(t, const Duration(seconds: 5)); // let the SnackBar go
+    for (final code in ['ogien', 'serce', 'kciuk_w_gore', 'wielki_gif']) {
+      await pumpUntil(t, find.text(':$code:'));
+    }
     // Back to the top so the screenshot shows the picture and the background.
     await t.drag(find.byType(ListView).first, const Offset(0, 1500));
     await settle(t);
