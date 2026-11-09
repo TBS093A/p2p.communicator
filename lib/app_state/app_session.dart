@@ -411,7 +411,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     if (invite == null || from is! String || sig is! String) {
       // Unsigned (an app version from before signed invites) or malformed:
       // the sender cannot be proven, so it is not shown.
-      debugPrint('[app] dropped a DM invite without a valid signature');
+      debugPrint('[app] dropped an unsigned DM request');
       _markHandled(message.id);
       return;
     }
@@ -439,7 +439,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
       if (profile != null && profile.identity.isNotEmpty) {
         _awaitingSender.remove(message.id);
         if (!await Crypto.verify(profile.identity, signed, sig)) {
-          debugPrint('[app] dropped a DM invite with a forged sender');
+          debugPrint('[app] dropped a DM request with a forged sender');
           _markHandled(message.id);
           return;
         }
