@@ -2,10 +2,10 @@ name: postmerge
 
 # Every push to main (a merged PR):
 #   1. analysis, tests, SAST + SCA on the merged code
-#   2. signed release APK published as a GitHub release (gated on 1.)
-#   3. MobSF scan of that APK, report attached to the release
-#   4. emulator DAST; if the UI changed, its screenshots are published to the
+#   2. emulator DAST; if the UI changed, its screenshots are published to the
 #      `screenshots` branch, which the README embeds
+#   3. signed release APK published as a GitHub release (gated on 1. and 2.)
+#   4. MobSF scan of that APK, report attached to the release
 #
 # Version: major.minor come from pubspec.yaml, the patch is the workflow run
 # number, so every merge gets a unique, increasing version without a commit
@@ -89,7 +89,14 @@ jobs:
 
   release:
     name: build + release apk
-    needs: [checks, security]
+    # DAST is skipped when no app code changed; a skipped DAST must not block
+    # the release, a failed or cancelled one must.
+    needs: [checks, security, dast]
+    if: >-
+      !cancelled() &&
+      needs.checks.result == 'success' &&
+      needs.security.result == 'success' &&
+      (needs.dast.result == 'success' || needs.dast.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
