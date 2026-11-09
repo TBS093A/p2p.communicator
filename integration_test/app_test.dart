@@ -294,6 +294,12 @@ void main() {
     await waitSaved(t);
     await pumpUntil(t, find.byKey(const ValueKey('room-bgimg-dim')));
 
+    // Bubble colors are a room setting: mine and everyone else's.
+    await pickColor(t, 'room-bubble-edit', 'FF6F00');
+    await pumpUntil(t, find.textContaining('#FF6F00'));
+    await pickColor(t, 'room-other-bubble-edit', '2E7D32');
+    await pumpUntil(t, find.textContaining('#2E7D32'));
+
     gallery.queue.add(partyEmoji); // party.gif -> suggested code :party:
     await tapKey(t, 'emoji-add');
     await pumpUntil(t, find.byKey(const ValueKey('emoji-confirm')));
@@ -320,8 +326,6 @@ void main() {
     await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
     await tapKey(t, 'status-away');
     await waitSaved(t);
-    await pickColor(t, 'bubble-color-edit', 'FF6F00');
-    await pumpUntil(t, find.textContaining('#FF6F00'));
     await t.drag(find.byType(ListView).first, const Offset(0, 1500));
     await settle(t);
     await shot(t, '08_profile_status');
@@ -344,6 +348,24 @@ void main() {
       timeout: const Duration(seconds: 30),
     );
     await hideKeyboard(t);
+    // The picture runs under both bars; they take the room's background
+    // color (#1B2A41) at the default 25 % transparency.
+    final top = t.widget<AppBar>(find.byKey(const ValueKey('chat-top-bar')));
+    final bottom = t.widget<Material>(
+      find.byKey(const ValueKey('chat-bottom-bar')),
+    );
+    for (final c in [top.backgroundColor!, bottom.color!]) {
+      expect(c.toARGB32() & 0xFFFFFF, 0x1B2A41);
+      expect((c.a * 100).round(), 75);
+    }
+    final chatScaffold = find.ancestor(
+      of: find.byKey(const ValueKey('chat-top-bar')),
+      matching: find.byType(Scaffold),
+    );
+    expect(
+      t.widget<Scaffold>(chatScaffold.first).extendBodyBehindAppBar,
+      isTrue,
+    );
     await shot(t, '06_chat_styled');
 
     await openMenu(t, 'Osoby');

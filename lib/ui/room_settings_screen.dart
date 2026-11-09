@@ -31,6 +31,9 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
   /// Dim value while the slider is being dragged (saved on release).
   int? _dim;
 
+  /// Bar transparency while its slider is being dragged.
+  int? _bars;
+
   RoomSession get s => widget.session;
 
   @override
@@ -89,6 +92,32 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
       () => choice.color == null
           ? s.updateRoom(clearBackground: true)
           : s.updateRoom(background: choice.color),
+    );
+  }
+
+  Color _bubbleColor(BuildContext context, bool mine) =>
+      _bubbleColorFor(s.meta, Theme.of(context).brightness, mine);
+
+  Future<void> _editBubble({required bool mine}) async {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final choice = await showRgbColorDialog(
+      context,
+      title: mine ? 'Moje wiadomości' : 'Wiadomości innych',
+      initial: mine ? s.meta.bubble : s.meta.otherBubble,
+      fallback: mine
+          ? defaultMyBubble
+          : (dark ? defaultOtherBubbleDark : defaultOtherBubbleLight),
+      preview: (c) => bubblePreview(c, mine: mine),
+    );
+    if (choice == null) return;
+    await _run(
+      () => mine
+          ? (choice.color == null
+                ? s.updateRoom(clearBubble: true)
+                : s.updateRoom(bubble: choice.color))
+          : (choice.color == null
+                ? s.updateRoom(clearOtherBubble: true)
+                : s.updateRoom(otherBubble: choice.color)),
     );
   }
 
@@ -258,6 +287,47 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
                     },
                   ),
                 ],
+                const SizedBox(height: 8),
+                Text(
+                  'Przezroczystość pasków: '
+                  '${_bars ?? s.meta.effectiveBarTransparency}%',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                Text(
+                  'Górny pasek i pasek wiadomości mają kolor tła czatu. Im '
+                  'więcej, tym bardziej prześwituje przez nie obraz tła.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                Slider(
+                  key: const ValueKey('room-bars-transparency'),
+                  value: (_bars ?? s.meta.effectiveBarTransparency).toDouble(),
+                  max: RoomMeta.maxBarTransparency.toDouble(),
+                  divisions: RoomMeta.maxBarTransparency ~/ 5,
+                  label: '${_bars ?? s.meta.effectiveBarTransparency}%',
+                  onChanged: (v) => setState(() => _bars = v.round()),
+                  onChangeEnd: (v) async {
+                    await _run(() => s.updateRoom(barTransparency: v.round()));
+                    if (mounted) setState(() => _bars = null);
+                  },
+                ),
+                const SizedBox(height: 8),
+                _Section('Dymki'),
+                for (final mine in [true, false])
+                  ListTile(
+                    key: ValueKey(
+                      mine ? 'room-bubble-edit' : 'room-other-bubble-edit',
+                    ),
+                    contentPadding: EdgeInsets.zero,
+                    leading: _Swatch(color: _bubbleColor(context, mine)),
+                    title: Text(mine ? 'Moje wiadomości' : 'Wiadomości innych'),
+                    subtitle: Text(
+                      (mine ? s.meta.bubble : s.meta.otherBubble) == null
+                          ? 'domyślny'
+                          : '#${_hex(_bubbleColor(context, mine).toARGB32())}',
+                    ),
+                    trailing: const Icon(Icons.tune),
+                    onTap: () => _editBubble(mine: mine),
+                  ),
                 const SizedBox(height: 16),
                 Row(
                   children: [
@@ -337,6 +407,18 @@ class _RoomSettingsScreenState extends State<RoomSettingsScreen> {
       },
     );
   }
+}
+
+Color _bubbleColorFor(RoomMeta meta, Brightness brightness, bool mine) {
+  final set = mine ? meta.bubble : meta.otherBubble;
+  if (set != null) return Color(set);
+  return Color(
+    mine
+        ? defaultMyBubble
+        : (brightness == Brightness.dark
+              ? defaultOtherBubbleDark
+              : defaultOtherBubbleLight),
+  );
 }
 
 String _hex(int argb) =>

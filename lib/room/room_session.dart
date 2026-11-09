@@ -517,6 +517,11 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     File? backgroundImage,
     bool clearBackgroundImage = false,
     int? dim,
+    int? bubble,
+    bool clearBubble = false,
+    int? otherBubble,
+    bool clearOtherBubble = false,
+    int? barTransparency,
   }) async {
     final ref = avatar == null
         ? null
@@ -534,6 +539,11 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         backgroundImage: bgRef,
         clearBackgroundImage: clearBackgroundImage,
         dim: dim?.clamp(0, RoomMeta.maxDim),
+        bubble: bubble,
+        clearBubble: clearBubble,
+        otherBubble: otherBubble,
+        clearOtherBubble: clearOtherBubble,
+        barTransparency: barTransparency?.clamp(0, RoomMeta.maxBarTransparency),
       ),
     );
   }

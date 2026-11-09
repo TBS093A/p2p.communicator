@@ -18,6 +18,9 @@ class RoomMeta {
     this.background,
     this.backgroundImage,
     this.dim,
+    this.bubble,
+    this.otherBubble,
+    this.barTransparency,
     this.accent,
     Map<String, MediaRef>? emoji,
   }) : emoji = emoji ?? {};
@@ -43,6 +46,27 @@ class RoomMeta {
 
   int get effectiveDim => (dim ?? defaultDim).clamp(0, maxDim);
 
+  /// ARGB of your own bubbles in this room (like a chat theme: each member
+  /// sees their own messages in it). null = [defaultMyBubble].
+  final int? bubble;
+
+  /// ARGB of everyone else's bubbles in this room. null = the theme's grey
+  /// ([defaultOtherBubbleLight] / [defaultOtherBubbleDark]).
+  final int? otherBubble;
+
+  /// How see-through the top bar and the message bar are over the
+  /// background picture, 0–90 %; null = [defaultBarTransparency].
+  final int? barTransparency;
+
+  static const defaultBarTransparency = 25;
+  static const maxBarTransparency = 90;
+
+  int get effectiveBarTransparency =>
+      (barTransparency ?? defaultBarTransparency).clamp(0, maxBarTransparency);
+
+  /// Alpha (0–255) of the bars for [effectiveBarTransparency].
+  int get barAlpha => (255 * (100 - effectiveBarTransparency) / 100).round();
+
   /// Legacy (v0.1.3) theme seed. Still read so old rooms keep their tint;
   /// no longer set by the UI, which uses [background] instead.
   final int? accent;
@@ -64,6 +88,11 @@ class RoomMeta {
     MediaRef? backgroundImage,
     bool clearBackgroundImage = false,
     int? dim,
+    int? bubble,
+    bool clearBubble = false,
+    int? otherBubble,
+    bool clearOtherBubble = false,
+    int? barTransparency,
     Map<String, MediaRef>? emoji,
   }) => RoomMeta(
     name: name ?? this.name,
@@ -73,6 +102,9 @@ class RoomMeta {
         ? null
         : (backgroundImage ?? this.backgroundImage),
     dim: dim ?? this.dim,
+    bubble: clearBubble ? null : (bubble ?? this.bubble),
+    otherBubble: clearOtherBubble ? null : (otherBubble ?? this.otherBubble),
+    barTransparency: barTransparency ?? this.barTransparency,
     // A background choice (or reset) replaces the legacy tint.
     accent: (background != null || clearBackground) ? null : accent,
     emoji: emoji ?? this.emoji,
@@ -85,6 +117,9 @@ class RoomMeta {
     if (background != null) 'bg': background,
     if (backgroundImage != null) 'bgImg': backgroundImage!.toJson(),
     if (dim != null) 'dim': dim,
+    if (bubble != null) 'bubble': bubble,
+    if (otherBubble != null) 'otherBubble': otherBubble,
+    if (barTransparency != null) 'bars': barTransparency,
     if (accent != null) 'accent': accent,
     if (emoji.isNotEmpty)
       'emoji': {for (final e in emoji.entries) e.key: e.value.toJson()},
@@ -117,6 +152,9 @@ class RoomMeta {
           ? MediaRef.fromJson((j['bgImg'] as Map).cast<String, dynamic>())
           : null,
       dim: j['dim'] as int?,
+      bubble: j['bubble'] as int?,
+      otherBubble: j['otherBubble'] as int?,
+      barTransparency: j['bars'] as int?,
       accent: j['accent'] as int?,
       emoji: emoji,
     );

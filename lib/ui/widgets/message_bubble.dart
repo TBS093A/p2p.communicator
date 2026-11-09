@@ -30,10 +30,11 @@ class MessageBubble extends StatelessWidget {
     final hhmm =
         '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
 
-    // Each member picks their bubble color (any RGB); everyone sees it the
-    // same way. Defaults: messenger blue for mine, neutral grey for others.
+    // The room sets both bubble colors (like a chat theme): one for your own
+    // messages, one for everyone else's; defaults are blue and grey.
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final custom = profile.color == null ? null : Color(profile.color!);
+    final roomBubble = mine ? session.meta.bubble : session.meta.otherBubble;
+    final custom = roomBubble != null ? Color(roomBubble) : null;
     final jumbo =
         message.type == MsgType.text &&
         EmojiCode.isJumbo(

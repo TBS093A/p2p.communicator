@@ -44,9 +44,6 @@ class MembersScreen extends StatelessWidget {
                 subtitle: Text(
                   [?presence?.label, 'wiadomości: $sent'].join(' · '),
                 ),
-                trailing: p.color == null
-                    ? null
-                    : Icon(Icons.circle, color: Color(p.color!)),
               );
             },
           ),

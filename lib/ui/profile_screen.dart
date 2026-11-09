@@ -5,9 +5,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../app.dart';
 import '../room/room_session.dart';
-import '../room/room_style.dart';
 import 'widgets/avatar.dart';
-import 'widgets/rgb_color_dialog.dart';
 
 /// How I appear in this room: picture, name, bubble color (text, photos and
 /// voice notes alike). Each room has its own profile, so rooms stay
@@ -58,28 +56,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     await _run(() => s.updateMyProfile(avatar: File(picked.path)));
   }
 
-  Future<void> _editColor() async {
-    final choice = await showRgbColorDialog(
-      context,
-      title: 'Kolor moich dymków',
-      initial: s.myProfile.color,
-      fallback: defaultMyBubble,
-      preview: bubblePreview,
-    );
-    if (choice == null) return;
-    await _run(
-      () => choice.color == null
-          ? s.updateMyProfile(clearColor: true)
-          : s.updateMyProfile(color: choice.color),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: s,
       builder: (context, _) {
-        final color = s.myProfile.color ?? defaultMyBubble;
         return Scaffold(
           appBar: AppBar(title: const Text('Mój profil w pokoju')),
           body: AbsorbPointer(
@@ -129,25 +110,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 8),
-                ListTile(
-                  key: const ValueKey('bubble-color-edit'),
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Kolor moich dymków'),
-                  subtitle: Text(
-                    s.myProfile.color == null
-                        ? 'domyślny'
-                        : '#${(color & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}',
-                  ),
-                  trailing: const Icon(Icons.tune),
-                  onTap: _editColor,
-                ),
-                bubblePreview(Color(color)),
                 const SizedBox(height: 24),
                 Text(
-                  'Kolor dotyczy wszystkich twoich dymków: tekstu, zdjęć, '
-                  'wideo i głosówek. Tak widzą cię inni w tym pokoju; w innych '
-                  'pokojach masz osobny profil.',
+                  'Tak widzą cię inni w tym pokoju; w innych pokojach masz '
+                  'osobny profil. Kolor dymków ustawisz w ustawieniach '
+                  'pokoju.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
