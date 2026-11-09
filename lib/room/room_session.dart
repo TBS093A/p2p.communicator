@@ -156,12 +156,14 @@ class RoomSession extends ChangeNotifier implements MediaSource {
           notifyListeners();
         }
 
+        if (_closed) return; // left while connecting
         _sub = VeilidNode.instance.updates.listen(_onUpdate);
         await rc.watchDHTValues(_rosterKey);
         _connected = true;
-        networkError.value = null;
+        _setNetworkError(null);
 
         await _sync(roster: true);
+        if (_closed) return;
         _poll = Timer.periodic(const Duration(seconds: 20), (_) {
           // Watches can lapse; a slow poll is the safety net.
           _pollTick++;
@@ -169,10 +171,14 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         });
         return;
       } on Object catch (e) {
-        networkError.value = 'Brak połączenia z siecią Veilid ($e)';
+        _setNetworkError('Brak połączenia z siecią Veilid ($e)');
         await Future<void>.delayed(const Duration(seconds: 10));
       }
     }
+  }
+
+  void _setNetworkError(String? message) {
+    if (!_disposed) networkError.value = message;
   }
 
   Future<void> close() async {
@@ -182,6 +188,12 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     await _sub?.cancel();
     _saveTimer?.cancel();
     app?.directory.removeListener(notifyListeners);
+    // Let a message sent just before leaving actually go out before its
+    // records are closed (bounded, so locking never hangs).
+    await _sendChain.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => debugPrint('[room] closing with a send still pending'),
+    );
     await _saveCache();
     if (_connected) {
       await Dht.close(_rosterKey);
@@ -705,8 +717,20 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     }
   }
 
+  bool _disposed = false;
+
+  /// Sends and syncs finish asynchronously, possibly after the screen that
+  /// owned this session is gone: their updates are then simply dropped.
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
   @override
   void dispose() {
+    _disposed = true;
+    // close() keeps running after dispose: it flushes pending sends, saves
+    // the cache and closes the records; it no longer notifies anyone.
     unawaited(close());
     networkError.dispose();
     super.dispose();
