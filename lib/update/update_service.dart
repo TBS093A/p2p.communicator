@@ -82,6 +82,13 @@ class UpdateService extends ChangeNotifier {
       release?.version.toString() ??
       (playVersionCode == null ? '' : 'kompilacja $playVersionCode');
 
+  /// Reads the installed version (for the updates screen) without checking
+  /// for anything.
+  Future<void> prepare() async {
+    await _init();
+    notifyListeners();
+  }
+
   Future<void> _init() async {
     if (_ready) return;
     _ready = true;

@@ -4,10 +4,21 @@ import '../core/ui_prefs.dart';
 import '../update/update_service.dart';
 
 /// Version, where updates come from, and installing a newer one.
-class UpdateScreen extends StatelessWidget {
+class UpdateScreen extends StatefulWidget {
   const UpdateScreen({super.key});
 
+  @override
+  State<UpdateScreen> createState() => _UpdateScreenState();
+}
+
+class _UpdateScreenState extends State<UpdateScreen> {
   UpdateService get u => UpdateService.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    u.prepare(); // the installed version, even before any check ran
+  }
 
   Future<void> _install(BuildContext context) async {
     if (!await u.canInstall()) {

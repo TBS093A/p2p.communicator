@@ -535,7 +535,11 @@ void main() {
     await tapKey(t, 'updates');
     await pumpUntil(t, find.byType(UpdateScreen));
     await settle(t);
-    expect(find.text('Wersja 0.1.0'), findsOneWidget);
+    await pumpUntil(
+      t,
+      find.text('Wersja 0.1.0'),
+      timeout: const Duration(seconds: 15),
+    );
     expect(find.text('Źródło: wydania na GitHubie'), findsOneWidget);
     await tapKey(t, 'update-check');
     final offered = find.byKey(const ValueKey('update-available'));
