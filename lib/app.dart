@@ -1,17 +1,24 @@
 import 'package:flutter/material.dart';
 
+import 'app_state/app_session.dart';
 import 'core/ui_prefs.dart';
 import 'core/veilid_node.dart';
+import 'ui/home_screen.dart';
 import 'ui/pin_screen.dart';
+import 'ui/setup_screen.dart';
 import 'vault/pin_vault.dart';
 
 final navigatorKey = GlobalKey<NavigatorState>();
 
-/// Locks every open room (back to the PIN pad) when the app leaves the
-/// screen, except while we ourselves opened the camera, gallery or recorder.
+/// Locks the app (back to the app PIN pad, every room closed) when it leaves
+/// the screen, except while we ourselves opened the camera, gallery or
+/// recorder.
 class AutoLock {
   AutoLock._();
   static int _suppressed = 0;
+
+  /// Set by [AppGate]: closes the unlocked app.
+  static VoidCallback? _onLock;
 
   static Future<T> suppress<T>(Future<T> Function() action) async {
     _suppressed++;
@@ -23,8 +30,10 @@ class AutoLock {
     }
   }
 
-  static void lockNow() =>
-      navigatorKey.currentState?.popUntil((route) => route.isFirst);
+  static void lockNow() {
+    navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    _onLock?.call();
+  }
 
   static void onBackground() {
     if (_suppressed == 0) lockNow();
@@ -113,9 +122,75 @@ class _P2PAppState extends State<P2PApp> with WidgetsBindingObserver {
               body: Center(child: CircularProgressIndicator()),
             );
           }
-          return const PinScreen();
+          return const AppGate();
         },
       ),
+    );
+  }
+}
+
+/// First run → [SetupScreen]; locked → app PIN pad; unlocked → home.
+class AppGate extends StatefulWidget {
+  const AppGate({super.key});
+
+  @override
+  State<AppGate> createState() => _AppGateState();
+}
+
+class _AppGateState extends State<AppGate> {
+  late final Future<bool> _isSet = PinVault.instance.isAppSet();
+  bool _setUpNow = false;
+  AppSession? _app;
+
+  @override
+  void initState() {
+    super.initState();
+    AutoLock._onLock = _lock;
+  }
+
+  @override
+  void dispose() {
+    if (AutoLock._onLock == _lock) AutoLock._onLock = null;
+    super.dispose();
+  }
+
+  void _lock() {
+    final app = _app;
+    if (app == null) return;
+    setState(() => _app = null);
+    // Close after the PIN pad is up: no room is visible while it shuts down.
+    WidgetsBinding.instance.addPostFrameCallback((_) => app.close());
+  }
+
+  Future<bool> _unlock(String pin) async {
+    final app = await AppSession.unlock(pin);
+    if (app == null) return false;
+    if (mounted) setState(() => _app = app);
+    return true;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = _app;
+    if (app != null) return HomeScreen(app: app);
+    return FutureBuilder<bool>(
+      future: _isSet,
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (!snap.data! && !_setUpNow) {
+          return SetupScreen(
+            onReady: (a) => setState(() {
+              _setUpNow = true;
+              _app = a;
+            }),
+          );
+        }
+        return PinScreen(onSubmit: _unlock);
+      },
     );
   }
 }

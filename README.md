@@ -2,24 +2,45 @@
 
 A serverless messenger for text, photos, video and voice notes. Every phone
 running the app is a full node of the [Veilid](https://veilid.com) network
-(Rust, embedded in the app). Rooms are unlocked with a PIN: a single PIN pad,
-where each PIN opens a different room and a wrong PIN opens nothing at all.
+(Rust, embedded in the app). The app opens with an **app PIN** and lists your
+**DMs and groups**, with everyone's **online status** at the top. **Private
+rooms** are separate: never listed, each one opens only with its own
+**password** in private mode.
 
-> Status: v0.1 skeleton. Passes `flutter analyze` and unit tests, and the
-> Veilid core (`v0.5.8`) builds. Not yet tested on real phones (network,
-> two devices).
+> Status: early (v0.x). Runs on real phones; automated tests run the app on
+> an Android emulator against the live Veilid network on every PR.
 
 **Download the APK:** [latest release](https://github.com/TBS093A/p2p.communicator/releases/latest)
 (arm64, Android 7+). Android will ask you to allow installs from an unknown
 source.
 
-| PIN | New room | Chat | Invite |
+| First run | DMs and groups | Chat | Invite |
 |---|---|---|---|
-| ![PIN](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/01_pin.png) | ![New room](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/02_new_room.png) | ![Chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/03_chat.png) | ![Invite](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/04_invite.png) |
+| ![Setup](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/01_setup.png) | ![Home](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/02_home.png) | ![Chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/03_chat.png) | ![Invite](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/04_invite.png) |
 
-| Room settings (picture, background, GIF emoji) | Chat: background, bubble color, GIF emoji | Members |
+| Room settings (picture, background, GIF emoji) | Chat: GIF background, bubble color, GIF emoji | Profile and status | Private room |
+|---|---|---|---|
+| ![Room settings](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/05_room_settings.png) | ![Styled chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/06_chat_styled.png) | ![Profile](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/08_profile_status.png) | ![Private](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/09_private_room.png) |
+
+## DMs, groups and private rooms
+
+| | DM / group (public) | Private room |
 |---|---|---|
-| ![Room settings](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/05_room_settings.png) | ![Styled chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/06_chat_styled.png) | ![Members](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/07_members.png) |
+| Listed on the home screen | yes (DM \| Grupy) | **never** |
+| Opens with | the app PIN | **its own password** (private mode, key icon) |
+| Your identity | one **global profile**: name, picture (GIF ok), bubble color, status | a separate name per room, **unlinkable** to your profile |
+| Status / presence | yes | no |
+
+* **Statuses**: available, away, do not disturb, invisible. The app writes a
+  heartbeat to your profile record every 60 s; no heartbeat for 3 min (or
+  invisible) shows as offline.
+* **Starting a DM**: by QR/text invite, or by tapping someone in the user
+  bar (anyone you share a group with). The invite is **sealed to their
+  identity key** (HPKE) and dropped into the shared group as a hidden
+  message: every member tries to open it, only the addressee can, and nobody
+  else learns who invited whom. They get an *accept / decline* prompt.
+* Rooms from the old PIN-only version are now private rooms: open them in
+  private mode with the old PIN as the password.
 
 Screenshots are taken by CI on an emulator (`integration_test/app_test.dart`)
 and refreshed on the `screenshots` branch only when the UI changes.
@@ -64,7 +85,7 @@ your own outbox, images in encrypted DHT records like any other media.
 | SAST | Gitleaks | secrets in git history | yes |
 | SCA | OSV-Scanner | vulnerabilities in `pubspec.lock` (blocking) and in Veilid's `Cargo.lock` (report only) | pub: yes |
 | SCA | Dependabot | weekly update PRs for pub and Actions (7-day cooldown) | n/a |
-| DAST | emulator + [`integration_test`](integration_test/app_test.dart) | the real app on the Veilid network: a wrong PIN opens nothing, each PIN opens only its own room, no crashes | yes |
+| DAST | emulator + [`integration_test`](integration_test/app_test.dart) | the real app on the Veilid network: app PIN setup, DM/groups, a private room never listed and opened only by its password, wrong PIN/password opens nothing, no crashes; plus the R8 release build must start | yes |
 | MAST | MobSF | analysis of the signed APK, PDF report attached to the release | report |
 
 SAST and SCA results also show up under **Security → Code scanning**. All
@@ -111,28 +132,35 @@ actions are pinned to commit SHAs.
   send without a connection is stored locally by Veilid and pushed once you
   are back online.
 
-### PINs (`lib/vault/pin_vault.dart`)
+### App PIN and private passwords (`lib/vault/pin_vault.dart`)
 
-* `master = Argon2(PIN ‖ pepper, salt)`. The **pepper** is 32 random bytes in
-  the Android Keystore (`flutter_secure_storage`). A copy of the app's files
-  alone is not enough to brute-force PINs offline.
-* The slot file name is derived from `master`, so one PIN means one Argon2 run
-  and a direct file read. There is no list of rooms anywhere.
-* Slots have a fixed size and decoy slots sit next to the real ones, so the
-  folder does not plainly reveal how many rooms exist. This makes it harder to
-  tell, not impossible.
-* After 5 failed attempts: a 30 s lockout, doubling up to 1 h.
-* The app locks (back to the PIN pad) whenever it leaves the screen.
-* Each room has its own identity (keys), so rooms cannot be linked to each
-  other on the network.
+* `master = Argon2(domain ‖ secret ‖ pepper, salt)`. The app PIN and
+  private-room passwords use **separate key domains**, so the same characters
+  open different slots and can never open each other's. The **pepper** is 32
+  random bytes in the Android Keystore (`flutter_secure_storage`): a copy of
+  the app's files alone is not enough to brute-force them offline.
+* The app slot holds your identity key and profile record; the list of DMs
+  and groups lives in a data file sealed with the app key.
+* A private room's slot file name is derived from its `master`, so one
+  password means one Argon2 run and a direct file read. There is no list of
+  private rooms anywhere. Slots have a fixed size and decoy slots sit next to
+  the real ones, so the folder does not plainly reveal how many exist.
+* After 5 failed attempts (app PIN or passwords): a 30 s lockout, doubling up
+  to 1 h.
+* The app locks (back to the PIN pad, everything closed) whenever it leaves
+  the screen.
 
 ## Layout
 
 ```
 lib/
   core/veilid_node.dart     Veilid node startup, update stream, network status
-  core/crypto.dart          AEAD / Argon2 / BLAKE3 via Veilid's crypto
-  vault/pin_vault.dart      PIN → room, decoys, attempt limit, per-room data
+  core/crypto.dart          AEAD / Argon2 / BLAKE3 / HPKE via Veilid's crypto
+  core/image_prep.dart      GIFs kept as-is, photos scaled down
+  core/media_cache.dart     encrypted local media cache
+  app_state/app_session.dart  unlocked app: identity, rooms, heartbeat, DM invites
+  app_state/profile_directory.dart  global profiles + presence of others
+  vault/pin_vault.dart      app PIN + private passwords, decoys, attempt limit
   vault/room_secrets.dart   what a slot stores
   room/room_protocol.dart   record layout, creating and joining rooms
   room/room_session.dart    sync, sending, cache, media
@@ -170,9 +198,10 @@ flutter run
 The first build compiles Veilid from source and takes several minutes or
 more.
 
-To try it: two phones (or a phone and an emulator). On the first, tap
-"+ → Create", set a PIN, then "Invite". On the second, tap "+ → Join", scan
-the QR code and set your own PIN.
+To try it: two phones (or a phone and an emulator). Set up each with a name
+and app PIN. On the first, "Nowa → Grupa", then "Zaproś" in the chat menu.
+On the second, "Nowa → Dołącz" and scan the QR code. You now see each
+other's status in the user bar and can tap to start a DM.
 
 ## Known limitations (deliberate, planned)
 

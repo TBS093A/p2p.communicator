@@ -5,14 +5,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../vault/pin_vault.dart';
-import 'chat_screen.dart';
-import 'new_room_screen.dart';
 import 'widgets/network_dot.dart';
 
-/// The only entry point. Looks like any PIN pad and reveals nothing: no list
-/// of rooms, no "wrong PIN" message, the same shake for every miss.
+/// The app PIN pad: the way into the app. A miss shakes and says nothing;
+/// attempts are throttled by the vault (shared with private-room passwords).
 class PinScreen extends StatefulWidget {
-  const PinScreen({super.key});
+  const PinScreen({super.key, required this.onSubmit});
+
+  /// Tries the PIN; returns whether it opened the app.
+  final Future<bool> Function(String pin) onSubmit;
 
   @override
   State<PinScreen> createState() => _PinScreenState();
@@ -70,21 +71,17 @@ class _PinScreenState extends State<PinScreen>
     setState(() => _busy = true);
     final pin = _pin;
     try {
-      final room = await PinVault.instance.unlock(pin);
+      final ok = await widget.onSubmit(pin);
       if (!mounted) return;
       setState(() {
         _pin = '';
         _busy = false;
       });
-      if (room == null) {
+      if (!ok) {
         unawaited(_shake.forward(from: 0));
         unawaited(HapticFeedback.heavyImpact());
         await _refreshLockout();
-        return;
       }
-      await Navigator.of(
-        context,
-      ).push(MaterialPageRoute<void>(builder: (_) => ChatScreen(room: room)));
     } on VaultLockedOut {
       setState(() {
         _pin = '';
@@ -101,21 +98,14 @@ class _PinScreenState extends State<PinScreen>
       body: SafeArea(
         child: Column(
           children: [
-            Align(
-              alignment: Alignment.topRight,
-              child: IconButton(
-                tooltip: 'Nowy pokój',
-                icon: const Icon(Icons.add),
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const NewRoomScreen(),
-                  ),
-                ),
-              ),
-            ),
             const Spacer(),
             Icon(Icons.lock_outline, size: 40, color: scheme.primary),
-            const SizedBox(height: 24),
+            const SizedBox(height: 12),
+            Text(
+              'PIN aplikacji',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 20),
             AnimatedBuilder(
               animation: _shake,
               builder: (context, child) => Transform.translate(

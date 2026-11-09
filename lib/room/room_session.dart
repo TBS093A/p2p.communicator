@@ -4,14 +4,16 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:veilid/veilid.dart';
 
+import '../app_state/app_link.dart';
 import '../core/crypto.dart';
 import '../core/image_prep.dart';
+import '../core/media_cache.dart';
 import '../core/veilid_node.dart';
 import '../vault/pin_vault.dart';
+import '../vault/room_secrets.dart';
 import 'blob_store.dart';
 import 'dht.dart';
 import 'invite.dart';
@@ -28,10 +30,17 @@ class StyleException implements Exception {
 
 /// One unlocked room: keeps the member outboxes watched, merges their logs
 /// into [messages], sends, and keeps an encrypted local cache.
-class RoomSession extends ChangeNotifier {
-  RoomSession(this.room);
+///
+/// Public rooms (DM, group) get an [app] link: members are shown with their
+/// global profile, and ours is the app-wide one. Private rooms have none and
+/// keep a per-room identity in each member's outbox head.
+class RoomSession extends ChangeNotifier implements MediaSource {
+  RoomSession(this.room, {this.app});
 
   final UnlockedRoom room;
+  final AppLink? app;
+
+  bool get isPublic => app != null && room.secrets.kind.isPublic;
 
   final List<ChatMessage> messages = [];
 
@@ -51,16 +60,14 @@ class RoomSession extends ChangeNotifier {
   final _ids = <String>{};
   final _lastSeen = <String, int>{}; // outbox key -> messages read
   final _watched = <String, RecordKey>{}; // other members' outboxes
-  final _mediaJobs = <String, Future<File>>{};
+  final _profileKeys = <String, String>{}; // outbox -> global profile key
   final _uuid = const Uuid();
 
   late final RecordKey _rosterKey;
   late final KeyPair _rosterWriter;
   late final RecordKey _outboxKey;
   late final KeyPair _outboxWriter;
-  late final SharedSecret _mediaKey;
-  late final Directory _mediaDir;
-  late final Directory _tmpDir;
+  late final MediaCache _media;
 
   int _myCount = 0;
   int _pollTick = 0;
@@ -75,17 +82,35 @@ class RoomSession extends ChangeNotifier {
 
   String get roomName => meta.name;
   String get myOutbox => room.secrets.outboxKey;
-  MemberProfile get myProfile => profiles[myOutbox]!;
+  RoomKind get kind => room.secrets.kind;
 
-  MemberProfile profileOf(String author) =>
-      profiles[author] ?? const MemberProfile(name: '?');
+  MemberProfile get myProfile => isPublic
+      ? app!.myGlobal.toMember()
+      : profiles[myOutbox] ?? MemberProfile(name: room.secrets.myName);
+
+  /// In public rooms a member's global profile wins over their outbox head.
+  MemberProfile profileOf(String author) {
+    if (author == myOutbox) return myProfile;
+    final key = _profileKeys[author];
+    final global = key == null ? null : app?.directory[key];
+    if (global != null) return global.toMember();
+    return profiles[author] ?? const MemberProfile(name: '?');
+  }
 
   String nameOf(String author) => profileOf(author).name;
 
+  /// Global profile key of a member of a public room, if known.
+  String? profileKeyOf(String author) =>
+      author == myOutbox ? app?.myProfileKey : _profileKeys[author];
+
+  /// Outbox keys of everyone in the room, us included.
+  Iterable<String> get memberOutboxes => {myOutbox, ...profiles.keys};
+
   Invite get invite => Invite(
-    roomName: room.secrets.roomName,
+    roomName: meta.name,
     rosterKey: room.secrets.rosterKey,
     rosterWriter: room.secrets.rosterWriter,
+    kind: room.secrets.kind,
   );
 
   // ------------------------------------------------------------ lifecycle
@@ -96,12 +121,8 @@ class RoomSession extends ChangeNotifier {
     _rosterWriter = KeyPair.fromString(s.rosterWriter);
     _outboxKey = RecordKey.fromString(s.outboxKey);
     _outboxWriter = KeyPair.fromString(s.outboxWriter);
-    _mediaKey = await Crypto.subsecret(room.key, 'media');
-    _mediaDir = await PinVault.instance.mediaDir(room);
-    final tmpBase = await getTemporaryDirectory();
-    _tmpDir = await Directory(
-      p.join(tmpBase.path, 'r${Crypto.hex(await Crypto.randomBytes(8))}'),
-    ).create();
+    _media = await MediaCache.open(room);
+    app?.directory.addListener(notifyListeners);
 
     await _loadCache();
     _profileFromCache = profiles.containsKey(myOutbox);
@@ -127,7 +148,10 @@ class RoomSession extends ChangeNotifier {
         if (count > _myCount) _myCount = count;
         // No local cache (e.g. reinstalled app): take our profile back from
         // the network copy instead of resetting it.
-        if (!_profileFromCache && head != null && head['name'] != null) {
+        if (!isPublic &&
+            !_profileFromCache &&
+            head != null &&
+            head['name'] != null) {
           profiles[myOutbox] = MemberProfile.fromJson(head);
           notifyListeners();
         }
@@ -157,6 +181,7 @@ class RoomSession extends ChangeNotifier {
     _poll?.cancel();
     await _sub?.cancel();
     _saveTimer?.cancel();
+    app?.directory.removeListener(notifyListeners);
     await _saveCache();
     if (_connected) {
       await Dht.close(_rosterKey);
@@ -165,7 +190,7 @@ class RoomSession extends ChangeNotifier {
         await Dht.close(k);
       }
     }
-    if (await _tmpDir.exists()) await _tmpDir.delete(recursive: true);
+    await _media.close();
   }
 
   // -------------------------------------------------------------- receive
@@ -217,6 +242,11 @@ class RoomSession extends ChangeNotifier {
         outbox,
         () => MemberProfile(name: e['n'] as String? ?? '?'),
       );
+      final profileKey = e['p'] as String?;
+      if (isPublic && profileKey != null) {
+        _profileKeys[outbox] = profileKey;
+        app!.directory.track(profileKey);
+      }
       if (_watched.containsKey(outbox)) continue;
       final key = RecordKey.fromString(outbox);
       try {
@@ -237,6 +267,8 @@ class RoomSession extends ChangeNotifier {
     final head = await Dht.getJson(key, 0);
     if (head == null) return;
     final count = head['count'] as int? ?? 0;
+    // Public rooms show the global profile; the head only carries a name
+    // fallback. Private rooms keep the whole per-room profile in the head.
     final before = profiles[outbox];
     final profile = MemberProfile.fromJson(head);
     profiles[outbox] = profile;
@@ -255,8 +287,17 @@ class RoomSession extends ChangeNotifier {
     for (var i = from; i < count; i++) {
       final j = await Dht.getJson(key, 1 + i % RoomLayout.outboxRing);
       if (j == null) continue;
-      final msg = ChatMessage.fromWire(outbox, j);
+      final ChatMessage msg;
+      try {
+        msg = ChatMessage.fromWire(outbox, j);
+      } on FormatException {
+        continue; // a type from a newer app version
+      }
       if (msg.seq != i) continue; // slot already reused by a newer message
+      if (msg.type.hidden) {
+        if (_ids.add(msg.id)) app?.onHiddenMessage(this, msg);
+        continue;
+      }
       added |= _insert(msg);
     }
     _lastSeen[outbox] = count;
@@ -387,10 +428,29 @@ class RoomSession extends ChangeNotifier {
     _myCount = seq + 1;
   }
 
-  Map<String, dynamic> _head(int count) => {
-    ...myProfile.toJson(),
-    'count': count,
-  };
+  /// Outbox head. Public rooms point to the global profile (`p`) and keep a
+  /// name as fallback; private rooms carry the full per-room profile.
+  Map<String, dynamic> _head(int count) => isPublic
+      ? {'name': app!.myGlobal.name, 'p': app!.myProfileKey, 'count': count}
+      : {...myProfile.toJson(), 'count': count};
+
+  /// Appends a message that is not shown in the conversation (e.g. a sealed
+  /// DM invite). Goes through the same ordered send queue.
+  Future<void> sendHidden(MsgType type, Map<String, dynamic> extra) {
+    assert(type.hidden);
+    final msg = ChatMessage(
+      id: _uuid.v4(),
+      author: myOutbox,
+      ts: DateTime.now().millisecondsSinceEpoch,
+      type: type,
+      extra: extra,
+      status: MsgStatus.sending,
+    );
+    _ids.add(msg.id);
+    final job = _sendChain.then((_) => _append(msg));
+    _sendChain = job.catchError((Object e) => debugPrint('hidden send: $e'));
+    return job;
+  }
 
   // ---------------------------------------------------------------- style
 
@@ -402,6 +462,18 @@ class RoomSession extends ChangeNotifier {
     int? color,
     bool clearColor = false,
   }) async {
+    if (isPublic) {
+      // One global profile for all public rooms.
+      await app!.updateGlobalProfile(
+        name: name,
+        avatar: avatar,
+        clearAvatar: clearAvatar,
+        color: color,
+        clearColor: clearColor,
+      );
+      notifyListeners();
+      return;
+    }
     final ref = avatar == null
         ? null
         : await _uploadImage(avatar, ImageUse.avatar);
@@ -530,47 +602,23 @@ class RoomSession extends ChangeNotifier {
 
   /// A playable plain file for [ref], downloading it first if needed. Plain
   /// copies live in a temp folder removed when the room is locked.
-  Future<File> mediaFile(String messageId, MediaRef ref) =>
-      _mediaJobs[ref.hash] ??=
-          () async {
-            final out = File(
-              p.join(_tmpDir.path, '${ref.hash}${_ext(ref.mime)}'),
-            );
-            if (await out.exists()) return out;
-            var bytes = await _loadMedia(ref.hash);
-            if (bytes == null) {
-              bytes = await BlobStore.download(
-                ref,
-                onProgress: (v) {
-                  progress[messageId] = v;
-                  notifyListeners();
-                },
-              );
-              progress.remove(messageId);
-              await _storeMedia(ref.hash, bytes);
-            }
-            await out.writeAsBytes(bytes, flush: true);
-            return out;
-          }().catchError((Object e) {
-            _mediaJobs.remove(ref.hash);
-            progress.remove(messageId);
-            throw e;
-          });
-
-  Future<void> _storeMedia(String hash, Uint8List bytes) async {
-    final sealed = await Crypto.seal(_mediaKey, bytes, context: hash);
-    await File(p.join(_mediaDir.path, hash)).writeAsBytes(sealed);
-  }
-
-  Future<Uint8List?> _loadMedia(String hash) async {
-    final f = File(p.join(_mediaDir.path, hash));
-    if (!await f.exists()) return null;
+  @override
+  Future<File> mediaFile(String messageId, MediaRef ref) async {
     try {
-      return await Crypto.open(_mediaKey, await f.readAsBytes(), context: hash);
-    } on Object {
-      return null;
+      return await _media.file(
+        ref,
+        onProgress: (v) {
+          progress[messageId] = v;
+          notifyListeners();
+        },
+      );
+    } finally {
+      if (progress.remove(messageId) != null) notifyListeners();
     }
   }
+
+  Future<void> _storeMedia(String hash, Uint8List bytes) =>
+      _media.store(hash, bytes);
 
   static String _mimeFor(String path, MsgType type) {
     final ext = p.extension(path).toLowerCase();
@@ -592,23 +640,10 @@ class RoomSession extends ChangeNotifier {
       case MsgType.voice:
         return 'audio/mp4';
       case MsgType.text:
+      case MsgType.dmInvite:
         return 'text/plain';
     }
   }
-
-  static String _ext(String mime) => switch (mime) {
-    'image/gif' => '.gif',
-    'image/png' => '.png',
-    'image/webp' => '.webp',
-    'image/heic' => '.heic',
-    'image/jpeg' => '.jpg',
-    'video/quicktime' => '.mov',
-    'video/3gpp' => '.3gp',
-    'video/webm' => '.webm',
-    'video/mp4' => '.mp4',
-    'audio/mp4' => '.m4a',
-    _ => '.bin',
-  };
 
   // ---------------------------------------------------------------- cache
 

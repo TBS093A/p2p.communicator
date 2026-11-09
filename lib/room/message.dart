@@ -1,4 +1,15 @@
-enum MsgType { text, image, video, voice }
+enum MsgType {
+  text,
+  image,
+  video,
+  voice,
+
+  /// Hidden: a DM invite sealed to one member's identity key. Never shown in
+  /// the conversation; only the addressee can open it.
+  dmInvite;
+
+  bool get hidden => this == MsgType.dmInvite;
+}
 
 enum MsgStatus { sending, sent, failed }
 
@@ -67,9 +78,13 @@ class ChatMessage {
     this.media,
     this.seq,
     this.status = MsgStatus.sent,
+    this.extra,
   });
 
   final String id;
+
+  /// Type-specific fields (a DM invite's addressee and sealed payload).
+  final Map<String, dynamic>? extra;
 
   /// Outbox record key of the author; the roster maps it to a display name.
   final String author;
@@ -90,20 +105,27 @@ class ChatMessage {
     't': type.name,
     if (text != null) 'text': text,
     if (media != null) 'm': media!.toJson(),
+    if (extra != null) 'x': extra,
   };
 
-  factory ChatMessage.fromWire(String author, Map<String, dynamic> j) =>
-      ChatMessage(
-        id: j['id'] as String,
-        author: author,
-        ts: j['ts'] as int,
-        type: MsgType.values.byName(j['t'] as String),
-        text: j['text'] as String?,
-        media: j['m'] == null
-            ? null
-            : MediaRef.fromJson(j['m'] as Map<String, dynamic>),
-        seq: j['seq'] as int?,
-      );
+  /// Throws [FormatException] for message types this version does not know
+  /// (sent by a newer app); callers skip those.
+  factory ChatMessage.fromWire(String author, Map<String, dynamic> j) {
+    final type = MsgType.values.where((t) => t.name == j['t']).firstOrNull;
+    if (type == null) throw FormatException('unknown message type ${j['t']}');
+    return ChatMessage(
+      id: j['id'] as String,
+      author: author,
+      ts: j['ts'] as int,
+      type: type,
+      text: j['text'] as String?,
+      media: j['m'] == null
+          ? null
+          : MediaRef.fromJson(j['m'] as Map<String, dynamic>),
+      seq: j['seq'] as int?,
+      extra: (j['x'] as Map?)?.cast<String, dynamic>(),
+    );
+  }
 
   /// Local cache form (adds author and status).
   Map<String, dynamic> toCache() => {

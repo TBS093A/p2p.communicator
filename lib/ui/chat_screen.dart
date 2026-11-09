@@ -8,12 +8,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../app.dart';
+import '../app_state/app_session.dart';
 import '../room/message.dart';
 import '../room/room_session.dart';
 import '../room/room_style.dart';
 import '../vault/pin_vault.dart';
 import 'invite_screen.dart';
 import 'members_screen.dart';
+import 'my_profile_screen.dart';
 import 'profile_screen.dart';
 import 'room_settings_screen.dart';
 import 'widgets/avatar.dart';
@@ -23,9 +25,19 @@ import 'widgets/message_bubble.dart';
 import 'widgets/network_dot.dart';
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key, required this.room});
+  /// A public room: [session] stays open in [app] after the screen closes.
+  const ChatScreen({super.key, required this.session, required this.app})
+    : ownsSession = false;
 
-  final UnlockedRoom room;
+  /// A private room opened with its password: this screen opens the
+  /// session and closes it again on the way out.
+  const ChatScreen.private({super.key, required this.session})
+    : app = null,
+      ownsSession = true;
+
+  final RoomSession session;
+  final AppSession? app;
+  final bool ownsSession;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -35,8 +47,10 @@ class _ChatScreenState extends State<ChatScreen> {
   static const _maxVideoBytes = 25 * 1024 * 1024;
   static const _maxVoice = Duration(minutes: 5);
 
-  late final RoomSession _session = RoomSession(widget.room);
-  late final Future<void> _opened = _session.open();
+  RoomSession get _session => widget.session;
+  late final Future<void> _opened = widget.ownsSession
+      ? _session.open()
+      : Future.value();
   final _text = TextEditingController();
   final _picker = ImagePicker();
   final _recorder = AudioRecorder();
@@ -55,7 +69,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _recordTicker?.cancel();
     unawaited(_recorder.dispose());
     _text.dispose();
-    _session.dispose();
+    if (widget.ownsSession) _session.dispose();
     super.dispose();
   }
 
@@ -205,19 +219,31 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
       case 'members':
-        await _open(MembersScreen(session: _session));
+        await _open(MembersScreen(session: _session, app: widget.app));
       case 'profile':
-        await _open(ProfileScreen(session: _session));
+        // Public rooms share one global profile; private rooms have their own.
+        final app = widget.app;
+        await _open(
+          app != null
+              ? MyProfileScreen(app: app)
+              : ProfileScreen(session: _session),
+        );
       case 'settings':
         await _open(RoomSettingsScreen(session: _session));
       case 'forget':
+        final private = widget.app == null;
         final yes = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('Usunąć pokój z telefonu?'),
-            content: const Text(
-              'Wiadomości i PIN tego pokoju znikną z tego urządzenia. '
-              'Pozostali członkowie zachowają swoje kopie.',
+            title: Text(
+              private ? 'Usunąć pokój z telefonu?' : 'Opuścić rozmowę?',
+            ),
+            content: Text(
+              private
+                  ? 'Wiadomości i hasło tego pokoju znikną z tego urządzenia. '
+                        'Pozostali członkowie zachowają swoje kopie.'
+                  : 'Rozmowa zniknie z listy na tym telefonie. Pozostali '
+                        'członkowie zachowają swoje kopie.',
             ),
             actions: [
               TextButton(
@@ -231,10 +257,18 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         );
-        if (yes == true) {
+        if (yes != true) return;
+        final app = widget.app;
+        if (app == null) {
           await _session.close();
-          await PinVault.instance.forget(widget.room);
-          AutoLock.lockNow();
+          await PinVault.instance.forget(_session.room);
+          if (mounted) Navigator.of(context).pop();
+        } else {
+          final room = app.rooms
+              .where((r) => r.session == _session)
+              .firstOrNull;
+          if (mounted) Navigator.of(context).pop();
+          if (room != null) await app.leave(room);
         }
       case 'lock':
         AutoLock.lockNow();
@@ -333,6 +367,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _scaffold(BuildContext context) {
+    // In a DM the header is the other person (picture, status, name).
+    final peer = widget.app?.peerOf(_session);
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -342,19 +378,26 @@ class _ChatScreenState extends State<ChatScreen> {
             onTap: () => _menu('settings'),
             child: Row(
               children: [
-                Avatar.room(_session),
+                peer != null
+                    ? Avatar.global(widget.app!, peer, radius: 18)
+                    : Avatar.room(_session),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(_session.roomName, overflow: TextOverflow.ellipsis),
+                      Text(
+                        peer?.name ?? _session.roomName,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                       Row(
                         children: [
                           const NetworkDot(showLabel: false),
                           const SizedBox(width: 6),
                           Text(
-                            'osób: ${_session.profiles.length}',
+                            peer != null
+                                ? peer.presence.label
+                                : 'osób: ${_session.memberOutboxes.length}',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ],
