@@ -2,12 +2,15 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../app_state/global_profile.dart';
+import '../../core/media_cache.dart';
 import '../../room/message.dart';
 import '../../room/room_session.dart';
 import '../../room/room_style.dart';
 
-/// Round avatar: the image if there is one (downloaded from the room's DHT
-/// records on first use, then cached encrypted), else initials on [color].
+/// Round avatar: the picture if there is one (GIFs play; downloaded from the
+/// DHT on first use, then cached encrypted), else initials on [color].
+/// With [presence], a status dot sits in the corner.
 class Avatar extends StatelessWidget {
   const Avatar({
     super.key,
@@ -16,13 +19,15 @@ class Avatar extends StatelessWidget {
     this.image,
     this.color,
     this.radius = 20,
+    this.presence,
   });
 
-  final RoomSession session;
+  final MediaSource session;
   final String name;
   final MediaRef? image;
   final int? color;
   final double radius;
+  final Presence? presence;
 
   factory Avatar.member(
     RoomSession session,
@@ -30,12 +35,14 @@ class Avatar extends StatelessWidget {
     double radius = 20,
   }) {
     final p = session.profileOf(outbox);
+    final key = session.profileKeyOf(outbox);
     return Avatar(
       session: session,
       name: p.name,
       image: p.avatar,
       color: p.color,
       radius: radius,
+      presence: key == null ? null : session.app?.directory[key]?.presence,
     );
   }
 
@@ -46,6 +53,27 @@ class Avatar extends StatelessWidget {
     color: session.meta.background ?? session.meta.accent,
     radius: radius,
   );
+
+  factory Avatar.global(
+    MediaSource media,
+    GlobalProfile p, {
+    double radius = 20,
+    bool showPresence = true,
+  }) => Avatar(
+    session: media,
+    name: p.name,
+    image: p.avatar,
+    color: p.color,
+    radius: radius,
+    presence: showPresence ? p.presence : null,
+  );
+
+  static Color presenceColor(Presence p) => switch (p) {
+    Presence.online => const Color(0xFF31A24C),
+    Presence.away => const Color(0xFFF5A623),
+    Presence.dnd => const Color(0xFFE53935),
+    Presence.offline => const Color(0xFF9E9E9E),
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -67,21 +95,54 @@ class Avatar extends StatelessWidget {
       ),
     );
     final ref = image;
-    if (ref == null) return initials;
-    return FutureBuilder<File>(
-      // mediaFile de-duplicates by content hash, so rebuilding is cheap.
-      future: session.mediaFile('avatar', ref),
-      builder: (context, snap) => snap.hasData
-          ? ClipOval(
-              child: Image.file(
-                snap.data!,
-                width: radius * 2,
-                height: radius * 2,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
+    final face = ref == null
+        ? initials
+        : FutureBuilder<File>(
+            // mediaFile de-duplicates by content hash: rebuilding is cheap.
+            future: session.mediaFile('avatar', ref),
+            builder: (context, snap) => snap.hasData
+                ? ClipOval(
+                    child: Image.file(
+                      snap.data!,
+                      width: radius * 2,
+                      height: radius * 2,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                    ),
+                  )
+                : initials,
+          );
+    final p = presence;
+    if (p == null) return face;
+    final dot = (radius * 0.55).clamp(8.0, 16.0);
+    return SizedBox(
+      width: radius * 2,
+      height: radius * 2,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          face,
+          Positioned(
+            right: -1,
+            bottom: -1,
+            child: Tooltip(
+              message: p.label,
+              child: Container(
+                width: dot,
+                height: dot,
+                decoration: BoxDecoration(
+                  color: presenceColor(p),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.surface,
+                    width: 2,
+                  ),
+                ),
               ),
-            )
-          : initials,
+            ),
+          ),
+        ],
+      ),
     );
   }
 

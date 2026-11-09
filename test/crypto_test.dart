@@ -69,6 +69,29 @@ void main() {
     expect(a, isNot(d));
   });
 
+  test('sealTo/openWith: only the recipient opens it', () async {
+    final alice = await Crypto.newIdentity();
+    final bob = await Crypto.newIdentity();
+    final invite = bytes('p2pc1.zaproszenie-do-dm');
+
+    final sealed = await Crypto.sealTo(bob.key, invite, context: 'dm-invite');
+    expect(await Crypto.openWith(bob, sealed, context: 'dm-invite'), invite);
+    // Not the sender, not a third party, not another purpose.
+    await expectLater(
+      Crypto.openWith(alice, sealed, context: 'dm-invite'),
+      throwsA(anything),
+    );
+    await expectLater(
+      Crypto.openWith(bob, sealed, context: 'other'),
+      throwsA(anything),
+    );
+    final tampered = Uint8List.fromList(sealed)..[sealed.length - 1] ^= 1;
+    await expectLater(
+      Crypto.openWith(bob, tampered, context: 'dm-invite'),
+      throwsA(anything),
+    );
+  });
+
   test('sealed size matches what decoy slots assume', () async {
     final key = Crypto.secretFromBytes(await Crypto.randomBytes(32));
     final sealed = await Crypto.seal(key, Uint8List(4096), context: 'slot');

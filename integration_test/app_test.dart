@@ -1,7 +1,8 @@
 // Dynamic test of the real app on an Android device/emulator: the embedded
-// Veilid node starts, rooms are created, and the PIN vault behaves as
-// promised (a wrong PIN opens nothing, each PIN opens only its own room).
-// Also produces the README screenshots.
+// Veilid node starts, the app PIN is set up, a group and a DM are created
+// and listed, a private room opens only with its password and never shows on
+// the lists, and a wrong app PIN keeps everything shut. Also produces the
+// README screenshots.
 //
 //   flutter drive --driver=test_driver/integration_test.dart \
 //                 --target=integration_test/app_test.dart
@@ -14,12 +15,14 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:integration_test/integration_test.dart';
 import 'package:p2p_communicator/main.dart' as app;
 import 'package:p2p_communicator/ui/chat_screen.dart';
+import 'package:p2p_communicator/ui/home_screen.dart';
 import 'package:p2p_communicator/ui/invite_screen.dart';
 import 'package:p2p_communicator/ui/members_screen.dart';
+import 'package:p2p_communicator/ui/my_profile_screen.dart';
 import 'package:p2p_communicator/ui/new_room_screen.dart';
 import 'package:p2p_communicator/ui/pin_screen.dart';
-import 'package:p2p_communicator/ui/profile_screen.dart';
 import 'package:p2p_communicator/ui/room_settings_screen.dart';
+import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
 
 import 'test_images.dart';
@@ -110,37 +113,6 @@ void main() {
     await idle(t, const Duration(milliseconds: 600));
   }
 
-  Future<void> createRoom(
-    WidgetTester t, {
-    required String room,
-    required String me,
-    required String pin,
-    bool screenshot = false,
-  }) async {
-    await t.tap(find.byTooltip('Nowy pokój'));
-    await pumpUntil(t, find.byType(NewRoomScreen));
-    await settle(t);
-    await fill(t, 'Nazwa pokoju', room);
-    await fill(t, 'Twoja nazwa w tym pokoju', me);
-    await fill(t, 'PIN do tego pokoju', pin);
-    await fill(t, 'Powtórz PIN', pin);
-    await hideKeyboard(t);
-    if (screenshot) await shot(t, '02_new_room');
-    final submit = find.widgetWithText(FilledButton, 'Utwórz');
-    await reveal(t, submit);
-    await t.tap(submit);
-    await pumpUntil(t, find.byType(ChatScreen));
-    await pumpUntil(t, find.text(room));
-    await settle(t);
-  }
-
-  Future<void> openMenu(WidgetTester t, String item) async {
-    await t.tap(find.byType(PopupMenuButton<String>));
-    await pumpUntil(t, find.text(item));
-    await settle(t); // the menu animates in; taps before that hit its barrier
-    await t.tap(find.text(item));
-  }
-
   Future<void> tapKey(WidgetTester t, String key) async {
     final f = find.byKey(ValueKey(key));
     await pumpUntil(t, f, timeout: const Duration(seconds: 20));
@@ -148,6 +120,60 @@ void main() {
     await t.pump();
     await t.tap(f);
     await t.pump();
+  }
+
+  /// From the home screen: "Nowa" → pick [mode] → fill → create.
+  Future<void> newRoom(
+    WidgetTester t, {
+    required String mode,
+    Map<String, String> fields = const {},
+  }) async {
+    await tapKey(t, 'new-room');
+    await pumpUntil(t, find.byType(NewRoomScreen));
+    await settle(t);
+    await t.tap(find.text(mode));
+    await settle(t);
+    for (final e in fields.entries) {
+      await fill(t, e.key, e.value);
+    }
+    await hideKeyboard(t);
+    await tapKey(t, 'new-room-submit');
+    await pumpUntil(t, find.byType(ChatScreen));
+    await settle(t);
+  }
+
+  Future<void> send(WidgetTester t, String text) async {
+    await t.enterText(find.byType(TextField).last, text);
+    await t.pump();
+    await t.tap(find.byTooltip('Wyślij'));
+    await settle(t);
+  }
+
+  Future<void> backToHome(WidgetTester t) async {
+    while (find.byType(HomeScreen).evaluate().isEmpty ||
+        find.byType(ChatScreen).evaluate().isNotEmpty) {
+      await t.pageBack();
+      await settle(t);
+    }
+  }
+
+  /// Private mode from the home screen: type [password], open.
+  Future<void> privateMode(WidgetTester t, String password) async {
+    await tapKey(t, 'private-mode');
+    await pumpUntil(t, find.byKey(const ValueKey('private-password')));
+    await settle(t);
+    await t.enterText(find.byKey(const ValueKey('private-password')), password);
+    await idle(t, const Duration(milliseconds: 600));
+    await tapKey(t, 'private-open');
+    await settle(t);
+    await hideKeyboard(t);
+  }
+
+  Future<void> openMenu(WidgetTester t, String item) async {
+    await t.tap(find.byType(PopupMenuButton<String>));
+    await pumpUntil(t, find.text(item));
+    await settle(t); // the menu animates in; taps before that hit its barrier
+    await t.tap(find.text(item));
   }
 
   /// Waits until a settings screen's save (upload + DHT write) is done,
@@ -198,7 +224,7 @@ void main() {
     await settle(t);
   }
 
-  testWidgets('rooms, PIN isolation and screenshots', (t) async {
+  testWidgets('app PIN, DM/groups, private rooms and screenshots', (t) async {
     // A tap that misses its widget should fail here, not minutes later.
     WidgetController.hitTestWarningShouldBeFatal = true;
     // "Gallery" picks return generated images through the app's normal
@@ -212,24 +238,27 @@ void main() {
     final partyEmoji = await partyGif();
 
     app.main();
-    await pumpUntil(t, find.byType(PinScreen));
+    await pumpUntil(t, find.byType(SetupScreen));
     if (Platform.isAndroid) {
       await binding.convertFlutterSurfaceToImage();
     }
-    await shot(t, '01_pin');
 
-    // Room A: send a message, show the invite.
-    await createRoom(
-      t,
-      room: 'Wyprawa w Tatry',
-      me: 'Marta',
-      pin: '1234',
-      screenshot: true,
-    );
+    // First run: one name for all DMs and groups, and the app PIN.
+    await settle(t);
+    await fill(t, 'Twoja nazwa', 'Marta');
+    await fill(t, 'PIN aplikacji', '2468');
+    await fill(t, 'Powtórz PIN', '2468');
+    await hideKeyboard(t);
+    await shot(t, '01_setup');
+    await t.tap(find.text('Zaczynamy'));
+    await pumpUntil(t, find.byType(HomeScreen));
+    await settle(t);
+
+    // A group: send a message, show the invite.
+    await newRoom(t, mode: 'Grupa', fields: {'Nazwa grupy': 'Wyprawa w Tatry'});
+    await pumpUntil(t, find.text('Wyprawa w Tatry'));
     const hello = 'Jutro o 6:00 pod schroniskiem. Kto jedzie? 🏔️';
-    await t.enterText(find.byType(TextField).last, hello);
-    await t.pump();
-    await t.tap(find.byTooltip('Wyślij'));
+    await send(t, hello);
     await pumpUntil(t, find.text(hello));
     await pumpUntil(
       t,
@@ -280,24 +309,28 @@ void main() {
     await t.pageBack();
     await settle(t);
 
+    // In a public room "my profile" is the one global profile: picture,
+    // status, bubble color.
     await openMenu(t, 'Mój profil');
-    await pumpUntil(t, find.byType(ProfileScreen));
+    await pumpUntil(t, find.byType(MyProfileScreen));
     await settle(t);
     gallery.queue.add(myPicture);
     await tapKey(t, 'profile-avatar-upload');
     await waitSaved(t);
     await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+    await tapKey(t, 'status-away');
+    await waitSaved(t);
     await pickColor(t, 'bubble-color-edit', 'FF6F00');
     await pumpUntil(t, find.textContaining('#FF6F00'));
+    await t.drag(find.byType(ListView).first, const Offset(0, 1500));
+    await settle(t);
+    await shot(t, '08_profile_status');
     await t.pageBack();
     await settle(t);
 
     // The custom GIF emoji inline and on its own (shown large).
     for (final text in [':party: Jedziemy!', ':party:']) {
-      await t.enterText(find.byType(TextField).last, text);
-      await t.pump();
-      await t.tap(find.byTooltip('Wyślij'));
-      await settle(t);
+      await send(t, text);
     }
     // Rich text with an inline image: match the plain part only.
     await pumpUntil(t, find.textContaining('Jedziemy!', findRichText: true));
@@ -319,28 +352,83 @@ void main() {
     await t.pageBack();
     await settle(t);
 
-    // Room B under another PIN.
-    await lock(t);
-    await createRoom(t, room: 'Projekt Apollo', me: 'Marta', pin: '5678');
-    await lock(t);
+    // A DM started with a QR code, listed under "DM".
+    await backToHome(t);
+    await newRoom(t, mode: 'DM');
+    await pumpUntil(t, find.text('Rozmowa'));
+    await backToHome(t);
+    await t.tap(find.textContaining('DM ('));
+    await settle(t);
+    await pumpUntil(t, find.text('Rozmowa'));
 
-    // A wrong PIN opens nothing and says nothing.
-    await enterPin(t, '9999');
-    await idle(t, const Duration(seconds: 5));
+    // The home list: groups segment, with the group's last message.
+    await t.tap(find.textContaining('Grupy ('));
+    await settle(t);
+    await pumpUntil(t, find.text('Wyprawa w Tatry'));
+    await shot(t, '02_home');
+
+    // A private room: created from private mode with a password, never
+    // listed, opened only by that password.
+    const secret = 'Tylko dla mnie 🤫';
+    await tapKey(t, 'private-mode');
+    await pumpUntil(t, find.byKey(const ValueKey('private-new')));
+    await settle(t);
+    await tapKey(t, 'private-new');
+    await pumpUntil(t, find.byType(NewRoomScreen));
+    await settle(t);
+    for (final e in {
+      'Nazwa pokoju': 'Pamiętnik',
+      'Twoja nazwa w tym pokoju': 'M.',
+      'Hasło do tego pokoju': 'tajne haslo',
+      'Powtórz hasło': 'tajne haslo',
+    }.entries) {
+      await fill(t, e.key, e.value);
+    }
+    await hideKeyboard(t);
+    await tapKey(t, 'new-room-submit');
+    await pumpUntil(t, find.byType(ChatScreen));
+    await settle(t);
+    await send(t, secret);
+    await pumpUntil(t, find.text(secret));
+    await backToHome(t);
+    for (final tab in ['DM (', 'Grupy (']) {
+      await t.tap(find.textContaining(tab));
+      await settle(t);
+      expect(find.text('Pamiętnik'), findsNothing, reason: 'listed in $tab');
+    }
+
+    // A wrong password opens nothing.
+    await privateMode(t, 'zle haslo');
+    await pumpUntil(t, find.text('Nieprawidłowe hasło'));
     expect(find.byType(ChatScreen), findsNothing);
+    await idle(t, const Duration(seconds: 4)); // let the toast go
+
+    // The right one opens exactly that room, with its history.
+    await privateMode(t, 'tajne haslo');
+    await pumpUntil(t, find.byType(ChatScreen));
+    await pumpUntil(t, find.text(secret));
+    expect(find.text('Pamiętnik'), findsOneWidget);
+    await hideKeyboard(t);
+    await shot(t, '09_private_room');
+    await backToHome(t);
+
+    // Locking: a wrong app PIN keeps it shut, the right one restores the
+    // lists (and the group's history).
+    await lock(t);
+    await enterPin(t, '1111');
+    await idle(t, const Duration(seconds: 5));
+    expect(find.byType(HomeScreen), findsNothing);
     expect(find.byType(PinScreen), findsOneWidget);
 
-    // Each PIN opens only its own room, with its history decrypted.
-    await enterPin(t, '1234');
-    await pumpUntil(t, find.byType(ChatScreen));
+    await enterPin(t, '2468');
+    await pumpUntil(t, find.byType(HomeScreen));
+    await settle(t);
+    await t.tap(find.textContaining('Grupy ('));
+    await settle(t);
+    await pumpUntil(t, find.text('Wyprawa w Tatry'));
+    await t.tap(find.text('Wyprawa w Tatry'));
     await pumpUntil(t, find.text(hello));
-    expect(find.text('Projekt Apollo'), findsNothing);
-    await lock(t);
-
-    await enterPin(t, '5678');
-    await pumpUntil(t, find.text('Projekt Apollo'));
-    expect(find.text(hello), findsNothing);
-    expect(find.text('Wyprawa w Tatry'), findsNothing);
+    await backToHome(t);
     await lock(t);
   });
 }

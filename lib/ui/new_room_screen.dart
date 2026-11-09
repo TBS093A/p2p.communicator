@@ -1,36 +1,71 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../app_state/app_session.dart';
 import '../room/invite.dart';
 import '../room/room_protocol.dart';
+import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
 import 'chat_screen.dart';
 import 'scan_screen.dart';
 
-/// Create a room or join one from an invite, and pick the PIN that will open
-/// it from the PIN pad.
+/// Create a group, a DM (shared by QR/text) or a private room, or join one
+/// from an invite.
+///
+/// * Group / DM: public, listed on the home screen, shown with your global
+///   profile.
+/// * Private: opens only with its own password from private mode, never
+///   listed, with a separate per-room name.
 class NewRoomScreen extends StatefulWidget {
-  const NewRoomScreen({super.key});
+  const NewRoomScreen({
+    super.key,
+    required this.app,
+    this.initialKind = RoomKind.group,
+  });
+
+  final AppSession app;
+  final RoomKind initialKind;
 
   @override
   State<NewRoomScreen> createState() => _NewRoomScreenState();
 }
+
+enum _Mode { group, dm, private, join }
 
 class _NewRoomScreenState extends State<NewRoomScreen> {
   final _form = GlobalKey<FormState>();
   final _roomName = TextEditingController();
   final _myName = TextEditingController();
   final _invite = TextEditingController();
-  final _pin = TextEditingController();
-  final _pin2 = TextEditingController();
-  bool _join = false;
+  final _pass = TextEditingController();
+  final _pass2 = TextEditingController();
+  late _Mode _mode = switch (widget.initialKind) {
+    RoomKind.dm => _Mode.dm,
+    RoomKind.group => _Mode.group,
+    RoomKind.private => _Mode.private,
+  };
   bool _busy = false;
   String? _status;
 
+  AppSession get app => widget.app;
+
+  /// Joining a private room needs a password and a per-room name too.
+  bool get _needsPrivateFields =>
+      _mode == _Mode.private ||
+      (_mode == _Mode.join &&
+          Invite.tryParse(_invite.text)?.kind == RoomKind.private);
+
+  @override
+  void initState() {
+    super.initState();
+    _myName.text = app.myGlobal.name;
+    _invite.addListener(() => setState(() {}));
+  }
+
   @override
   void dispose() {
-    for (final c in [_roomName, _myName, _invite, _pin, _pin2]) {
+    for (final c in [_roomName, _myName, _invite, _pass, _pass2]) {
       c.dispose();
     }
     super.dispose();
@@ -48,50 +83,68 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
     if (data?.text != null) setState(() => _invite.text = data!.text!.trim());
   }
 
+  void _step(String what) {
+    if (mounted) setState(() => _status = what);
+    debugPrint('[new-room] $what');
+  }
+
   Future<void> _submit() async {
     if (!_form.currentState!.validate()) return;
-    final pin = _pin.text;
-    setState(() {
-      _busy = true;
-      _status = 'Sprawdzam PIN…';
-    });
-    final sw = Stopwatch()..start();
-    void step(String what) =>
-        debugPrint('[new-room] $what at ${sw.elapsedMilliseconds} ms');
+    setState(() => _busy = true);
     try {
-      if (!await PinVault.instance.isPinFree(pin)) {
-        _fail('Ten PIN jest już zajęty przez inny pokój. Wybierz inny.');
-        return;
-      }
-      step('slot checked');
-      RoomSecrets secrets;
-      if (_join) {
-        setState(() => _status = 'Szukam pokoju w sieci…');
-        secrets = await RoomProtocol.join(
-          invite: Invite.tryParse(_invite.text)!,
-          myName: _myName.text.trim(),
-        );
+      final Widget chat;
+      if (_needsPrivateFields) {
+        chat = await _private();
+      } else if (_mode == _Mode.join) {
+        _step('Szukam rozmowy w sieci…');
+        final room = await app.joinRoom(Invite.tryParse(_invite.text)!);
+        chat = ChatScreen(session: room.session, app: app);
       } else {
-        setState(() => _status = 'Tworzę pokój…');
-        secrets = await RoomProtocol.create(
-          roomName: _roomName.text.trim(),
-          myName: _myName.text.trim(),
+        _step('Tworzę rozmowę…');
+        final dm = _mode == _Mode.dm;
+        final room = await app.createRoom(
+          kind: dm ? RoomKind.dm : RoomKind.group,
+          name: dm ? 'Rozmowa' : _roomName.text.trim(),
         );
+        chat = ChatScreen(session: room.session, app: app);
       }
-      step('room records ready');
-      final room = await PinVault.instance.store(pin, secrets);
-      step('vault slot written');
       if (!mounted) return;
-      await Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => ChatScreen(room: room)),
-      );
+      await Navigator.of(
+        context,
+      ).pushReplacement(MaterialPageRoute<void>(builder: (_) => chat));
     } on RoomNotFoundException {
-      _fail('Nie znaleziono pokoju. Sprawdź zaproszenie i połączenie.');
+      _fail('Nie znaleziono rozmowy. Sprawdź zaproszenie i połączenie.');
     } on RoomFullException {
-      _fail('Pokój jest pełny (63 osoby).');
+      _fail('Rozmowa jest pełna (63 osoby).');
     } on Object catch (e) {
       _fail('Nie udało się: $e');
     }
+  }
+
+  Future<Widget> _private() async {
+    final password = _pass.text;
+    _step('Sprawdzam hasło…');
+    if (!await PinVault.instance.isPinFree(password)) {
+      throw StateError('To hasło jest już zajęte przez inny pokój prywatny');
+    }
+    final RoomSecrets secrets;
+    if (_mode == _Mode.join) {
+      _step('Szukam pokoju w sieci…');
+      secrets = await RoomProtocol.join(
+        invite: Invite.tryParse(_invite.text)!,
+        myName: _myName.text.trim(),
+        asPrivate: true,
+      );
+    } else {
+      _step('Tworzę pokój prywatny…');
+      secrets = await RoomProtocol.create(
+        roomName: _roomName.text.trim(),
+        myName: _myName.text.trim(),
+      );
+    }
+    final room = await PinVault.instance.store(password, secrets);
+    _step('Zapisano');
+    return ChatScreen.private(session: RoomSession(room));
   }
 
   void _fail(String msg) {
@@ -101,20 +154,16 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
       _busy = false;
       _status = null;
     });
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  String? _pinValidator(String? v) {
-    if (v == null || !RegExp(r'^\d{4,8}$').hasMatch(v)) {
-      return 'PIN: 4–8 cyfr';
-    }
-    return null;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg.replaceFirst('Bad state: ', ''))),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final small = Theme.of(context).textTheme.bodySmall;
     return Scaffold(
-      appBar: AppBar(title: const Text('Nowy pokój')),
+      appBar: AppBar(title: const Text('Nowa rozmowa')),
       body: AbsorbPointer(
         absorbing: _busy,
         child: Form(
@@ -126,33 +175,63 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                SegmentedButton<bool>(
+                SegmentedButton<_Mode>(
+                  showSelectedIcon: false,
                   segments: const [
                     ButtonSegment(
-                      value: false,
-                      label: Text('Utwórz'),
-                      icon: Icon(Icons.add_home),
+                      value: _Mode.group,
+                      label: Text('Grupa'),
+                      icon: Icon(Icons.groups_outlined),
                     ),
                     ButtonSegment(
-                      value: true,
+                      value: _Mode.dm,
+                      label: Text('DM'),
+                      icon: Icon(Icons.person_outline),
+                    ),
+                    ButtonSegment(
+                      value: _Mode.private,
+                      label: Text('Prywatny'),
+                      icon: Icon(Icons.vpn_key_outlined),
+                    ),
+                    ButtonSegment(
+                      value: _Mode.join,
                       label: Text('Dołącz'),
                       icon: Icon(Icons.qr_code_scanner),
                     ),
                   ],
-                  selected: {_join},
-                  onSelectionChanged: (s) => setState(() => _join = s.first),
+                  selected: {_mode},
+                  onSelectionChanged: (s) => setState(() => _mode = s.first),
                 ),
                 const SizedBox(height: 16),
-                if (!_join)
+                Text(switch (_mode) {
+                  _Mode.group =>
+                    'Grupa pojawi się na liście. Zaprosisz osoby kodem QR '
+                        'z menu rozmowy.',
+                  _Mode.dm =>
+                    'Rozmowa 1:1. Po utworzeniu pokaż kod QR z menu. '
+                        'Osoby, z którymi masz wspólną grupę, zaprosisz '
+                        'też stuknięciem w ich avatar na liście.',
+                  _Mode.private =>
+                    'Pokój prywatny nie pojawi się na żadnej liście. '
+                        'Otworzysz go tylko hasłem w trybie prywatnym. '
+                        'Masz w nim osobną nazwę, niepowiązaną z profilem.',
+                  _Mode.join =>
+                    'Wklej albo zeskanuj zaproszenie. Do pokoju prywatnego '
+                        'ustawisz też hasło.',
+                }, style: small),
+                const SizedBox(height: 12),
+                if (_mode == _Mode.group || _mode == _Mode.private)
                   TextFormField(
                     controller: _roomName,
-                    decoration: const InputDecoration(
-                      labelText: 'Nazwa pokoju',
+                    decoration: InputDecoration(
+                      labelText: _mode == _Mode.group
+                          ? 'Nazwa grupy'
+                          : 'Nazwa pokoju',
                     ),
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? 'Podaj nazwę' : null,
-                  )
-                else
+                  ),
+                if (_mode == _Mode.join)
                   TextFormField(
                     controller: _invite,
                     minLines: 2,
@@ -177,43 +256,48 @@ class _NewRoomScreenState extends State<NewRoomScreen> {
                         ? 'To nie jest poprawne zaproszenie'
                         : null,
                   ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _myName,
-                  decoration: const InputDecoration(
-                    labelText: 'Twoja nazwa w tym pokoju',
+                if (_needsPrivateFields) ...[
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _myName,
+                    decoration: const InputDecoration(
+                      labelText: 'Twoja nazwa w tym pokoju',
+                    ),
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Podaj nazwę' : null,
                   ),
-                  validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'Podaj nazwę' : null,
-                ),
-                const SizedBox(height: 24),
-                TextFormField(
-                  controller: _pin,
-                  obscureText: true,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'PIN do tego pokoju',
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _pass,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Hasło do tego pokoju',
+                    ),
+                    validator: (v) => (v == null || v.length < 4)
+                        ? 'Hasło: co najmniej 4 znaki'
+                        : null,
                   ),
-                  validator: _pinValidator,
-                ),
-                TextFormField(
-                  controller: _pin2,
-                  obscureText: true,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Powtórz PIN'),
-                  validator: (v) => v != _pin.text ? 'PIN-y się różnią' : null,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Ten PIN otworzy ten pokój z ekranu PIN-u. Każdy pokój ma '
-                  'własny PIN. Nie da się go odzyskać: zapomniany PIN oznacza '
-                  'utratę dostępu do pokoju na tym telefonie.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                  TextFormField(
+                    controller: _pass2,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Powtórz hasło',
+                    ),
+                    validator: (v) =>
+                        v != _pass.text ? 'Hasła się różnią' : null,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Hasła nie da się odzyskać: zapomniane hasło oznacza '
+                    'utratę dostępu do pokoju na tym telefonie.',
+                    style: small,
+                  ),
+                ],
                 const SizedBox(height: 24),
                 FilledButton(
+                  key: const ValueKey('new-room-submit'),
                   onPressed: _busy ? null : _submit,
-                  child: Text(_join ? 'Dołącz' : 'Utwórz'),
+                  child: Text(_mode == _Mode.join ? 'Dołącz' : 'Utwórz'),
                 ),
                 if (_status != null) ...[
                   const SizedBox(height: 16),

@@ -51,6 +51,39 @@ class Crypto {
     return _cs.decryptAead(Uint8List.sublistView(sealed, n), nonce, k, null);
   }
 
+  /// Encrypts [plain] so that only the holder of the secret key matching the
+  /// signing public key [to] can read it (HPKE; ed25519 identity keys are
+  /// bridged to x25519). [context] is authenticated, must match on open.
+  static Future<Uint8List> sealTo(
+    PublicKey to,
+    Uint8List plain, {
+    required String context,
+  }) async {
+    final recipient = await _cs.encapsulationKeyFromSigningKey(to);
+    return _cs.hpkeSeal(
+      recipient,
+      Uint8List.fromList(utf8.encode(context)),
+      plain,
+    );
+  }
+
+  /// Reverses [sealTo] with our own identity key pair. Throws if the blob
+  /// was not sealed to us, the context differs, or it was altered.
+  static Future<Uint8List> openWith(
+    KeyPair me,
+    Uint8List sealed, {
+    required String context,
+  }) async {
+    final secret = await _cs.decapsulationKeyFromSigningSecret(me.secret);
+    return _cs.hpkeOpen(
+      secret,
+      Uint8List.fromList(utf8.encode(context)),
+      sealed,
+    );
+  }
+
+  static Future<KeyPair> newIdentity() => _cs.generateKeyPair();
+
   static Future<SharedSecret> _contextKey(
     SharedSecret key,
     String? context,

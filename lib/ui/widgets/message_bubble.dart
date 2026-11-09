@@ -127,6 +127,8 @@ class MessageBubble extends StatelessWidget {
   Widget _content(BuildContext context, Color fg) {
     final media = message.media;
     switch (message.type) {
+      case MsgType.dmInvite:
+        return const SizedBox.shrink(); // never listed; see RoomSession
       case MsgType.text:
         return EmojiText(
           text: message.text ?? '',

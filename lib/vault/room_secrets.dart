@@ -1,5 +1,24 @@
-/// Everything needed to (re)open one room. Lives only inside an encrypted
-/// vault slot, so it is readable only after the matching PIN is typed.
+/// What kind of room this is.
+///
+/// * [dm] and [group] are public rooms: listed on the home screen, shown
+///   with your one global profile.
+/// * [private] rooms open only with their own password and keep a separate,
+///   unlinkable identity per room. v0.1 "PIN rooms" are private rooms.
+enum RoomKind {
+  dm,
+  group,
+  private;
+
+  bool get isPublic => this != RoomKind.private;
+
+  static RoomKind parse(Object? raw) => switch (raw) {
+    'dm' => RoomKind.dm,
+    'group' => RoomKind.group,
+    _ => RoomKind.private,
+  };
+}
+
+/// Everything needed to (re)open one room.
 class RoomSecrets {
   RoomSecrets({
     required this.roomName,
@@ -9,6 +28,7 @@ class RoomSecrets {
     required this.outboxKey,
     required this.outboxWriter,
     required this.rosterSlot,
+    this.kind = RoomKind.private,
   });
 
   final String roomName;
@@ -18,12 +38,14 @@ class RoomSecrets {
   final String rosterKey;
   final String rosterWriter;
 
-  /// This device's identity in the room. A fresh key pair per room, so rooms
-  /// cannot be linked to each other on the network.
+  /// This device's outbox in the room. In private rooms its owner key is a
+  /// fresh key pair per room, so rooms cannot be linked to each other.
   final String myName;
   final String outboxKey;
   final String outboxWriter;
   final int rosterSlot;
+
+  final RoomKind kind;
 
   Map<String, dynamic> toJson() => {
     'v': 1,
@@ -34,6 +56,7 @@ class RoomSecrets {
     'outboxKey': outboxKey,
     'outboxWriter': outboxWriter,
     'rosterSlot': rosterSlot,
+    'kind': kind.name,
   };
 
   factory RoomSecrets.fromJson(Map<String, dynamic> j) => RoomSecrets(
@@ -44,5 +67,7 @@ class RoomSecrets {
     outboxKey: j['outboxKey'] as String,
     outboxWriter: j['outboxWriter'] as String,
     rosterSlot: j['rosterSlot'] as int,
+    // Slots from v0.1 carry no kind: they were PIN rooms, now private.
+    kind: RoomKind.parse(j['kind']),
   );
 }

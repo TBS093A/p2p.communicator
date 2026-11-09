@@ -11,13 +11,32 @@ import 'package:veilid/veilid.dart';
 import '../core/crypto.dart';
 import 'room_secrets.dart';
 
-/// A room opened with its PIN: the slot it lives in, the slot key, and the
-/// secrets needed to reconnect to it.
-class UnlockedRoom {
+/// Where some encrypted local state lives: a data file and a media folder,
+/// both named after [slotId] and sealed with [key].
+abstract class VaultArea {
+  String get slotId;
+  SharedSecret get key;
+}
+
+/// A room and the secrets needed to reconnect to it. Private rooms come from
+/// a password slot; public rooms get an area derived from the app key.
+class UnlockedRoom implements VaultArea {
   UnlockedRoom(this.slotId, this.key, this.secrets);
+  @override
   final String slotId;
+  @override
   final SharedSecret key;
   final RoomSecrets secrets;
+}
+
+/// The app itself, opened with the app PIN: identity and public room list.
+class UnlockedApp implements VaultArea {
+  UnlockedApp(this.slotId, this.key, this.payload);
+  @override
+  final String slotId;
+  @override
+  final SharedSecret key;
+  final Map<String, dynamic> payload;
 }
 
 class VaultLockedOut implements Exception {
@@ -25,16 +44,25 @@ class VaultLockedOut implements Exception {
   final Duration remaining;
 }
 
-/// PIN -> room vault.
+/// Secret -> slot vault. Two kinds of secret open slots:
 ///
-/// * master = Argon2(PIN || devicePepper, vaultSalt). The pepper is 32 random
-///   bytes kept in Android Keystore-backed storage, so a copy of the app's files
-///   alone cannot be brute-forced offline, however short the PIN.
-/// * The slot file name is derived from master, so one PIN means one Argon2 run
-///   and a direct file lookup; there is no list of rooms anywhere.
+/// * the **app PIN** opens the app slot (identity, public rooms);
+/// * a **private-room password** opens that one private room.
+///
+/// They use separate key domains, so an app PIN and a password with the same
+/// characters open different slots and can never open each other's.
+///
+/// * master = Argon2(domain || secret || devicePepper, vaultSalt). The pepper
+///   is 32 random bytes kept in Android Keystore-backed storage, so a copy of
+///   the app's files alone cannot be brute-forced offline, however short the
+///   secret.
+/// * The slot file name is derived from master, so one attempt means one
+///   Argon2 run and a direct file lookup; there is no list of private rooms
+///   anywhere.
 /// * Every slot is padded to the same size and decoy slots are written next to
-///   real ones, so the folder does not show how many rooms exist.
-/// * A wrong PIN and "no room for this PIN" are the same thing: nothing opens.
+///   real ones, so the folder does not show how many private rooms exist.
+/// * A wrong password and "no room for this password" are the same thing:
+///   nothing opens.
 class PinVault {
   PinVault._();
   static final PinVault instance = PinVault._();
@@ -44,6 +72,12 @@ class PinVault {
   static const _pepperKey = 'vault_pepper_v1';
   static const _failsKey = 'vault_fails';
   static const _lockUntilKey = 'vault_lock_until';
+  static const _appSetKey = 'vault_app_set_v1';
+
+  /// Key domain of the app PIN. Private-room passwords use the empty domain,
+  /// which is also how v0.1 PIN rooms were stored: they keep opening with
+  /// their old PIN, now as a private-room password.
+  static const _appDomain = 'app';
 
   final _secure = const FlutterSecureStorage();
   final _rng = Random.secure();
@@ -87,13 +121,53 @@ class PinVault {
     return left.isNegative ? null : left;
   }
 
-  /// Returns the room for [pin], or null. Throws [VaultLockedOut] while
-  /// attempts are throttled.
-  Future<UnlockedRoom?> unlock(String pin) async {
+  /// Returns the private room for [password], or null. Throws
+  /// [VaultLockedOut] while attempts are throttled.
+  Future<UnlockedRoom?> unlock(String password) async {
+    final opened = await _open(password, '');
+    if (opened == null) return null;
+    final (slot, json) = opened;
+    return UnlockedRoom(slot.id, slot.key, RoomSecrets.fromJson(json));
+  }
+
+  // ------------------------------------------------------------------- app
+
+  /// Whether the app PIN was set up. Not secret: everyone knows the app has
+  /// a PIN; what stays hidden is which private rooms exist.
+  Future<bool> isAppSet() async => await _secure.read(key: _appSetKey) == '1';
+
+  Future<UnlockedApp> createApp(
+    String pin,
+    Map<String, dynamic> payload,
+  ) async {
+    final slot = await _slotFor(pin, domain: _appDomain);
+    await _writeSlot(slot, payload);
+    await _secure.write(key: _appSetKey, value: '1');
+    await _writeDecoys(_rng.nextInt(3));
+    return UnlockedApp(slot.id, slot.key, payload);
+  }
+
+  /// Opens the app with its PIN, or null. Throws [VaultLockedOut] while
+  /// attempts are throttled (shared with private-room attempts).
+  Future<UnlockedApp?> unlockApp(String pin) async {
+    final opened = await _open(pin, _appDomain);
+    if (opened == null) return null;
+    final (slot, json) = opened;
+    return UnlockedApp(slot.id, slot.key, json);
+  }
+
+  /// Rewrites the app slot's payload (e.g. after a profile change).
+  Future<void> updateApp(UnlockedApp app, Map<String, dynamic> payload) =>
+      _writeSlot(_Slot(app.slotId, app.key), payload, keepData: true);
+
+  Future<(_Slot, Map<String, dynamic>)?> _open(
+    String secret,
+    String domain,
+  ) async {
     final left = await lockoutRemaining();
     if (left != null) throw VaultLockedOut(left);
 
-    final slot = await _slotFor(pin);
+    final slot = await _slotFor(secret, domain: domain);
     final file = _slotFile(slot.id);
     if (await file.exists()) {
       try {
@@ -104,13 +178,30 @@ class PinVault {
         );
         await _secure.delete(key: _failsKey);
         await _secure.delete(key: _lockUntilKey);
-        return UnlockedRoom(slot.id, slot.key, _unpad(plain));
+        return (slot, _unpad(plain));
       } on Object {
-        // Name collision with a decoy or a damaged file: treat as wrong PIN.
+        // Name collision with a decoy or a damaged file: treat as wrong.
       }
     }
     await _registerFailure();
     return null;
+  }
+
+  /// Area for a public room's cache and media, derived from the app key so
+  /// nothing about it is readable without the app PIN.
+  Future<UnlockedRoom> publicRoomArea(
+    UnlockedApp app,
+    RoomSecrets secrets,
+  ) async {
+    final label = 'public-room:${secrets.rosterKey}';
+    final id = Crypto.hex(
+      Uint8List.sublistView(await Crypto.subkey(app.key, '$label:id'), 0, 16),
+    );
+    return UnlockedRoom(
+      id,
+      await Crypto.subsecret(app.key, '$label:key'),
+      secrets,
+    );
   }
 
   Future<void> _registerFailure() async {
@@ -128,23 +219,23 @@ class PinVault {
 
   // ----------------------------------------------------------------- store
 
-  Future<bool> isPinFree(String pin) async =>
-      !await _slotFile((await _slotFor(pin)).id).exists();
+  Future<bool> isPinFree(String password) async =>
+      !await _slotFile((await _slotFor(password)).id).exists();
 
-  Future<UnlockedRoom> store(String pin, RoomSecrets secrets) async {
-    final slot = await _slotFor(pin);
+  Future<UnlockedRoom> store(String password, RoomSecrets secrets) async {
+    final slot = await _slotFor(password);
     final file = _slotFile(slot.id);
     if (await file.exists()) {
-      throw StateError('PIN already used by another room');
+      throw StateError('Password already used by another room');
     }
-    await _writeSlot(slot, secrets);
+    await _writeSlot(slot, secrets.toJson());
     // A few extra decoys each time keeps the file count noisy.
     await _writeDecoys(_rng.nextInt(3));
     return UnlockedRoom(slot.id, slot.key, secrets);
   }
 
-  /// Forget a room on this device. Its files are overwritten by a decoy of the
-  /// same shape so the folder looks the same as before.
+  /// Forget a private room on this device. Its files are overwritten by a
+  /// decoy of the same shape so the folder looks the same as before.
   Future<void> forget(UnlockedRoom room) async {
     await _slotFile(room.slotId).writeAsBytes(
       await Crypto.randomBytes(await _sealedSlotSize()),
@@ -157,8 +248,9 @@ class PinVault {
 
   // ------------------------------------------------------- per-room data
 
-  /// Encrypted per-room blob (message cache). Null if never written.
-  Future<Uint8List?> readData(UnlockedRoom room) async {
+  /// Encrypted blob of an area (room message cache, app room list). Null if
+  /// never written.
+  Future<Uint8List?> readData(VaultArea room) async {
     final f = _dataFile(room.slotId);
     if (!await f.exists()) return null;
     try {
@@ -172,7 +264,7 @@ class PinVault {
     }
   }
 
-  Future<void> writeData(UnlockedRoom room, Uint8List plain) async {
+  Future<void> writeData(VaultArea room, Uint8List plain) async {
     final sealed = await Crypto.seal(room.key, plain, context: 'data');
     final f = _dataFile(room.slotId);
     final tmp = File('${f.path}.tmp');
@@ -182,7 +274,7 @@ class PinVault {
 
   /// Folder for this room's encrypted media, named so it cannot be matched
   /// to a slot file.
-  Future<Directory> mediaDir(UnlockedRoom room) async {
+  Future<Directory> mediaDir(VaultArea room) async {
     final name = Crypto.hex(await Crypto.subkey(room.key, 'media-dir'));
     final d = Directory(p.join(_dir.path, 'm', name.substring(0, 32)));
     await d.create(recursive: true);
@@ -191,10 +283,14 @@ class PinVault {
 
   // -------------------------------------------------------------- helpers
 
-  Future<_Slot> _slotFor(String pin) async {
+  Future<_Slot> _slotFor(String secret, {String domain = ''}) async {
     final password =
         (BytesBuilder(copy: false)
-              ..add(utf8.encode(pin))
+              // Empty domain = no prefix, byte-identical to v0.1 slots.
+              ..add(
+                domain.isEmpty ? const [] : utf8.encode('\u0000$domain\u0000'),
+              )
+              ..add(utf8.encode(secret))
               ..add(_pepper!))
             .toBytes();
     final master = await Crypto.deriveFromPassword(password, _salt);
@@ -207,12 +303,21 @@ class PinVault {
   File _slotFile(String id) => File(p.join(_dir.path, '$id.slot'));
   File _dataFile(String id) => File(p.join(_dir.path, '$id.data'));
 
-  Future<void> _writeSlot(_Slot slot, RoomSecrets secrets) async {
-    final sealed = await Crypto.seal(slot.key, _pad(secrets), context: 'slot');
-    await _slotFile(slot.id).writeAsBytes(sealed, flush: true);
-    await _dataFile(
-      slot.id,
-    ).writeAsBytes(await Crypto.randomBytes(1024 + _rng.nextInt(60000)));
+  Future<void> _writeSlot(
+    _Slot slot,
+    Map<String, dynamic> payload, {
+    bool keepData = false,
+  }) async {
+    final sealed = await Crypto.seal(slot.key, _pad(payload), context: 'slot');
+    final f = _slotFile(slot.id);
+    final tmp = File('${f.path}.tmp');
+    await tmp.writeAsBytes(sealed, flush: true);
+    await tmp.rename(f.path);
+    if (!keepData) {
+      await _dataFile(
+        slot.id,
+      ).writeAsBytes(await Crypto.randomBytes(1024 + _rng.nextInt(60000)));
+    }
   }
 
   /// Decoys must match real slots byte for byte in length.
@@ -230,10 +335,10 @@ class PinVault {
     }
   }
 
-  Uint8List _pad(RoomSecrets s) {
-    final json = utf8.encode(jsonEncode(s.toJson()));
+  Uint8List _pad(Map<String, dynamic> payload) {
+    final json = utf8.encode(jsonEncode(payload));
     if (json.length > _slotPlainSize - 4) {
-      throw StateError('room secrets too large for a slot');
+      throw StateError('slot payload too large');
     }
     final out = Uint8List(_slotPlainSize);
     ByteData.sublistView(out).setUint32(0, json.length);
@@ -241,10 +346,10 @@ class PinVault {
     return out;
   }
 
-  RoomSecrets _unpad(Uint8List plain) {
+  Map<String, dynamic> _unpad(Uint8List plain) {
     final len = ByteData.sublistView(plain).getUint32(0);
     final json = utf8.decode(Uint8List.sublistView(plain, 4, 4 + len));
-    return RoomSecrets.fromJson(jsonDecode(json) as Map<String, dynamic>);
+    return jsonDecode(json) as Map<String, dynamic>;
   }
 }
 
