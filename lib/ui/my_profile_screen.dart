@@ -6,15 +6,20 @@ import 'package:image_picker/image_picker.dart';
 import '../app.dart';
 import '../app_state/app_session.dart';
 import '../app_state/global_profile.dart';
+import '../room/room_session.dart';
+import '../vault/room_secrets.dart';
 import 'migration_screens.dart';
 import 'widgets/avatar.dart';
 
 /// The one profile everyone in your DMs and groups sees: picture (GIF ok),
-/// name, bubble color and status. Private rooms have their own instead.
+/// global nickname and status. Opened from a DM or group ([room]), it also
+/// offers a nickname for just that conversation. Private rooms have their
+/// own profile instead.
 class MyProfileScreen extends StatefulWidget {
-  const MyProfileScreen({super.key, required this.app});
+  const MyProfileScreen({super.key, required this.app, this.room});
 
   final AppSession app;
+  final RoomSession? room;
 
   @override
   State<MyProfileScreen> createState() => _MyProfileScreenState();
@@ -22,6 +27,7 @@ class MyProfileScreen extends StatefulWidget {
 
 class _MyProfileScreenState extends State<MyProfileScreen> {
   late final _name = TextEditingController(text: widget.app.myGlobal.name);
+  late final _nick = TextEditingController(text: widget.room?.myNick ?? '');
   bool _busy = false;
 
   AppSession get app => widget.app;
@@ -29,7 +35,56 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
   @override
   void dispose() {
     _name.dispose();
+    _nick.dispose();
     super.dispose();
+  }
+
+  Widget _roomNick(BuildContext context, RoomSession room) {
+    final where = room.kind == RoomKind.dm ? 'tej rozmowie' : 'tej grupie';
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Pseudonim w $where (opcjonalnie)',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            TextField(
+              key: const ValueKey('room-nick'),
+              controller: _nick,
+              maxLength: RoomSession.maxNickLength,
+              decoration: InputDecoration(
+                hintText: app.myGlobal.name,
+                helperText: room.myNick == null
+                    ? 'Teraz: pseudonim globalny'
+                    : 'Teraz: „${room.myNick}”',
+                suffixIcon: IconButton(
+                  key: const ValueKey('room-nick-save'),
+                  tooltip: 'Zapisz pseudonim',
+                  icon: const Icon(Icons.check),
+                  onPressed: () => _run(() => room.setNick(_nick.text)),
+                ),
+              ),
+            ),
+            if (room.myNick != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  key: const ValueKey('room-nick-clear'),
+                  onPressed: () => _run(() async {
+                    _nick.clear();
+                    await room.setNick(null);
+                  }),
+                  child: const Text('Użyj pseudonimu globalnego'),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -58,8 +113,9 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final room = widget.room;
     return ListenableBuilder(
-      listenable: app,
+      listenable: Listenable.merge([app, ?room]),
       builder: (context, _) {
         final me = app.myGlobal;
         return Scaffold(
@@ -71,6 +127,7 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
               children: [
                 if (_busy) const LinearProgressIndicator(),
                 const SizedBox(height: 8),
+                if (room != null && room.isPublic) _roomNick(context, room),
                 Center(child: Avatar.global(app, me, radius: 56)),
                 const SizedBox(height: 12),
                 Row(
@@ -101,7 +158,10 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                   controller: _name,
                   maxLength: 40,
                   decoration: InputDecoration(
-                    labelText: 'Twoja nazwa',
+                    labelText: 'Pseudonim globalny',
+                    helperText:
+                        'We wszystkich DM i grupach, gdzie nie ustawisz '
+                        'innego',
                     suffixIcon: IconButton(
                       tooltip: 'Zapisz nazwę',
                       icon: const Icon(Icons.check),

@@ -32,7 +32,7 @@ source.
 |---|---|---|
 | Listed on the home screen | yes (DM \| Grupy) | **never** |
 | Opens with | the app PIN | **its own password** (private mode, key icon) |
-| Your identity | one **global profile**: name, picture (GIF ok), status | a separate name per room, **unlinkable** to your profile |
+| Your identity | one **global profile**: nickname, picture (GIF ok), status; optionally **a different nickname per DM/group** | a separate nickname per room, **unlinkable** to your profile |
 | Status / presence | yes | no |
 
 * **Statuses**: available, away, do not disturb, invisible. The app writes a
@@ -43,6 +43,11 @@ source.
   identity key** (HPKE) and dropped into the shared group as a hidden
   message: every member tries to open it, only the addressee can, and nobody
   else learns who invited whom. They get an *accept / decline* prompt.
+* **Nicknames**: your global nickname is used everywhere by default. In any
+  DM or group you can set another one for that conversation only (*Mój
+  profil* opened from the chat); picture and status stay global. It travels
+  in your outbox head (`nick`), and the members list shows the global name
+  behind it. Each private room has its own nickname anyway.
 * Rooms from the old PIN-only version are now private rooms: open them in
   private mode with the old PIN as the password.
 

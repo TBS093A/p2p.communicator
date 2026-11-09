@@ -59,7 +59,13 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   final _lastSeen = <String, int>{}; // outbox key -> messages read
   final _watched = <String, RecordKey>{}; // other members' outboxes
   final _profileKeys = <String, String>{}; // outbox -> global profile key
+  final _nicks = <String, String>{}; // outbox -> nickname in this room
   final _uuid = const Uuid();
+
+  /// Our nickname in this public room (null = the global name).
+  String? get myNick => _nicks[myOutbox];
+
+  static const maxNickLength = 40;
 
   late final RecordKey _rosterKey;
   late final KeyPair _rosterWriter;
@@ -83,19 +89,38 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   RoomKind get kind => room.secrets.kind;
 
   MemberProfile get myProfile => isPublic
-      ? app!.myGlobal.toMember()
+      ? _withNick(myOutbox, app!.myGlobal.toMember())
       : profiles[myOutbox] ?? MemberProfile(name: room.secrets.myName);
 
-  /// In public rooms a member's global profile wins over their outbox head.
+  /// In public rooms a member's global profile wins over their outbox head,
+  /// except for the name when they set a nickname for this room.
   MemberProfile profileOf(String author) {
     if (author == myOutbox) return myProfile;
     final key = _profileKeys[author];
     final global = key == null ? null : app?.directory[key];
-    if (global != null) return global.toMember();
-    return profiles[author] ?? const MemberProfile(name: '?');
+    if (global != null) return _withNick(author, global.toMember());
+    return _withNick(
+      author,
+      profiles[author] ?? const MemberProfile(name: '?'),
+    );
+  }
+
+  MemberProfile _withNick(String author, MemberProfile p) {
+    final nick = isPublic ? _nicks[author] : null;
+    return nick == null ? p : p.copyWith(name: nick);
   }
 
   String nameOf(String author) => profileOf(author).name;
+
+  /// The global name behind a nickname in a public room; null when the
+  /// member uses no nickname here (or in private rooms).
+  String? globalNameOf(String author) {
+    if (!isPublic || _nicks[author] == null) return null;
+    if (author == myOutbox) return app!.myGlobal.name;
+    final key = _profileKeys[author];
+    return (key == null ? null : app?.directory[key]?.name) ??
+        profiles[author]?.name;
+  }
 
   /// Global profile key of a member of a public room, if known.
   String? profileKeyOf(String author) =>
@@ -151,6 +176,11 @@ class RoomSession extends ChangeNotifier implements MediaSource {
             head != null &&
             head['name'] != null) {
           profiles[myOutbox] = MemberProfile.fromJson(head);
+          notifyListeners();
+        }
+        // Same for our nickname in a public room.
+        if (isPublic && !_profileFromCache && head?['nick'] is String) {
+          _nicks[myOutbox] = head!['nick'] as String;
           notifyListeners();
         }
 
@@ -284,7 +314,15 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     final before = profiles[outbox];
     final profile = MemberProfile.fromJson(head);
     profiles[outbox] = profile;
-    if (before?.name != profile.name ||
+    final nickBefore = _nicks[outbox];
+    final nick = isPublic ? _cleanNick(head['nick']) : null;
+    if (nick == null) {
+      _nicks.remove(outbox);
+    } else {
+      _nicks[outbox] = nick;
+    }
+    if (nickBefore != nick ||
+        before?.name != profile.name ||
         before?.color != profile.color ||
         before?.avatar?.hash != profile.avatar?.hash) {
       notifyListeners();
@@ -443,8 +481,37 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   /// Outbox head. Public rooms point to the global profile (`p`) and keep a
   /// name as fallback; private rooms carry the full per-room profile.
   Map<String, dynamic> _head(int count) => isPublic
-      ? {'name': app!.myGlobal.name, 'p': app!.myProfileKey, 'count': count}
+      ? {
+          'name': app!.myGlobal.name,
+          'p': app!.myProfileKey,
+          'nick': ?myNick,
+          'count': count,
+        }
       : {...myProfile.toJson(), 'count': count};
+
+  static String? _cleanNick(Object? raw) => cleanNick(raw, max: maxNickLength);
+
+  /// Sets (or with null/blank clears) our nickname in this public room. It
+  /// replaces the global name here only; picture and status stay global.
+  Future<void> setNick(String? nick) async {
+    if (!isPublic) {
+      throw StateError('private rooms have their own per-room profile');
+    }
+    final clean = _cleanNick(nick);
+    if (clean == myNick) return;
+    if (clean == null) {
+      _nicks.remove(myOutbox);
+    } else {
+      _nicks[myOutbox] = clean;
+    }
+    notifyListeners();
+    _scheduleSave();
+    final job = _sendChain.then(
+      (_) => Dht.setJsonSoon(_outboxKey, 0, _head(_myCount)),
+    );
+    _sendChain = job.catchError((Object e) => debugPrint('nick: $e'));
+    await job;
+  }
 
   /// Appends a message that is not shown in the conversation (e.g. a sealed
   /// DM invite). Goes through the same ordered send queue.
@@ -704,6 +771,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     final json = jsonEncode({
       'meta': meta.toJson(),
       'profiles': {for (final e in profiles.entries) e.key: e.value.toJson()},
+      'nicks': _nicks,
       'lastSeen': _lastSeen,
       'myCount': _myCount,
       'messages': [for (final m in keep) m.toCache()],
@@ -728,6 +796,14 @@ class RoomSession extends ChangeNotifier implements MediaSource {
           profiles[e.key as String] = MemberProfile.fromJson(
             (e.value as Map).cast<String, dynamic>(),
           );
+        }
+      }
+      final nicks = j['nicks'];
+      if (nicks is Map) {
+        for (final e in nicks.entries) {
+          if (e.key is String && e.value is String) {
+            _nicks[e.key as String] = e.value as String;
+          }
         }
       }
       // Caches written before profiles existed: names only.

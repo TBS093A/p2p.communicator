@@ -225,7 +225,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final app = widget.app;
         await _open(
           app != null
-              ? MyProfileScreen(app: app)
+              ? MyProfileScreen(app: app, room: _session)
               : ProfileScreen(session: _session),
         );
       case 'settings':

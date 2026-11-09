@@ -370,6 +370,20 @@ void main() {
     await topAvatarShows(t);
     await tapKey(t, 'status-away');
     await waitSaved(t);
+    // Opened from the group, it also takes a nickname for this group only.
+    await t.drag(find.byType(ListView).first, const Offset(0, 1500));
+    await settle(t);
+    final nick = find.byKey(const ValueKey('room-nick'));
+    await pumpUntil(t, nick);
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      await t.enterText(nick, 'Marta z Tatr');
+      await idle(t, const Duration(milliseconds: 800));
+      if (t.widget<TextField>(nick).controller!.text == 'Marta z Tatr') break;
+    }
+    await tapKey(t, 'room-nick-save');
+    await waitSaved(t);
+    await hideKeyboard(t);
+    await pumpUntil(t, find.text('Teraz: „Marta z Tatr”'));
     await t.drag(find.byType(ListView).first, const Offset(0, 1500));
     await settle(t);
     await shot(t, '08_profile_status');
@@ -414,6 +428,9 @@ void main() {
 
     await openMenu(t, 'Osoby');
     await pumpUntil(t, find.byType(MembersScreen));
+    // The group nickname, with the global name behind it.
+    await pumpUntil(t, find.text('Marta z Tatr (ty)'));
+    expect(find.textContaining('globalnie: Marta'), findsOneWidget);
     await shot(t, '07_members');
     await t.pageBack();
     await settle(t);
