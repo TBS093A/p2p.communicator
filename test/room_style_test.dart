@@ -106,6 +106,32 @@ void main() {
       expect(back.copyWith(name: 'y').backgroundImage!.hash, 'bg');
     });
 
+    test('bubble colors and bar transparency: round-trip, reset, clamp', () {
+      final m = RoomMeta(
+        name: 'x',
+        bubble: 0xFFFF6F00,
+        otherBubble: 0xFF2E7D32,
+        barTransparency: 40,
+      );
+      final back = RoomMeta.fromJson(m.toJson());
+      expect(back.bubble, 0xFFFF6F00);
+      expect(back.otherBubble, 0xFF2E7D32);
+      expect(back.effectiveBarTransparency, 40);
+      expect(back.copyWith(clearBubble: true).bubble, isNull);
+      expect(back.copyWith(clearBubble: true).otherBubble, 0xFF2E7D32);
+      expect(back.copyWith(clearOtherBubble: true).otherBubble, isNull);
+
+      // Default: 25 % see-through bars, i.e. alpha 75 %.
+      final d = RoomMeta(name: 'x');
+      expect(d.effectiveBarTransparency, 25);
+      expect(d.barAlpha, (255 * 0.75).round());
+      expect(
+        RoomMeta(name: 'x', barTransparency: 200).effectiveBarTransparency,
+        RoomMeta.maxBarTransparency,
+      );
+      expect(RoomMeta(name: 'x', barTransparency: 0).barAlpha, 255);
+    });
+
     test('background can be reset to the default', () {
       final m = RoomMeta(name: 'x', background: 0xFF123456);
       expect(m.copyWith(clearBackground: true).background, isNull);

@@ -8,12 +8,16 @@
 //                 --target=integration_test/app_test.dart
 import 'dart:io';
 
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:p2p_communicator/core/crypto.dart';
 import 'package:p2p_communicator/main.dart' as app;
+import 'package:p2p_communicator/migration/migration_archive.dart';
+import 'package:share_plus_platform_interface/share_plus_platform_interface.dart';
 import 'package:p2p_communicator/ui/chat_screen.dart';
 import 'package:p2p_communicator/ui/home_screen.dart';
 import 'package:p2p_communicator/ui/invite_screen.dart';
@@ -26,6 +30,7 @@ import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
 
 import 'test_images.dart';
+import 'test_platforms.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -178,14 +183,24 @@ void main() {
 
   /// Waits until a settings screen's save (upload + DHT write) is done,
   /// i.e. its progress bar is gone again, and no error was shown.
+  ///
+  /// Busy screens also block input (AbsorbPointer). On a long, scrolled list
+  /// the progress bar at its top may not be built at all, so the blocked
+  /// input is what really tells that the save is still running.
   Future<void> waitSaved(WidgetTester t) async {
+    final blocked = find.byWidgetPredicate(
+      (w) => w is AbsorbPointer && w.absorbing,
+    );
+    bool busy() =>
+        find.byType(LinearProgressIndicator).evaluate().isNotEmpty ||
+        blocked.evaluate().isNotEmpty;
     await idle(t, const Duration(milliseconds: 400));
     final end = DateTime.now().add(const Duration(minutes: 3));
-    while (find.byType(LinearProgressIndicator).evaluate().isNotEmpty &&
-        DateTime.now().isBefore(end)) {
+    while (busy() && DateTime.now().isBefore(end)) {
       await idle(t, const Duration(milliseconds: 250));
     }
     expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(blocked, findsNothing, reason: 'screen still busy');
     expect(find.byType(SnackBar), findsNothing, reason: 'save failed');
   }
 
@@ -217,6 +232,15 @@ void main() {
   Finder avatarImage() =>
       find.descendant(of: find.byType(Avatar), matching: find.byType(Image));
 
+  /// Waits for the uploaded picture at the top of a settings list. Tapping
+  /// the upload button (ensureVisible) can scroll a long list until the
+  /// picture above it is no longer built, so scroll back up first.
+  Future<void> topAvatarShows(WidgetTester t) async {
+    await t.drag(find.byType(ListView).first, const Offset(0, 1500));
+    await settle(t);
+    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+  }
+
   Future<void> lock(WidgetTester t) async {
     await settle(t);
     await t.tap(find.byTooltip('Zablokuj'));
@@ -236,6 +260,9 @@ void main() {
     final myPicture = await portraitGif();
     final chatBackground = await snowfallGif();
     final partyEmoji = await partyGif();
+    // Bulk add: three GIFs plus one far over the 512 KB emoji limit, which
+    // must be shrunk automatically rather than refused.
+    final bulkEmoji = [...await emojiPack(), await bigGif()];
 
     app.main();
     await pumpUntil(t, find.byType(SetupScreen));
@@ -284,7 +311,7 @@ void main() {
     gallery.queue.add(roomPicture);
     await tapKey(t, 'room-avatar-upload');
     await waitSaved(t);
-    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+    await topAvatarShows(t);
 
     await pickColor(t, 'room-bg-edit', '1B2A41');
     await pumpUntil(t, find.textContaining('#1B2A41'));
@@ -294,6 +321,12 @@ void main() {
     await waitSaved(t);
     await pumpUntil(t, find.byKey(const ValueKey('room-bgimg-dim')));
 
+    // Bubble colors are a room setting: mine and everyone else's.
+    await pickColor(t, 'room-bubble-edit', 'FF6F00');
+    await pumpUntil(t, find.textContaining('#FF6F00'));
+    await pickColor(t, 'room-other-bubble-edit', '2E7D32');
+    await pumpUntil(t, find.textContaining('#2E7D32'));
+
     gallery.queue.add(partyEmoji); // party.gif -> suggested code :party:
     await tapKey(t, 'emoji-add');
     await pumpUntil(t, find.byKey(const ValueKey('emoji-confirm')));
@@ -302,6 +335,23 @@ void main() {
     await settle(t);
     await waitSaved(t);
     await pumpUntil(t, find.text(':party:'));
+
+    // Several at once: codes suggested from file names, one room write.
+    gallery.queue.addAll(bulkEmoji);
+    await tapKey(t, 'emoji-add-many');
+    await pumpUntil(t, find.byKey(const ValueKey('bulk-emoji-confirm')));
+    await settle(t);
+    await tapKey(t, 'bulk-emoji-confirm');
+    // All four added, none skipped (the big one was shrunk, not refused).
+    await pumpUntil(
+      t,
+      find.text('Dodano 4 emoji'),
+      timeout: const Duration(minutes: 3),
+    );
+    await idle(t, const Duration(seconds: 5)); // let the SnackBar go
+    for (final code in ['ogien', 'serce', 'kciuk_w_gore', 'wielki_gif']) {
+      await pumpUntil(t, find.text(':$code:'));
+    }
     // Back to the top so the screenshot shows the picture and the background.
     await t.drag(find.byType(ListView).first, const Offset(0, 1500));
     await settle(t);
@@ -317,11 +367,9 @@ void main() {
     gallery.queue.add(myPicture);
     await tapKey(t, 'profile-avatar-upload');
     await waitSaved(t);
-    await pumpUntil(t, avatarImage(), timeout: const Duration(seconds: 30));
+    await topAvatarShows(t);
     await tapKey(t, 'status-away');
     await waitSaved(t);
-    await pickColor(t, 'bubble-color-edit', 'FF6F00');
-    await pumpUntil(t, find.textContaining('#FF6F00'));
     await t.drag(find.byType(ListView).first, const Offset(0, 1500));
     await settle(t);
     await shot(t, '08_profile_status');
@@ -344,6 +392,24 @@ void main() {
       timeout: const Duration(seconds: 30),
     );
     await hideKeyboard(t);
+    // The picture runs under both bars; they take the room's background
+    // color (#1B2A41) at the default 25 % transparency.
+    final top = t.widget<AppBar>(find.byKey(const ValueKey('chat-top-bar')));
+    final bottom = t.widget<Material>(
+      find.byKey(const ValueKey('chat-bottom-bar')),
+    );
+    for (final c in [top.backgroundColor!, bottom.color!]) {
+      expect(c.toARGB32() & 0xFFFFFF, 0x1B2A41);
+      expect((c.a * 100).round(), 75);
+    }
+    final chatScaffold = find.ancestor(
+      of: find.byKey(const ValueKey('chat-top-bar')),
+      matching: find.byType(Scaffold),
+    );
+    expect(
+      t.widget<Scaffold>(chatScaffold.first).extendBodyBehindAppBar,
+      isTrue,
+    );
     await shot(t, '06_chat_styled');
 
     await openMenu(t, 'Osoby');
@@ -429,6 +495,130 @@ void main() {
     await t.tap(find.text('Wyprawa w Tatry'));
     await pumpUntil(t, find.text(hello));
     await backToHome(t);
+
+    // Moving to a new phone, with this emulator playing both. The old phone
+    // seals everything to the new phone's one-time key, shares the file and
+    // wipes itself; the new phone imports it under a new app PIN.
+    final share = FakeShare();
+    SharePlatform.instance = share;
+    final picker = FakeFileSelector();
+    FileSelectorPlatform.instance = picker;
+    final testKey = await Crypto.newIdentity();
+
+    await tapKey(t, 'my-profile');
+    await pumpUntil(t, find.byType(MyProfileScreen));
+    await settle(t);
+    final moveOut = find.byKey(const ValueKey('move-out'));
+    await t.scrollUntilVisible(
+      moveOut,
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(MyProfileScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tapKey(t, 'move-out');
+    final codeInput = find.byKey(const ValueKey('move-code-input'));
+    await pumpUntil(t, codeInput);
+    await settle(t);
+    await t.enterText(codeInput, MoveCode.encode(testKey.key));
+    await idle(t, const Duration(milliseconds: 600));
+    await hideKeyboard(t);
+
+    // The private room goes along only when added with its password.
+    await tapKey(t, 'move-add-private');
+    final privatePass = find.byKey(const ValueKey('move-private-password'));
+    await pumpUntil(t, privatePass);
+    await settle(t);
+    await t.enterText(privatePass, 'tajne haslo');
+    await idle(t, const Duration(milliseconds: 600));
+    await tapKey(t, 'move-private-add');
+    await settle(t);
+    await hideKeyboard(t);
+    await pumpUntil(t, find.text('Pamiętnik'));
+
+    await tapKey(t, 'move-export');
+    await pumpUntil(t, find.byKey(const ValueKey('move-wipe')));
+    await settle(t);
+    final sealed = share.last;
+    expect(sealed, isNotNull, reason: 'nothing was shared');
+
+    // Only that key opens it, and it holds the whole account.
+    final names = <String>[];
+    await for (final (name, _) in (await MigrationReader.open(
+      sealed!,
+      testKey,
+    )).entries()) {
+      names.add(name);
+    }
+    expect(names, containsAll(['app/payload', 'app/data', 'priv/0/secrets']));
+    expect(
+      names.where((n) => n.startsWith('pub/') && n.endsWith('/secrets')),
+      hasLength(greaterThanOrEqualTo(2)),
+      reason: 'the group and the DM',
+    );
+    expect(names.any((n) => n.contains('/media/')), isTrue);
+    await shot(t, '10_move_send');
+
+    await tapKey(t, 'move-wipe');
+    await pumpUntil(t, find.byKey(const ValueKey('move-wipe-confirm')));
+    await settle(t);
+    await tapKey(t, 'move-wipe-confirm');
+    await pumpUntil(t, find.byType(SetupScreen));
+    await settle(t);
+
+    // The "new phone": its code is a different one-time key, so the test
+    // passes the file on sealed to that key, as the old phone would have.
+    await tapKey(t, 'move-receive');
+    final codeText = find.byKey(const ValueKey('move-code-text'));
+    await pumpUntil(t, codeText);
+    await settle(t);
+    final newPhone = MoveCode.tryParse(
+      t.widget<SelectableText>(codeText).data!,
+    );
+    expect(newPhone, isNotNull);
+    final received = File('${sealed.parent.path}/z-nowego-telefonu.p2pc');
+    final rewrap = await MigrationWriter.create(received, newPhone!);
+    await for (final (name, data) in (await MigrationReader.open(
+      sealed,
+      testKey,
+    )).entries()) {
+      await rewrap.add(name, data);
+    }
+    await rewrap.close();
+    picker.file = received;
+
+    await tapKey(t, 'move-pick-file');
+    await pumpUntil(t, find.text('z-nowego-telefonu.p2pc'));
+    await fill(t, 'Nowy PIN aplikacji', '1357');
+    await fill(t, 'Powtórz PIN', '1357');
+    await hideKeyboard(t);
+    await tapKey(t, 'move-import');
+    await pumpUntil(t, find.byType(HomeScreen));
+    await settle(t);
+
+    // Everything is there: the group with its history, and the private room
+    // by its unchanged password.
+    await t.tap(find.textContaining('Grupy ('));
+    await settle(t);
+    await pumpUntil(t, find.text('Wyprawa w Tatry'));
+    await t.tap(find.text('Wyprawa w Tatry'));
+    await pumpUntil(t, find.text(hello));
+    await backToHome(t);
+    await privateMode(t, 'tajne haslo');
+    await pumpUntil(t, find.byType(ChatScreen));
+    await pumpUntil(t, find.text(secret));
+    await backToHome(t);
+
+    // The new PIN opens it; the old one no longer does.
+    await lock(t);
+    await enterPin(t, '2468');
+    await idle(t, const Duration(seconds: 5));
+    expect(find.byType(HomeScreen), findsNothing);
+    await enterPin(t, '1357');
+    await pumpUntil(t, find.byType(HomeScreen));
     await lock(t);
   });
 }

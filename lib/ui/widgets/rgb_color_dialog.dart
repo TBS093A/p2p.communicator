@@ -189,9 +189,10 @@ class _RgbColorDialogState extends State<_RgbColorDialog> {
   }
 }
 
-/// Sample message bubble used as the preview for bubble colors.
-Widget bubblePreview(Color color) => Align(
-  alignment: Alignment.centerRight,
+/// Sample message bubble used as the preview for bubble colors: on the
+/// right for your own messages, on the left for everyone else's.
+Widget bubblePreview(Color color, {bool mine = true}) => Align(
+  alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
   child: Container(
     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
     decoration: BoxDecoration(
@@ -199,7 +200,9 @@ Widget bubblePreview(Color color) => Align(
       borderRadius: BorderRadius.circular(16),
     ),
     child: Text(
-      'Tak będą wyglądać twoje wiadomości',
+      mine
+          ? 'Tak będą wyglądać twoje wiadomości'
+          : 'Tak będą wyglądać wiadomości innych',
       style: TextStyle(color: onColor(color)),
     ),
   ),

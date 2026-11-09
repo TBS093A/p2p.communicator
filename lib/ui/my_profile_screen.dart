@@ -6,9 +6,8 @@ import 'package:image_picker/image_picker.dart';
 import '../app.dart';
 import '../app_state/app_session.dart';
 import '../app_state/global_profile.dart';
-import '../room/room_style.dart';
+import 'migration_screens.dart';
 import 'widgets/avatar.dart';
-import 'widgets/rgb_color_dialog.dart';
 
 /// The one profile everyone in your DMs and groups sees: picture (GIF ok),
 /// name, bubble color and status. Private rooms have their own instead.
@@ -57,29 +56,12 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
     await _run(() => app.updateGlobalProfile(avatar: File(picked.path)));
   }
 
-  Future<void> _editColor() async {
-    final choice = await showRgbColorDialog(
-      context,
-      title: 'Kolor moich dymków',
-      initial: app.myGlobal.color,
-      fallback: defaultMyBubble,
-      preview: bubblePreview,
-    );
-    if (choice == null) return;
-    await _run(
-      () => choice.color == null
-          ? app.updateGlobalProfile(clearColor: true)
-          : app.updateGlobalProfile(color: choice.color),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: app,
       builder: (context, _) {
         final me = app.myGlobal;
-        final color = me.color ?? defaultMyBubble;
         return Scaffold(
           appBar: AppBar(title: const Text('Mój profil')),
           body: AbsorbPointer(
@@ -163,19 +145,21 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                 ),
                 const SizedBox(height: 8),
                 ListTile(
-                  key: const ValueKey('bubble-color-edit'),
+                  key: const ValueKey('move-out'),
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Kolor moich dymków'),
-                  subtitle: Text(
-                    me.color == null
-                        ? 'domyślny'
-                        : '#${(color & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}',
+                  leading: const Icon(Icons.phonelink_setup),
+                  title: const Text('Przenieś na nowy telefon'),
+                  subtitle: const Text(
+                    'Rozmowy, grupy, media i wybrane pokoje prywatne',
                   ),
-                  trailing: const Icon(Icons.tune),
-                  onTap: _editColor,
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => MigrationSendScreen(app: app),
+                    ),
+                  ),
                 ),
-                bubblePreview(Color(color)),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
                 Text(
                   'Ten profil widzą osoby z twoich rozmów i grup. Pokoje '
                   'prywatne mają osobną tożsamość, niepowiązaną z tą.',

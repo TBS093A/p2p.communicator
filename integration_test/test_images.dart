@@ -17,6 +17,16 @@ class FakeImagePicker extends ImagePickerPlatform {
     required ImageSource source,
     ImagePickerOptions options = const ImagePickerOptions(),
   }) async => queue.isEmpty ? null : XFile(queue.removeAt(0));
+
+  /// Multi-select (bulk emoji): hands out everything queued at once.
+  @override
+  Future<List<XFile>> getMultiImageWithOptions({
+    MultiImagePickerOptions options = const MultiImagePickerOptions(),
+  }) async {
+    final all = [for (final p in queue) XFile(p)];
+    queue.clear();
+    return all;
+  }
 }
 
 Future<String> _write(String name, Uint8List bytes) async {
@@ -165,12 +175,12 @@ Future<String> snowfallGif() async {
 /// 96×96 animated GIF, 12 frames: a spinning, color-cycling party star on a
 /// transparent background. Frames are palette images (index 0 transparent),
 /// because the GIF encoder only keeps transparency from an alpha palette.
-Future<String> partyGif() async {
+Future<String> partyGif({String name = 'party', double hueShift = 0}) async {
   const s = 96;
   const frames = 12;
   img.Image? anim;
   for (var f = 0; f < frames; f++) {
-    final hue = f / frames;
+    final hue = (f / frames + hueShift) % 1;
     final star = _hsv(hue);
     final dot = _hsv((hue + 0.5) % 1);
     final palette = img.PaletteUint8(3, 4)
@@ -197,7 +207,47 @@ Future<String> partyGif() async {
       anim.addFrame(frame);
     }
   }
-  return _write('party.gif', Uint8List.fromList(img.encodeGif(anim!)));
+  return _write('$name.gif', Uint8List.fromList(img.encodeGif(anim!)));
+}
+
+/// A few differently tinted animated emoji for the bulk-add flow; their file
+/// names become the suggested codes.
+Future<List<String>> emojiPack() async => [
+  await partyGif(name: 'Ogien', hueShift: 0.05),
+  await partyGif(name: 'serce', hueShift: 0.9),
+  await partyGif(name: 'Kciuk w gore', hueShift: 0.3),
+];
+
+/// A deliberately oversized animated GIF (well over the 512 KB emoji
+/// limit): the app must shrink it automatically instead of refusing it.
+Future<String> bigGif() async {
+  const s = 360;
+  const frames = 24;
+  final rnd = Random(3);
+  img.Image? anim;
+  for (var f = 0; f < frames; f++) {
+    // Noise defeats GIF compression, so the file is genuinely large.
+    final im = img.Image(width: s, height: s);
+    for (var y = 0; y < s; y += 2) {
+      for (var x = 0; x < s; x += 2) {
+        img.fillRect(
+          im,
+          x1: x,
+          y1: y,
+          x2: x + 1,
+          y2: y + 1,
+          color: _rgb(rnd.nextInt(256), rnd.nextInt(256), (f * 10) % 256),
+        );
+      }
+    }
+    im.frameDuration = 60;
+    if (anim == null) {
+      anim = im;
+    } else {
+      anim.addFrame(im);
+    }
+  }
+  return _write('wielki_gif.gif', Uint8List.fromList(img.encodeGif(anim!)));
 }
 
 img.ColorRgba8 _hsv(double h) {

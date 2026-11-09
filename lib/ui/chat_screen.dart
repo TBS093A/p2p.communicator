@@ -21,7 +21,7 @@ import 'room_settings_screen.dart';
 import 'widgets/avatar.dart';
 import 'widgets/emoji_text.dart';
 import 'widgets/media_image.dart';
-import 'widgets/message_bubble.dart';
+import 'widgets/message_list.dart';
 import 'widgets/network_dot.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -369,8 +369,26 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _scaffold(BuildContext context) {
     // In a DM the header is the other person (picture, status, name).
     final peer = widget.app?.peerOf(_session);
+    // The background picture fills the whole screen, under the top bar and
+    // the message bar too. Both bars take the room's color with the room's
+    // transparency (default 25 %), so the picture shows through a little
+    // while the sections stay distinct.
+    final meta = _session.meta;
+    final bgImage = meta.backgroundImage;
+    final barBase = meta.background != null
+        ? Color(meta.background!)
+        : Theme.of(context).colorScheme.surface;
+    final tinted = bgImage != null || meta.background != null;
+    final barColor = barBase.withAlpha(meta.barAlpha);
+    final barFg = onColor(barBase);
     return Scaffold(
+      extendBodyBehindAppBar: bgImage != null,
       appBar: AppBar(
+        key: const ValueKey('chat-top-bar'),
+        backgroundColor: tinted ? barColor : null,
+        foregroundColor: tinted ? barFg : null,
+        surfaceTintColor: Colors.transparent,
+        scrolledUnderElevation: 0,
         titleSpacing: 0,
         title: Builder(
           builder: (context) => InkWell(
@@ -398,7 +416,10 @@ class _ChatScreenState extends State<ChatScreen> {
                             peer != null
                                 ? peer.presence.label
                                 : 'osób: ${_session.memberOutboxes.length}',
-                            style: Theme.of(context).textTheme.bodySmall,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: tinted ? barFg.withAlpha(210) : null,
+                                ),
                           ),
                         ],
                       ),
@@ -436,7 +457,6 @@ class _ChatScreenState extends State<ChatScreen> {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());
           }
-          final bgImage = _session.meta.backgroundImage;
           final conversation = Column(
             children: [
               ValueListenableBuilder<String?>(
@@ -466,34 +486,24 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       );
                     }
-                    return ListView.builder(
-                      reverse: true,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: msgs.length,
-                      itemBuilder: (context, i) {
-                        final m = msgs[msgs.length - 1 - i];
-                        return MessageBubble(
-                          key: ValueKey(m.id),
-                          message: m,
-                          session: _session,
-                        );
-                      },
-                    );
+                    return MessageList(session: _session);
                   },
                 ),
               ),
-              // Over a picture the composer gets its own bar to stay legible.
-              bgImage == null
-                  ? _composer(context)
-                  : Material(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.surface.withAlpha(235),
+              // The message bar matches the top bar.
+              tinted
+                  ? Material(
+                      key: const ValueKey('chat-bottom-bar'),
+                      color: barColor,
                       child: _composer(context),
-                    ),
+                    )
+                  : _composer(context),
             ],
           );
           if (bgImage == null) return conversation;
+          // With extendBodyBehindAppBar the body starts at the top of the
+          // screen; its MediaQuery top padding is status bar + top bar.
+          final topInset = MediaQuery.paddingOf(context).top;
           return Stack(
             children: [
               Positioned.fill(
@@ -506,11 +516,14 @@ class _ChatScreenState extends State<ChatScreen> {
               Positioned.fill(
                 child: ColoredBox(
                   color: Colors.black.withAlpha(
-                    (_session.meta.effectiveDim * 255 / 100).round(),
+                    (meta.effectiveDim * 255 / 100).round(),
                   ),
                 ),
               ),
-              conversation,
+              Padding(
+                padding: EdgeInsets.only(top: topInset),
+                child: conversation,
+              ),
             ],
           );
         },

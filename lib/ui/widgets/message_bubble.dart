@@ -8,7 +8,6 @@ import 'package:video_player/video_player.dart';
 import '../../room/message.dart';
 import '../../room/room_session.dart';
 import '../../room/room_style.dart';
-import 'avatar.dart';
 import 'emoji_text.dart';
 
 class MessageBubble extends StatelessWidget {
@@ -16,10 +15,15 @@ class MessageBubble extends StatelessWidget {
     super.key,
     required this.message,
     required this.session,
+    this.showName = true,
   });
 
   final ChatMessage message;
   final RoomSession session;
+
+  /// The author's name above the bubble: only on the first message of a
+  /// group from one person.
+  final bool showName;
 
   @override
   Widget build(BuildContext context) {
@@ -30,10 +34,11 @@ class MessageBubble extends StatelessWidget {
     final hhmm =
         '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
 
-    // Each member picks their bubble color (any RGB); everyone sees it the
-    // same way. Defaults: messenger blue for mine, neutral grey for others.
+    // The room sets both bubble colors (like a chat theme): one for your own
+    // messages, one for everyone else's; defaults are blue and grey.
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final custom = profile.color == null ? null : Color(profile.color!);
+    final roomBubble = mine ? session.meta.bubble : session.meta.otherBubble;
+    final custom = roomBubble != null ? Color(roomBubble) : null;
     final jumbo =
         message.type == MsgType.text &&
         EmojiCode.isJumbo(
@@ -66,7 +71,7 @@ class MessageBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (!mine)
+              if (!mine && showName)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 2),
                   child: Text(
@@ -105,21 +110,13 @@ class MessageBubble extends StatelessWidget {
       ),
     );
 
+    // No avatar here: the chat list draws one per message group, sticking to
+    // the bottom of the group while scrolling (see GroupAvatar).
     return Padding(
       padding: EdgeInsets.only(left: mine ? 0 : 8, right: mine ? 4 : 0),
-      child: Row(
-        mainAxisAlignment: mine
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (!mine)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Avatar.member(session, message.author, radius: 16),
-            ),
-          bubble,
-        ],
+      child: Align(
+        alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+        child: bubble,
       ),
     );
   }

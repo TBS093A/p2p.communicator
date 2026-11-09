@@ -33,16 +33,20 @@ class Avatar extends StatelessWidget {
     RoomSession session,
     String outbox, {
     double radius = 20,
+    Key? key,
   }) {
     final p = session.profileOf(outbox);
-    final key = session.profileKeyOf(outbox);
+    final profileKey = session.profileKeyOf(outbox);
     return Avatar(
+      key: key,
       session: session,
       name: p.name,
       image: p.avatar,
       color: p.color,
       radius: radius,
-      presence: key == null ? null : session.app?.directory[key]?.presence,
+      presence: profileKey == null
+          ? null
+          : session.app?.directory[profileKey]?.presence,
     );
   }
 
@@ -97,20 +101,11 @@ class Avatar extends StatelessWidget {
     final ref = image;
     final face = ref == null
         ? initials
-        : FutureBuilder<File>(
-            // mediaFile de-duplicates by content hash: rebuilding is cheap.
-            future: session.mediaFile('avatar', ref),
-            builder: (context, snap) => snap.hasData
-                ? ClipOval(
-                    child: Image.file(
-                      snap.data!,
-                      width: radius * 2,
-                      height: radius * 2,
-                      fit: BoxFit.cover,
-                      gaplessPlayback: true,
-                    ),
-                  )
-                : initials,
+        : _AvatarPicture(
+            session: session,
+            image: ref,
+            size: radius * 2,
+            fallback: initials,
           );
     final p = presence;
     if (p == null) return face;
@@ -151,5 +146,74 @@ class Avatar extends StatelessWidget {
     if (words.isEmpty) return '?';
     final chars = words.take(2).map((w) => w.characters.first.toUpperCase());
     return chars.join();
+  }
+}
+
+/// The picture inside an [Avatar]. Keeps one load per picture across
+/// rebuilds: a fresh future on every rebuild (rooms and the profile
+/// directory notify often) kept resetting to the initials, so a busy screen
+/// could show them indefinitely. The previous picture stays up while a new
+/// one loads.
+class _AvatarPicture extends StatefulWidget {
+  const _AvatarPicture({
+    required this.session,
+    required this.image,
+    required this.size,
+    required this.fallback,
+  });
+
+  final MediaSource session;
+  final MediaRef image;
+  final double size;
+  final Widget fallback;
+
+  @override
+  State<_AvatarPicture> createState() => _AvatarPictureState();
+}
+
+class _AvatarPictureState extends State<_AvatarPicture> {
+  File? _file;
+  String? _loading;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_AvatarPicture old) {
+    super.didUpdateWidget(old);
+    if (old.image.hash != widget.image.hash || old.session != widget.session) {
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    final hash = widget.image.hash;
+    _loading = hash;
+    try {
+      // mediaFile de-duplicates by content hash: the file is fetched once.
+      final f = await widget.session.mediaFile('avatar', widget.image);
+      if (mounted && _loading == hash) setState(() => _file = f);
+    } on Object catch (e) {
+      debugPrint('avatar not available yet: $e');
+      if (mounted && _loading == hash) setState(() => _file = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final f = _file;
+    if (f == null) return widget.fallback;
+    return ClipOval(
+      child: Image.file(
+        f,
+        width: widget.size,
+        height: widget.size,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+      ),
+    );
   }
 }

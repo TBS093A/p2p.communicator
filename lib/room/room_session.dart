@@ -52,8 +52,6 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   /// before [open] finishes (the chat app bar renders right away).
   late RoomMeta meta = RoomMeta(name: room.secrets.roomName);
 
-  static const maxEmojiBytes = 512 * 1024;
-
   /// Upload/download progress per message id, 0..1.
   final Map<String, double> progress = {};
 
@@ -517,6 +515,11 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     File? backgroundImage,
     bool clearBackgroundImage = false,
     int? dim,
+    int? bubble,
+    bool clearBubble = false,
+    int? otherBubble,
+    bool clearOtherBubble = false,
+    int? barTransparency,
   }) async {
     final ref = avatar == null
         ? null
@@ -534,6 +537,11 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         backgroundImage: bgRef,
         clearBackgroundImage: clearBackgroundImage,
         dim: dim?.clamp(0, RoomMeta.maxDim),
+        bubble: bubble,
+        clearBubble: clearBubble,
+        otherBubble: otherBubble,
+        clearOtherBubble: clearOtherBubble,
+        barTransparency: barTransparency?.clamp(0, RoomMeta.maxBarTransparency),
       ),
     );
   }
@@ -548,8 +556,42 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         !meta.emoji.containsKey(code)) {
       throw StyleException('Limit ${RoomMeta.maxEmoji} emoji na pokój');
     }
-    final ref = await _uploadSmall(image, maxEmojiBytes, 'Emoji');
+    // Shrunk automatically to fit (see ImagePrep); GIFs stay animated.
+    final ref = await _uploadImage(image, ImageUse.emoji);
     await _editMeta((m) => m.copyWith(emoji: {...m.emoji, code: ref}));
+  }
+
+  /// Adds many emoji at once: every image is uploaded (GIFs stay animated),
+  /// then the room meta is written once. Returns the codes that were skipped
+  /// with the reason (too big, bad code, over the room limit).
+  Future<Map<String, String>> addEmojis(
+    Map<String, File> images, {
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final skipped = <String, String>{};
+    final uploaded = <String, MediaRef>{};
+    final free = RoomMeta.maxEmoji - meta.emoji.length;
+    var done = 0;
+    for (final e in images.entries) {
+      final code = e.key;
+      final replacing = meta.emoji.containsKey(code);
+      if (!EmojiCode.isValid(code)) {
+        skipped[code] = 'nieprawidłowy kod';
+      } else if (!replacing && uploaded.length >= free) {
+        skipped[code] = 'limit ${RoomMeta.maxEmoji} emoji na pokój';
+      } else {
+        try {
+          uploaded[code] = await _uploadImage(e.value, ImageUse.emoji);
+        } on ImagePrepException catch (err) {
+          skipped[code] = err.message;
+        }
+      }
+      onProgress?.call(++done, images.length);
+    }
+    if (uploaded.isNotEmpty) {
+      await _editMeta((m) => m.copyWith(emoji: {...m.emoji, ...uploaded}));
+    }
+    return skipped;
   }
 
   Future<void> removeEmoji(String code) =>
@@ -582,17 +624,8 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     );
   }
 
-  /// Stores a small image (emoji, as picked) in the DHT and locally.
-  Future<MediaRef> _uploadSmall(File file, int maxBytes, String what) async {
-    final bytes = await file.readAsBytes();
-    if (bytes.length > maxBytes) {
-      throw StyleException('$what jest za duży (max ${maxBytes ~/ 1024} KB)');
-    }
-    return _uploadBytes(bytes, _imageMime(file.path));
-  }
-
-  /// Avatar or background: GIFs kept as-is (animated), static images
-  /// scaled down first (see [ImagePrep]).
+  /// Avatar, background or emoji, prepared automatically (see [ImagePrep]):
+  /// GIFs within the limit kept as-is, bigger ones and photos shrunk.
   Future<MediaRef> _uploadImage(File file, ImageUse use) async {
     final prepared = await ImagePrep.prepare(await file.readAsBytes(), use);
     return _uploadBytes(prepared.bytes, prepared.mime);
@@ -603,14 +636,6 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     await _storeMedia(ref.hash, bytes);
     return ref;
   }
-
-  static String _imageMime(String path) =>
-      switch (p.extension(path).toLowerCase()) {
-        '.gif' => 'image/gif',
-        '.png' => 'image/png',
-        '.webp' => 'image/webp',
-        _ => 'image/jpeg',
-      };
 
   // ---------------------------------------------------------------- media
 
@@ -664,6 +689,12 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   void _scheduleSave() {
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(seconds: 1), _saveCache);
+  }
+
+  /// Writes the local cache now (before a migration export reads it).
+  Future<void> flush() async {
+    _saveTimer?.cancel();
+    await _saveCache();
   }
 
   Future<void> _saveCache() async {
