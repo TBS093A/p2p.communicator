@@ -236,19 +236,36 @@ the generation; every removal (and every admin change) starts a new one.
 
 | Record | Schema / owner | Content |
 | --- | --- | --- |
-| **Control record** `C_g` | `DFLT`, owner = admin's random key for generation `g` | Subkey 0: header `{v: 2, gen, epoch, logCount, prevHeaderHash}`. Subkeys 1..N: ring of MLS commits and Welcome pointers, in order. Only the admin writes it. |
+| **Control record** `C_g` | `DFLT`, owner = admin's random key for generation `g` | Subkey 0: header `{v: 2, gen, epoch, logCount, logHash}`. Subkeys 1..N: the log, in order: MLS commits and the admin's MLS messages that belong to them (`Directory`, `Move`). Only the admin writes it. |
 | **Member outbox** `O_g,i` | `DFLT`, owner = member's random key for generation `g` | Subkey 0: head `{count}` only, padded. Subkeys 1..ring: MLS `PrivateMessage`s. |
 | **Join rendezvous** | `SMPL`: owner = admin, 1 member subkey whose key pair is in the invite | The joiner writes one MLS `KeyPackage`, sealed to the admin's `CIK`. One-time. |
 | **Blob** | `DFLT`, random owner | Chunks of the **AEAD-encrypted** file. |
 | **Global profile** (optional) | `DFLT`, owner `GIK` | Name and avatar only; no `seen` (§B8). |
 
 There is no separate roster: **the MLS group state is the member list**,
-and every member derives it from the commit log.
+and every member derives it from the commit log. Which outbox belongs to
+which member, and the successor list (§B5.4), travel in a `Directory`
+message: an MLS application message the admin appends to the log after
+each commit that changes them, so members get it in order and E2EE.
+
+**`logHash`** chains the whole log, not the headers:
+`logHash_0 = ""`, `logHash_n = SHA-256(logHash_{n-1} || value_n)` over
+the raw value of every log subkey `n`, restarting at each generation.
+Members often skip intermediate headers and read only the newest one, so a
+header-to-header chain (`prevHeaderHash`, the earlier draft) cannot be
+checked. A member recomputes `logHash` over the entries it reads, which
+detects a withheld, swapped or rolled-back entry (§B5.2).
 
 SMPL schemas fix their member list at creation, so they suit one-time
-rendezvous records. Size limit: an MLS message larger than one subkey
-(32 KiB, e.g. a Welcome for a large group) is split across consecutive
-subkeys with a chunk header; the PoC measures actual sizes (§B13).
+rendezvous records.
+
+**Chunking is required, not optional.** A Welcome costs about 390 bytes
+per member, so one 32 KiB subkey holds a Welcome for about 80 members; a
+commit that adds many members grows the same way (PoC: Welcome 59 207 B
+and Add commit 51 776 B for 151 members). Any MLS message larger than one
+subkey is split across consecutive subkeys, each with a chunk header
+(`kind`, index, total), and reassembled by the reader. A reader that does
+not have every chunk yet waits, exactly as for an unpropagated value.
 
 ## B4. Joining
 
@@ -265,10 +282,12 @@ subkeys with a chunk header; the PoC measures actual sizes (§B13).
 4. The admin's app shows the request (the joiner's chosen name and `CIK`
    fingerprint). The admin approves it, ideally after checking the joiner's
    fingerprint the same way.
-5. The admin publishes an MLS `Add` commit to `C_g` and a `Welcome` sealed to
-   the joiner's KeyPackage. The Welcome carries the key of `C_g` and the
-   members' current outbox keys.
-6. The joiner creates `O_g,joiner` and announces its key in an MLS message.
+5. The admin publishes an MLS `Add` commit to `C_g` (§B5.1, "Publishing")
+   and a `Welcome` sealed to the joiner's KeyPackage, written to the
+   rendezvous record. The Welcome carries the key of `C_g`; the members'
+   outbox keys come from the next `Directory` in the log.
+6. The joiner creates `O_g,joiner` and announces its key in an MLS message;
+   the admin includes it in the next `Directory`.
 
 A leaked invite lets someone *request* to join, nothing more. Expired or
 used invites are ignored.
@@ -287,10 +306,37 @@ used invites are ignored.
 * While the admin is offline, proposals queue and membership does not
   change; **application messages keep flowing** in the current epoch.
 
+**Proposals go into the commit by value** (decided 9 Nov 2026). A member's
+proposal in its outbox is only a request to the admin; the admin's commit
+carries the proposal itself, not a reference to it. Members never need the
+original proposal to apply a commit, so a proposal a member never read
+(lost or not yet propagated) cannot block it. Commits get larger, which
+chunking (§B3) already handles. The PoC used proposals by reference (the
+OpenMLS default), where a lost proposal would block every member that
+never read it; the implementation switches to by value.
+
+**Publishing a commit.** Anything the admin publishes after a commit (the
+`Directory`, a `Move`) is an MLS message whose ciphertext changes every
+time it is encrypted. If the admin restarted mid-publication and encrypted
+it again, a position members have already read would get different bytes
+and break `logHash` for all of them (F9). Publishing is therefore three
+idempotent phases, each persisted before the next starts:
+
+1. **Prepare:** create the commit, merge it locally, encrypt every message
+   that follows it, and persist the commit, those ciphertexts and the log
+   positions they go to (`pending`).
+2. **Write the log:** write the persisted bytes to their positions. Re-running
+   it writes the same bytes.
+3. **Write the header:** write `{gen, epoch, logCount, logHash}` and clear
+   `pending`.
+
+After a restart the admin resumes from `pending`; it never creates a second
+commit for the same epoch or re-encrypts a message.
+
 ### B5.2 Ordering, replay and rollback rules
 
-Every member persists `(gen, epoch, logCount, headerHash)` of the last
-state it accepted, and applies these rules:
+Every member persists `(gen, epoch, logCount, logHash)` of the last state
+it accepted, and applies these rules:
 
 1. A commit is accepted only if it is signed by the current admin's `CIK`,
    is for exactly `epoch + 1`, and is the next entry in `C_g`'s log.
@@ -299,11 +345,33 @@ state it accepted, and applies these rules:
 3. A control record value whose `gen`, `epoch` or `logCount` is lower than
    the persisted one is a rollback by a storage node: ignored, and the
    member keeps polling.
-4. `prevHeaderHash` links headers; a header that does not chain to the
-   persisted one is rejected.
+4. The member reads every new log entry from `logCount + 1` to the header's
+   `logCount` and recomputes `logHash` from its persisted one. If an entry is
+   missing, it waits. If the result differs from the header's `logHash`,
+   or a header with an unchanged `logCount` carries a different `logHash`,
+   the header is rejected.
 5. Application messages are accepted only from current members, for the
    current epoch or one still inside the retention window (§B12).
+6. A member that sees a peer report (in `ctl`, §B8) the same `gen` and
+   `logCount` with a different `logHash` stops accepting new commits and
+   shows "group history differs". The group is then treated as a fork (F14,
+   F19).
 
+**Who vouches for `logHash`.** The header and every log subkey are DHT
+values signed by the owner key of `C_g`, and Veilid rejects writes signed
+by anyone else. Members learn `C_g` only inside E2EE messages (Welcome,
+`Move`). A storage node can therefore withhold values or serve stale ones
+(rules 3–4) but cannot forge them. `logHash` has no signature of its own:
+it is authentic because the header is signed by the owner key, and every
+commit inside the log carries the admin's MLS signature (rule 1).
+
+**Diverging histories.** What the owner signature does not stop is the
+admin itself (or whoever holds its owner key) rewriting a log position
+after some members read it, so that members end up with different logs.
+Different commits for the same epoch would eventually stop members from
+decrypting each other's messages, but that failure gives no explanation.
+Rule 6 detects it explicitly: every application message carries the
+sender's accepted `{gen, logCount, logHash}`, and members compare them.
 ### B5.3 Removal and the move to a fresh generation
 
 A removal always moves the group to generation `g + 1`, so the removed
@@ -313,14 +381,14 @@ Admin:
 
 1. Create `C_{g+1}` with a fresh random owner key and record secret. Write
    its header (`gen = g + 1`).
-2. Create and persist the MLS `Remove` commit (epoch `e → e + 1`) **before**
-   publishing it, so a restart re-publishes the same commit rather than a new
-   one.
-3. Append to `C_g`: the commit, then a `Move{gen: g + 1, control: C_{g+1}}`
-   application message encrypted in epoch `e + 1`. The removed member can
+2. Prepare the MLS `Remove` commit (epoch `e → e + 1`) and the
+   `Move{gen: g + 1, control: C_{g+1}}` message encrypted in epoch `e + 1`,
+   and persist both as bytes **before** writing anything (§B5.1,
+   "Publishing").
+3. Append to `C_g`: the commit, then the `Move`. The removed member can
    decrypt the commit (and learns they were removed) but not the `Move`.
-4. Mirror the commit into `C_{g+1}`'s log, so the new generation is
-   self-contained.
+4. Mirror the commit into `C_{g+1}`'s log (its `logHash` starts again from
+   `""`), so the new generation is self-contained.
 
 Each remaining member (a persisted state machine, every step idempotent):
 
@@ -357,9 +425,17 @@ Each remaining member (a persisted state machine, every step idempotent):
   in its own outbox and start generation `g + 1`. A member accepts the
   takeover only if it has itself seen no admin activity for
   `T_successor`, and only if `C_g` has no commit for `epoch + 1` yet.
+* **The takeover commit also removes the lost admin's leaf.** Otherwise the
+  old admin counts as a member who has not announced its new outbox yet,
+  and every member keeps waiting for it until the grace period ends (seen in
+  the PoC, F14). If the old admin's device comes back, it rejoins as a new
+  member.
 * **Admin returns after a takeover:** members who moved ignore `C_g`.
-  Members who accepted an admin commit first are on a fork and are re-added
-  by the new admin. Fork handling must be validated in the PoC.
+  A member that accepted a commit from the old admin first is on a fork. It
+  detects this when the takeover commit in the successor's outbox is for an
+  epoch it has already left through the old admin's commit. It must rejoin
+  as a **new identity** (MLS forbids the same signature key twice in a
+  group), consistent with F11. Validated in the PoC (F14).
 * **No successor configured:** messaging continues, but membership is
   frozen; the members have to create a new group.
 
@@ -398,9 +474,27 @@ curve family as Veilid), integrated through FFI as `veilid-flutter` does.
 | Standard, audited implementation | RFC 9420, OpenMLS | libsignal | No |
 | Needs ordered commits | Yes: the admin-written control record (§B5) | No | — |
 
+The app rejects a group or Welcome with any other ciphersuite.
+
+**Crypto provider (to fix before v2 ships).** `openmls_rust_crypto` always
+links the NIST curves, which pull in `crypto-bigint 0.5.5` with
+RUSTSEC-2026-0387 (a timing issue). 0x0003 never runs that code, and CI has
+a 3-month exception with a justification (`native/mls_poc/osv-scanner.toml`).
+Before v2 ships, one of:
+
+* a provider without the NIST curves (libcrux), or
+* an OpenMLS release on `elliptic-curve 0.14`.
+
+`Cargo.lock` also lists `libcrux-kem 0.0.9` (RUSTSEC-2026-0330 and -0331).
+It is only an optional dependency of `hpke-rs` that nothing enables, so it
+is not compiled; CI fails if it ever enters the build. The fix (`hpke-rs
+0.8`) needs an `openmls_rust_crypto` release that accepts it.
+
 MLS group state (OpenMLS storage) is persisted in the PIN vault, encrypted
 under the conversation's vault key, and written **before** any message that
-depends on it is published.
+depends on it is published. Retention as tested in the PoC: one past epoch
+is kept and its secrets are deleted explicitly after 24 h; at most 100
+skipped message keys per sender.
 
 ## B8. Application messages, presence and metadata
 
@@ -411,8 +505,12 @@ outbox it came from):
 {"v": 2, "id": "<random 128-bit>", "seq": 17, "ts": 1731150000000,
  "t": "text", "text": "...",
  "m": {"mime", "size", "hash", "rec": [...], "key": "<media key>", ...},
- "prev": "<hash of my previous message>"}
+ "prev": "<hash of my previous message>",
+ "ctl": {"gen": 3, "logCount": 41, "logHash": "<hex>"}}
 ```
+
+* `ctl` is the control-log state the sender has accepted (§B5.2 rule 6).
+  It is inside the E2EE payload, so only members see it.
 
 * `prev` chains each sender's messages, so a withheld or swapped message is
   detected (THREAT_MODEL S9).
@@ -474,8 +572,9 @@ v2 group.
 
 ## B12. Failure scenarios
 
-Each row is expected behaviour that the PoC must test on a mocked DHT where
-possible (column "PoC").
+Each row is expected behaviour, tested by the PoC on a mocked DHT (column
+"PoC"; tests in `native/mls_poc/tests/failures.rs`, all passing). F19 was
+added after the PoC and is tested in the implementation.
 
 | # | Scenario | Expected behaviour | PoC |
 | --- | --- | --- | --- |
@@ -487,18 +586,27 @@ possible (column "PoC").
 | F6 | **Out-of-order application messages** within an epoch | Decrypted via MLS generation numbers; up to 100 skipped keys kept per sender; `prev` chain reports real gaps | Yes |
 | F7 | **Message from epoch `e` arriving after `e + 1`** | Decrypted if inside the retention window (previous epoch kept for 24 h or until all members moved, whichever is shorter), else shown as "could not decrypt" | Yes |
 | F8 | **Restart during the move to a new generation** | Resumes from the persisted state (§B5.3 table); no duplicate outbox, no lost announcement | Yes |
-| F9 | **Admin restarts mid-commit** | Republishes the persisted pending commit, never a different one for the same epoch | Yes |
+| F9 | **Admin restarts mid-commit** | Resumes the persisted publication (§B5.1, "Publishing"): the same commit and the same ciphertexts, never a different one for the same epoch | Yes |
 | F10 | **Member offline during a removal** | Catches up from `C_g` within the 30-day grace period; afterwards needs a re-invite | Yes (shortened grace) |
 | F11 | **Member device lost** | Rejoins as a new member with a new `CIK` (shown as a new, unverified identity); the admin removes the old leaf | Partly |
 | F12 | **Admin device lost** | Successor takeover (§B5.4); without a successor, membership frozen | Yes |
 | F13 | **Concurrent proposals** from two members | The admin commits them in one order; all members end in the same epoch | Yes |
-| F14 | **Fork**: admin returns after a takeover | Members on the new generation ignore the old one; members on the fork are re-added | Yes |
+| F14 | **Fork**: admin returns after a takeover | Members on the new generation ignore the old one; a member on the fork detects it and is re-added as a new identity (§B5.4) | Yes |
 | F15 | **Removed member keeps writing** its old outbox | Ignored: not a member of epoch `e + 1`, and the old outbox is no longer watched | Yes |
-| F16 | **Storage node drops writes** | Detected via `prev` chain and log counts; retried; never silently accepted | Partly |
-| F17 | **Oversized MLS message** (Welcome for a large group) | Split across subkeys and reassembled; PoC measures sizes | Yes |
+| F16 | **Storage node drops writes** | Detected via `prev` chain, `logHash` and log counts; never silently accepted. A lost outbox write is re-sent by its writer; a lost control-log write is only waited for (repair by the admin: before v2.0) | Partly |
+| F17 | **Oversized MLS message** (Welcome for a large group) | Split across subkeys and reassembled (§B3, chunking) | Yes |
 | F18 | **Malformed data** from a member or node: invites, heads, commits, messages, chunk headers | Rejected without crashing or changing state (fuzz tests of every parser) | Yes |
+| F19 | **Diverging histories**: the admin rewrites a log position after some members read it | Members compare `ctl` in messages (§B5.2 r6); a mismatch stops new commits and shows a warning | No: test in the implementation |
 
-## B13. Proof of concept (next step)
+## B13. Proof of concept
+
+**Status: done** in `native/mls_poc` (OpenMLS 0.9.2), except phone
+timings and memory use.
+Every item below passes except the last measurement: timings so far are
+from an x86-64 desktop (all operations under 3 ms) because the crate has no
+Android build yet. The findings are folded into §B3, §B4, §B5.1, §B5.2,
+§B5.3, §B5.4, §B7 and §B12; details and numbers are in
+`native/mls_poc/README.md`.
 
 Goal: prove that OpenMLS, FFI and admin-sequenced commits work before any
 app code migrates.
@@ -516,15 +624,20 @@ Scope:
 * A Flutter test that calls the same scenario through FFI.
 * The failure scenarios F1–F18 where the mock allows.
 * Measurements: sizes of KeyPackage, Welcome, commit and application
-  messages against the 32 KiB subkey limit; time per operation on a phone.
+  messages against the 32 KiB subkey limit; time per operation on a
+  physical Android phone (OpenMLS initialisation, join, epoch change,
+  restoring state after a restart) and memory use.
 
 Acceptance: every item above passes, and nothing in the app's `lib/` changes.
 
 ## B14. Order of work
 
 1. ✅ Threat model and protocol direction approved (this revision).
-2. PoC (§B13), including the failure tests (§B12).
-3. Review the PoC; adjust this document where it proved wrong.
+2. ✅ PoC (§B13), including the failure tests (§B12). Open: phone timings
+   (needs an Android build of the crate).
+3. ✅ Review the PoC; adjust this document where it proved wrong (this
+   revision). Proposals go into commits by value (§B5.1). Open: crypto
+   provider (§B7).
 4. Group control record, join flow, removal with generation move.
 5. E2EE messages, encrypted media, padding.
 6. Per-conversation identities by default; global profile and presence
