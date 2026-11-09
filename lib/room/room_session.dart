@@ -190,10 +190,12 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     app?.directory.removeListener(notifyListeners);
     // Let a message sent just before leaving actually go out before its
     // records are closed (bounded, so locking never hangs).
-    await _sendChain.timeout(
-      const Duration(seconds: 20),
-      onTimeout: () => debugPrint('[room] closing with a send still pending'),
-    );
+    // (Future.any rather than .timeout(onTimeout:): the chain's runtime type
+    // is Future<Null>, which rejects a void onTimeout callback at runtime.)
+    await Future.any<void>([
+      _sendChain.catchError((Object _) {}),
+      Future<void>.delayed(const Duration(seconds: 20)),
+    ]);
     await _saveCache();
     if (_connected) {
       await Dht.close(_rosterKey);
