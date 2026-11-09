@@ -17,6 +17,7 @@ import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
 import 'app_link.dart';
+import 'dm_invite.dart';
 import 'global_profile.dart';
 import 'profile_directory.dart';
 
@@ -60,6 +61,8 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
   final List<PublicRoom> rooms = [];
   final List<PendingInvite> pendingInvites = [];
   final Set<String> _handledInvites = {};
+  final Map<String, ChatMessage> _awaitingSender = {}; // message id -> invite
+  bool _recheckingInvites = false;
   Timer? _heartbeat;
   Timer? _saveTimer;
   bool _closed = false;
@@ -127,6 +130,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
 
     directory
       ..setMine(_me)
+      ..addListener(_recheckInvites)
       ..start();
     for (final raw in ((data['rooms'] as List?) ?? const [])) {
       final j = (raw as Map).cast<String, dynamic>();
@@ -175,6 +179,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     for (final r in rooms) {
       await r.session.close();
     }
+    directory.removeListener(_recheckInvites);
     await directory.close();
     await Dht.close(_profileRecord);
     await _media.close();
@@ -338,8 +343,13 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
       name: '${_me.name} & ${them.name}',
       peer: peer,
     );
+    final invite = dm.session.invite.encode();
+    final sig = await Crypto.sign(
+      _identity,
+      dmInviteSignedBytes(invite: invite, from: _profileKey, to: them.identity),
+    );
     final payload = utf8.encode(
-      jsonEncode({'invite': dm.session.invite.encode(), 'from': _profileKey}),
+      jsonEncode({'invite': invite, 'from': _profileKey, 'sig': sig}),
     );
     final sealed = await Crypto.sealTo(
       PublicKey.fromString(them.identity),
@@ -359,32 +369,94 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     unawaited(_tryInvite(message));
   }
 
-  Future<void> _tryInvite(ChatMessage message) async {
+  /// Re-checks invites whose sender's profile could not be read yet, each
+  /// time the directory changes (a profile arrived or was refreshed). The
+  /// room session hands a hidden message over only once, so without this an
+  /// invite whose sender was briefly unreachable would never be shown.
+  void _recheckInvites() {
+    if (_awaitingSender.isEmpty || _recheckingInvites || _closed) return;
+    _recheckingInvites = true;
+    unawaited(() async {
+      try {
+        for (final m in _awaitingSender.values.toList()) {
+          await _tryInvite(m, patient: false);
+        }
+      } finally {
+        _recheckingInvites = false;
+      }
+    }());
+  }
+
+  /// [patient]: fetch the sender's profile from the network and retry for
+  /// about a minute. Otherwise use only what the directory already holds.
+  Future<void> _tryInvite(ChatMessage message, {bool patient = true}) async {
     final sealed = message.extra?['s'];
     if (sealed is! String) return;
+    final Map<String, dynamic> j;
     try {
       final plain = await Crypto.openWith(
         _identity,
         base64Url.decode(sealed),
         context: _inviteContext,
       );
-      final j = jsonDecode(utf8.decode(plain)) as Map<String, dynamic>;
-      final invite = Invite.tryParse(j['invite'] as String? ?? '');
-      final from = j['from'] as String?;
-      if (invite == null || from == null) return;
-      if (rooms.any(
-        (r) => r.session.room.secrets.rosterKey == invite.rosterKey,
-      )) {
-        _markHandled(message.id);
-        return;
-      }
-      if (pendingInvites.any((p) => p.id == message.id)) return;
-      directory.track(from);
-      pendingInvites.add(PendingInvite(message.id, from, invite));
-      notifyListeners();
+      j = jsonDecode(utf8.decode(plain)) as Map<String, dynamic>;
     } on Object {
       // Sealed to someone else: that is the normal case, stay silent.
+      return;
     }
+    final raw = j['invite'];
+    final from = j['from'];
+    final sig = j['sig'];
+    final invite = raw is String ? Invite.tryParse(raw) : null;
+    if (invite == null || from is! String || sig is! String) {
+      // Unsigned (an app version from before signed invites) or malformed:
+      // the sender cannot be proven, so it is not shown.
+      debugPrint('[app] dropped an unsigned DM request');
+      _markHandled(message.id);
+      return;
+    }
+    if (rooms.any(
+      (r) => r.session.room.secrets.rosterKey == invite.rosterKey,
+    )) {
+      _markHandled(message.id);
+      return;
+    }
+    if (pendingInvites.any((p) => p.id == message.id)) return;
+
+    // The claimed sender's profile names the identity key that must have
+    // signed the invite. The profile record is writable only by that key,
+    // so nobody else can swap in their own.
+    final signed = dmInviteSignedBytes(
+      invite: raw as String,
+      from: from,
+      to: _identity.key.toString(),
+    );
+    // Not patient: make sure the directory follows the sender (opening the
+    // record may have failed before), so its arrival triggers a recheck.
+    if (!patient) directory.track(from);
+    for (var attempt = 0; ; attempt++) {
+      final profile = patient ? await directory.load(from) : directory[from];
+      if (profile != null && profile.identity.isNotEmpty) {
+        _awaitingSender.remove(message.id);
+        if (!await Crypto.verify(profile.identity, signed, sig)) {
+          debugPrint('[app] dropped a DM request with a forged sender');
+          _markHandled(message.id);
+          return;
+        }
+        break;
+      }
+      // Profile not reachable yet: retry for about a minute, then wait for
+      // the directory to bring it in (_recheckInvites). Kept in memory only:
+      // an invite still unverified when the app locks is not shown.
+      if (!patient || attempt >= 4 || _closed) {
+        if (!_closed) _awaitingSender[message.id] = message;
+        return;
+      }
+      await Future<void>.delayed(Duration(seconds: 5 * (attempt + 1)));
+    }
+    if (_closed || pendingInvites.any((p) => p.id == message.id)) return;
+    pendingInvites.add(PendingInvite(message.id, from, invite));
+    notifyListeners();
   }
 
   Future<PublicRoom> acceptInvite(PendingInvite p) async {

@@ -19,7 +19,7 @@ class ProfileDirectory extends ChangeNotifier {
 
   final Map<String, GlobalProfile> _profiles = {};
   final Map<String, RecordKey> _open = {};
-  final Set<String> _opening = {};
+  final Map<String, Future<void>> _opening = {};
   StreamSubscription<VeilidUpdate>? _sub;
   Timer? _poll;
   Timer? _presenceTick;
@@ -52,11 +52,29 @@ class ProfileDirectory extends ChangeNotifier {
 
   /// Starts following [key] (idempotent).
   void track(String key) {
-    if (key == myKey || _open.containsKey(key) || _opening.contains(key)) {
-      return;
+    unawaited(_follow(key));
+  }
+
+  /// The profile behind [key], fetched fresh from the network (following it
+  /// from now on), or null when it cannot be read right now.
+  Future<GlobalProfile?> load(String key) async {
+    if (key == myKey) return _profiles[key];
+    final rk = _open[key];
+    if (rk != null) {
+      try {
+        await _fetch(key, rk);
+      } on Object catch (e) {
+        debugPrint('[profiles] cannot refresh a profile: $e');
+      }
+    } else {
+      await _follow(key);
     }
-    _opening.add(key);
-    unawaited(_track(key));
+    return _profiles[key];
+  }
+
+  Future<void> _follow(String key) {
+    if (key == myKey || _open.containsKey(key)) return Future.value();
+    return _opening[key] ??= _track(key);
   }
 
   Future<void> _track(String key) async {
@@ -69,7 +87,7 @@ class ProfileDirectory extends ChangeNotifier {
     } on Object catch (e) {
       debugPrint('[profiles] cannot follow a profile: $e');
     } finally {
-      _opening.remove(key);
+      unawaited(_opening.remove(key));
     }
   }
 

@@ -4,11 +4,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../app.dart';
 import '../app_state/app_session.dart';
+import '../core/media_cache.dart';
 import '../room/message.dart';
 import '../room/room_session.dart';
 import '../room/room_style.dart';
@@ -161,7 +161,8 @@ class _ChatScreenState extends State<ChatScreen> {
         _toast('Brak zgody na mikrofon');
         return;
       }
-      final dir = await getTemporaryDirectory();
+      // Plaintext until sent: kept where a crash leftover gets wiped.
+      final dir = await (await MediaCache.plainDir()).create(recursive: true);
       final path = p.join(
         dir.path,
         'voice_${DateTime.now().millisecondsSinceEpoch}.m4a',

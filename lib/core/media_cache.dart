@@ -20,17 +20,54 @@ abstract class MediaSource {
 /// itself for avatars on the home screen). Files are downloaded from the DHT
 /// once, kept sealed with the area's key, and decrypted into a temp folder
 /// that is removed on [close] (i.e. when the app or room is locked).
+///
+/// A crash or a killed process skips [close], so every plaintext temp file
+/// lives under one folder ([plainDir]) that is wiped before the first cache
+/// of a process run opens.
 class MediaCache {
   MediaCache._(this._key, this._dir, this._tmp);
 
   static Future<MediaCache> open(VaultArea area) async {
     final key = await Crypto.subsecret(area.key, 'media');
     final dir = await PinVault.instance.mediaDir(area);
-    final tmpBase = await getTemporaryDirectory();
     final tmp = await Directory(
-      p.join(tmpBase.path, 'r${Crypto.hex(await Crypto.randomBytes(8))}'),
-    ).create();
+      p.join(
+        (await plainDir()).path,
+        'r${Crypto.hex(await Crypto.randomBytes(8))}',
+      ),
+    ).create(recursive: true);
     return MediaCache._(key, dir, tmp);
+  }
+
+  /// Parent of every decrypted or not-yet-encrypted temp file (shown media,
+  /// voice recordings in progress). Leftovers from an earlier run that ended
+  /// without locking are removed the first time this is called.
+  static Future<Directory> plainDir() async {
+    await (_swept ??= _sweepLeftovers());
+    return Directory(p.join((await getTemporaryDirectory()).path, _plain));
+  }
+
+  static const _plain = 'plain';
+  static Future<void>? _swept;
+
+  static Future<void> _sweepLeftovers() async {
+    final base = await getTemporaryDirectory();
+    if (!await base.exists()) return;
+    await for (final e in base.list()) {
+      final name = p.basename(e.path);
+      // `plain/` now; `r<hex>/` and `voice_*.m4a` straight in the temp dir
+      // were written by versions before it existed.
+      final leftover =
+          name == _plain ||
+          (e is Directory && RegExp(r'^r[0-9a-f]{16}$').hasMatch(name)) ||
+          (e is File && name.startsWith('voice_') && name.endsWith('.m4a'));
+      if (!leftover) continue;
+      try {
+        await e.delete(recursive: true);
+      } on FileSystemException {
+        // Gone already or not ours to delete: nothing to protect.
+      }
+    }
   }
 
   final SharedSecret _key;
