@@ -18,6 +18,22 @@ pub extern "C" fn p2pc_mls_poc_run() -> *mut u8 {
     .unwrap_or_else(|_| {
         br#"{"ok":false,"steps":[{"name":"panic","ok":false,"detail":"panicked"}]}"#.to_vec()
     });
+    to_buffer(json)
+}
+
+/// Runs the scenario `runs` times with timings and memory
+/// ([`crate::bench`]); returns `[len: u64 LE][json]`. Free it with
+/// [`p2pc_mls_poc_free`].
+#[no_mangle]
+pub extern "C" fn p2pc_mls_poc_bench(runs: u32) -> *mut u8 {
+    let json = catch_unwind(AssertUnwindSafe(|| {
+        serde_json::to_vec(&crate::bench::run(runs as usize)).unwrap_or_default()
+    }))
+    .unwrap_or_else(|_| br#"{"ok":false,"error":"panicked"}"#.to_vec());
+    to_buffer(json)
+}
+
+fn to_buffer(json: Vec<u8>) -> *mut u8 {
     let mut buf = Vec::with_capacity(HEADER + json.len());
     buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
     buf.extend_from_slice(&json);

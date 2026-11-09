@@ -161,6 +161,14 @@ pub fn reassemble(values: &[Vec<u8>]) -> Result<(Kind, Vec<u8>), WireError> {
     Ok((first.kind, out))
 }
 
+/// The control-log state a sender has accepted (B8 `ctl`, B5.2 rule 6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ctl {
+    pub gen: u64,
+    pub log_count: u32,
+    pub log_hash: String,
+}
+
 /// Application payload inside an MLS application message (docs/PROTOCOL.md
 /// B8, reduced to what the PoC needs).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +180,7 @@ pub enum AppMsg {
         text: String,
         /// Hash of this sender's previous message ("" for the first).
         prev: String,
+        ctl: Ctl,
     },
     /// Admin, in the control log: where everyone's outbox is, who succeeds
     /// the admin (keyed by CIK hex).
