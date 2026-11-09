@@ -306,22 +306,14 @@ used invites are ignored.
 * While the admin is offline, proposals queue and membership does not
   change; **application messages keep flowing** in the current epoch.
 
-**Proposals by reference vs by value (to decide).** With proposals by
-reference (the MLS default, used by the PoC) a commit names proposals that
-each member must already have read from the proposer's outbox. A member
-that has not read one yet cannot apply the commit and retries next round
-(PoC: "commit not applicable yet"). A proposal lost for good would block
-that member permanently. Two options for v2.0:
-
-* **By value (recommended):** the admin puts the proposal itself into the
-  commit. No member can be blocked by a missing proposal; commits get
-  larger, which chunking already handles. This matches the priority of
-  reliability and privacy over efficiency.
-* **Only "old enough" proposals by reference:** the admin commits a
-  proposal only after it has been visible for at least one sync round.
-  Smaller commits, but it only lowers the risk.
-
-The choice is open in THREAT_MODEL §10 q5.
+**Proposals go into the commit by value** (decided 9 Nov 2026). A member's
+proposal in its outbox is only a request to the admin; the admin's commit
+carries the proposal itself, not a reference to it. Members never need the
+original proposal to apply a commit, so a proposal a member never read
+(lost or not yet propagated) cannot block it. Commits get larger, which
+chunking (§B3) already handles. The PoC used proposals by reference (the
+OpenMLS default), where a lost proposal would block every member that
+never read it; the implementation switches to by value.
 
 **Publishing a commit.** Anything the admin publishes after a commit (the
 `Directory`, a `Move`) is an MLS message whose ciphertext changes every
@@ -616,7 +608,7 @@ Acceptance: every item above passes, and nothing in the app's `lib/` changes.
 2. ✅ PoC (§B13), including the failure tests (§B12). Open: phone timings
    (needs an Android build of the crate).
 3. ✅ Review the PoC; adjust this document where it proved wrong (this
-   revision). Open: proposals by value or by reference (§B5.1); crypto
+   revision). Proposals go into commits by value (§B5.1). Open: crypto
    provider (§B7).
 4. Group control record, join flow, removal with generation move.
 5. E2EE messages, encrypted media, padding.

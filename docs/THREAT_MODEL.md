@@ -202,7 +202,7 @@ only", and says so.
    out of scope (A10). Revisit if v2 adds cover traffic.
 4. **Presence granularity.** Which coarse levels (e.g. "active now",
    "today", nothing) and how often they may be refreshed.
-5. **Proposals by value or by reference** (PROTOCOL §B5.1). By reference,
-   a proposal lost for good blocks the member who never read it (an
-   availability issue a storage node could cause by dropping that write).
-   Recommended: by value.
+5. ~~**Proposals by value or by reference.**~~ **Decided (9 Nov 2026):
+   by value** (PROTOCOL §B5.1). By reference, a storage node dropping one
+   proposal write could block every member who never read it; by value
+   removes that.
