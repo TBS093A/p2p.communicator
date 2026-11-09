@@ -485,10 +485,19 @@ Before v2 ships, one of:
 * a provider without the NIST curves (libcrux), or
 * an OpenMLS release on `elliptic-curve 0.14`.
 
-`Cargo.lock` also lists `libcrux-kem 0.0.9` (RUSTSEC-2026-0330 and -0331).
-It is only an optional dependency of `hpke-rs` that nothing enables, so it
-is not compiled; CI fails if it ever enters the build. The fix (`hpke-rs
-0.8`) needs an `openmls_rust_crypto` release that accepts it.
+**Neither is possible yet (checked 9 Nov 2026).** The libcrux provider,
+`openmls_libcrux_crypto 0.4.0`, works with OpenMLS 0.9.2 but needs
+`hpke-rs-libcrux ^0.7`, and 0.7.0 pins `libcrux-kem =0.0.9`. That version
+has RUSTSEC-2026-0330 and -0331 (a panic on too-short ML-KEM keys, CVSS
+8.7). Switching would therefore compile a worse advisory in place of one
+that 0x0003 never reaches. The fix, `hpke-rs-libcrux 0.8`, needs a new
+release of the provider. No OpenMLS release uses `elliptic-curve 0.14` yet.
+Until one of these ships, the `openmls_rust_crypto` exception stays (it
+expires 2027-02-09 and is re-checked then).
+
+With `openmls_rust_crypto`, `libcrux-kem 0.0.9` is in `Cargo.lock` only as
+an optional dependency of `hpke-rs` that nothing enables, so it is not
+compiled; CI fails if it ever enters the build.
 
 MLS group state (OpenMLS storage) is persisted in the PIN vault, encrypted
 under the conversation's vault key, and written **before** any message that
@@ -574,7 +583,8 @@ v2 group.
 
 Each row is expected behaviour, tested by the PoC on a mocked DHT (column
 "PoC"; tests in `native/mls_poc/tests/failures.rs`, all passing). F19 was
-added after the PoC and is tested in the implementation.
+added after the first PoC round and is covered by
+`f19_diverging_histories`.
 
 | # | Scenario | Expected behaviour | PoC |
 | --- | --- | --- | --- |
@@ -596,17 +606,20 @@ added after the PoC and is tested in the implementation.
 | F16 | **Storage node drops writes** | Detected via `prev` chain, `logHash` and log counts; never silently accepted. A lost outbox write is re-sent by its writer; a lost control-log write is only waited for (repair by the admin: before v2.0) | Partly |
 | F17 | **Oversized MLS message** (Welcome for a large group) | Split across subkeys and reassembled (§B3, chunking) | Yes |
 | F18 | **Malformed data** from a member or node: invites, heads, commits, messages, chunk headers | Rejected without crashing or changing state (fuzz tests of every parser) | Yes |
-| F19 | **Diverging histories**: the admin rewrites a log position after some members read it | Members compare `ctl` in messages (§B5.2 r6); a mismatch stops new commits and shows a warning | No: test in the implementation |
+| F19 | **Diverging histories**: the admin rewrites a log position after some members read it | Members compare `ctl` in messages (§B5.2 r6); a mismatch stops new commits and shows a warning | Yes |
 
 ## B13. Proof of concept
 
 **Status: done** in `native/mls_poc` (OpenMLS 0.9.2), except phone
 timings and memory use.
 Every item below passes except the last measurement: timings so far are
-from an x86-64 desktop (all operations under 3 ms) because the crate has no
-Android build yet. The findings are folded into §B3, §B4, §B5.1, §B5.2,
-§B5.3, §B5.4, §B7 and §B12; details and numbers are in
-`native/mls_poc/README.md`.
+from an x86-64 desktop (all operations under 3 ms). CI now builds an
+Android bench APK (arm64, 16 KB aligned; workflow `mls-poc.yml`, artifact
+`mls-poc-bench-apk`). It runs the minimal scenario 20 times and reports
+first-run, median and maximum times per operation and memory (VmRSS,
+VmHWM); a run on a physical phone is still needed. The findings are folded
+into §B3, §B4, §B5.1, §B5.2, §B5.3, §B5.4, §B7 and §B12; details and
+numbers are in `native/mls_poc/README.md`.
 
 Goal: prove that OpenMLS, FFI and admin-sequenced commits work before any
 app code migrates.
@@ -622,7 +635,7 @@ Scope:
   decrypt anything later; persisting and restoring MLS state after a
   restart.
 * A Flutter test that calls the same scenario through FFI.
-* The failure scenarios F1–F18 where the mock allows.
+* The failure scenarios F1–F19 where the mock allows.
 * Measurements: sizes of KeyPackage, Welcome, commit and application
   messages against the 32 KiB subkey limit; time per operation on a
   physical Android phone (OpenMLS initialisation, join, epoch change,
@@ -633,11 +646,11 @@ Acceptance: every item above passes, and nothing in the app's `lib/` changes.
 ## B14. Order of work
 
 1. ✅ Threat model and protocol direction approved (this revision).
-2. ✅ PoC (§B13), including the failure tests (§B12). Open: phone timings
-   (needs an Android build of the crate).
+2. ✅ PoC (§B13), including the failure tests (§B12, F19 too). Open: a
+   run of the bench APK on a physical phone.
 3. ✅ Review the PoC; adjust this document where it proved wrong (this
    revision). Proposals go into commits by value (§B5.1). Open: crypto
-   provider (§B7).
+   provider (§B7), blocked on upstream releases.
 4. Group control record, join flow, removal with generation move.
 5. E2EE messages, encrypted media, padding.
 6. Per-conversation identities by default; global profile and presence

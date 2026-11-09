@@ -1,8 +1,9 @@
 name: mls-poc
 
 # v2 proof of concept (docs/PROTOCOL.md B13): OpenMLS over a mocked DHT,
-# the failure scenarios F1–F18, and the same scenario called from Flutter
-# through FFI. Runs only when the PoC changes.
+# the failure scenarios F1–F19, the same scenario called from Flutter
+# through FFI, and an Android bench APK for on-device measurements. Runs
+# only when the PoC changes.
 on:
   pull_request:
     branches: [main]
@@ -60,7 +61,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path native/mls_poc/Cargo.toml --locked --all-targets -- -D warnings
 
-      - name: Tests (scenario + F1–F18)
+      - name: Tests (scenario + F1–F19)
         run: cargo test --manifest-path native/mls_poc/Cargo.toml --locked
 
       - name: Sizes and timings (release build)
@@ -82,3 +83,62 @@ jobs:
 
       - name: Flutter → Rust through FFI
         run: flutter test native/mls_poc/flutter_test
+
+  # B13 phone measurements: the PoC as an arm64 library (16 KB aligned) in a
+  # throwaway Flutter app (android_bench/main.dart). Install the APK from the
+  # artifact on a physical phone, tap Run, send the copied report. The app is
+  # debug-signed and never published.
+  android-bench:
+    name: Android bench APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-linux-android
+          rustup default stable
+
+      # Java, Flutter and the 16 KB linker flag for aarch64-linux-android.
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: mls-bench
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: native/mls_poc/target
+          key: mls-bench-${{ runner.os }}-${{ hashFiles('native/mls_poc/Cargo.lock') }}
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --version =4.1.2 --locked
+
+      - name: Build libmls_poc.so (arm64-v8a, release)
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          cargo ndk -t arm64-v8a --platform 24 -o "$RUNNER_TEMP/jniLibs" \
+            build --manifest-path native/mls_poc/Cargo.toml --locked --release
+
+      - name: Bench app
+        run: |
+          app="$RUNNER_TEMP/mls_poc_bench"
+          flutter create --platforms=android --org dev.p2pc.bench \
+            --project-name mls_poc_bench "$app"
+          cp native/mls_poc/android_bench/main.dart "$app/lib/main.dart"
+          rm -rf "$app/test"
+          mkdir -p "$app/android/app/src/main/jniLibs"
+          cp -r "$RUNNER_TEMP/jniLibs/." "$app/android/app/src/main/jniLibs/"
+          (cd "$app" && flutter build apk --release --target-platform android-arm64)
+          cp "$app/build/app/outputs/flutter-apk/app-release.apk" "$RUNNER_TEMP/mls-poc-bench.apk"
+
+      - name: 16 KB page alignment
+        run: .github/scripts/check_16k.sh "$RUNNER_TEMP/mls-poc-bench.apk"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mls-poc-bench-apk
+          path: ${{ runner.temp }}/mls-poc-bench.apk
+          retention-days: 30

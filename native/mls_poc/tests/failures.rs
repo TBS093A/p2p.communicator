@@ -1,4 +1,4 @@
-//! docs/PROTOCOL.md B12: failure scenarios F1–F18 on the mock DHT.
+//! docs/PROTOCOL.md B12: failure scenarios F1–F19 on the mock DHT.
 
 mod common;
 
@@ -705,4 +705,64 @@ fn f18_garbage_join_request() {
         .request_join(&mut dht, &invite, "00".repeat(32).as_str())
         .is_err());
     assert!(dht.get(&invite.rendezvous, 1).unwrap().is_none());
+}
+
+// F19: the admin rewrites a log position after some members read it. Each
+// member's log is self-consistent, so only comparing `ctl` in messages
+// reveals it (B5.2 r6); afterwards no further commit is accepted.
+#[test]
+fn f19_diverging_histories() {
+    let (mut dht, mut g) = group(&["admin", "alice", "bob"]);
+    // Healthy group: matching `ctl`, no alarm.
+    g[1].send_text(&mut dht, "zgodnie").unwrap();
+    sync_all(&mut dht, &mut g);
+    assert!(g.iter().all(|m| !m.st.history_diverged), "false alarm");
+
+    // Carol joins; Alice reads the commit and the Directory after it.
+    let mut carol = Member::new("carol");
+    let invite = g[0].create_invite(&mut dht).unwrap();
+    let verified = invite.admin_cik.clone();
+    carol.request_join(&mut dht, &invite, &verified).unwrap();
+    g[0].stage_add(&mut dht, &invite.rendezvous).unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    g[1].sync(&mut dht).unwrap();
+    let pos = g[0].st.log_count;
+    assert_eq!(g[1].st.log_count, pos);
+
+    // The admin equivocates: the Directory at `pos` gets different bytes
+    // and the header a matching chain. Bob reads only the new version.
+    g[0].rewrite_log_for_test(&mut dht, pos).unwrap();
+    g[2].sync(&mut dht).unwrap();
+    assert_eq!(g[2].st.log_count, pos, "bob accepts a self-consistent log");
+    assert_ne!(g[1].st.log_hash, g[2].st.log_hash);
+    assert!(
+        !g[2].st.history_diverged,
+        "not detectable from the log alone"
+    );
+
+    // Alice's next message carries her `ctl`: Bob detects the divergence,
+    // and Alice detects it from Bob's.
+    g[1].send_text(&mut dht, "mój stan").unwrap();
+    g[2].send_text(&mut dht, "a mój inny").unwrap();
+    g[1].sync(&mut dht).unwrap();
+    g[2].sync(&mut dht).unwrap();
+    assert!(g[2].st.history_diverged);
+    assert!(g[1].st.history_diverged);
+    assert!(has_event(&g[2], "group history differs"));
+    assert!(
+        texts(&g[2]).contains(&"mój stan".to_string()),
+        "messages still shown"
+    );
+
+    // No further commit is accepted by a member that saw the divergence.
+    let epoch = g[2].st.epoch;
+    g[0].propose_update(&mut dht).unwrap();
+    g[0].sync(&mut dht).unwrap();
+    g[0].stage_commit_proposals().unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    assert_eq!(g[0].st.epoch, epoch + 1, "the admin did commit");
+    for _ in 0..3 {
+        g[2].sync(&mut dht).unwrap();
+    }
+    assert_eq!(g[2].st.epoch, epoch, "commit accepted after divergence");
 }

@@ -20,7 +20,7 @@ Implements docs/PROTOCOL.md §B13. Nothing in the app (`lib/`) uses it yet.
   (`flutter_test/mls_poc_ffi_test.dart`).
 
 ```sh
-cargo test --manifest-path native/mls_poc/Cargo.toml          # scenario + F1–F18
+cargo test --manifest-path native/mls_poc/Cargo.toml          # scenario + F1–F19
 cargo build --manifest-path native/mls_poc/Cargo.toml && \
   flutter test native/mls_poc/flutter_test                    # through FFI
 ```
@@ -64,6 +64,7 @@ the tests, the measurements (in the job summary) and the FFI test. SCA scans
 | F16 | `f16_lost_writes` | ✅ (partly) a lost outbox write shows as a gap and is re-sent by the writer. Lost control-log writes are only waited for, not repaired. |
 | F17 | `f17_oversized_welcome` | ✅ Welcome and commit split across subkeys and joined |
 | F18 | `f18_fuzz_parsers`, `f18_garbage_in_records`, `f18_garbage_join_request` | ✅ 20 000 random inputs to every parser, garbage in every record, garbage join requests: no crash and no state change |
+| F19 | `f19_diverging_histories` | ✅ the admin rewrites a published log position; each member's log is self-consistent, but `ctl` in the next messages reveals it on both sides; no further commit is accepted |
 
 ## Measurements
 
@@ -99,8 +100,19 @@ Time per operation, release build, x86-64 desktop:
 | commit Remove + move | 0.58 |
 
 **Still open: timings on a phone.** These numbers are desktop timings.
-§B13 asks for times on a phone. That needs an Android build of the crate
-(cargo-ndk) and a run on a device, which hasn't been done yet.
+§B13 asks for times on a phone. CI job "Android bench APK" builds the
+crate for arm64-v8a with cargo-ndk (16 KB aligned, checked by
+`check_16k.sh`) into a throwaway Flutter app (`android_bench/main.dart`,
+nothing in `lib/`) and uploads `mls-poc-bench-apk`. On the phone:
+
+1. Install the APK from the workflow run's artifacts (debug-signed).
+2. Tap **Run**. It runs the minimal scenario 20 times through FFI
+   (`p2pc_mls_poc_bench`, `src/bench.rs`) in a background isolate.
+3. The screen shows first-run / median / max ms per operation and memory
+   (VmRSS before and after, VmHWM peak). **Copy report** copies the full
+   JSON.
+
+No phone run yet.
 
 ## What the PoC showed (proposed changes to PROTOCOL.md)
 
@@ -125,7 +137,8 @@ Time per operation, release build, x86-64 desktop:
    applicable until it arrives (handled: "commit not applicable yet",
    retried). A proposal lost for good would block that member. For v2.0,
    the admin should commit only proposals older than one sync round, or
-   carry them by value. To be decided.
+   carry them by value. **Decided: by value** (PROTOCOL §B5.1). The PoC
+   still uses references; the implementation switches.
 5. **Fork detection** works as: "the first successor committed, in its
    outbox, an epoch I already left through the admin's commit". The forked
    member must rejoin as a new identity, because MLS forbids the same
@@ -144,6 +157,12 @@ Time per operation, release build, x86-64 desktop:
    * CI fails if it ever becomes part of the build.
    * The fix (`hpke-rs 0.8`) needs an `openmls_rust_crypto` release that
      accepts it.
+   * **libcrux checked (9 Nov 2026), not switched:**
+     `openmls_libcrux_crypto 0.4.0` is compatible with OpenMLS 0.9.2. But it
+     requires `hpke-rs-libcrux ^0.7`, which pins `libcrux-kem =0.0.9`.
+     Switching would compile RUSTSEC-2026-0330/-0331 in place of an
+     advisory 0x0003 never reaches. Wait for a provider release on
+     `hpke-rs-libcrux 0.8`.
 7. **Retention works as specified:** keep 1 past epoch, and delete it
    explicitly after 24 h (`delete_past_epoch_secrets`). 100 skipped keys
    per sender is confirmed as the limit.

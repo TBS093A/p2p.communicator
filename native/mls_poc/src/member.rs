@@ -201,6 +201,12 @@ pub struct State {
     pub last_admin_activity: u64,
     pub removed: bool,
     pub fork_suspected: bool,
+    /// `logHash` after every accepted log position of the current
+    /// generation, keyed "gen:count", to check peers' `ctl` (B5.2 r6).
+    log_hashes: BTreeMap<String, String>,
+    /// A peer accepted a different log for the same position: no further
+    /// commits are accepted (B5.2 r6, F19).
+    pub history_diverged: bool,
     pub inbox: Vec<Received>,
     /// Message hashes seen per sender, and `prev` hashes referenced but not
     /// seen yet: what stays here is a real gap (F6/F16).
@@ -275,6 +281,8 @@ impl Member {
                 last_admin_activity: 0,
                 removed: false,
                 fork_suspected: false,
+                log_hashes: BTreeMap::new(),
+                history_diverged: false,
                 inbox: vec![],
                 seen: BTreeSet::new(),
                 awaiting: BTreeMap::new(),
@@ -749,8 +757,74 @@ impl Member {
             self.st.log_count += 1;
             dht.set(&control, self.st.log_count, &c, &owner)?;
             self.st.log_hash = chain(&self.st.log_hash, &c);
+            self.note_log_hash();
         }
         Ok(())
+    }
+
+    /// Remembers `logHash` at the current position of this generation.
+    fn note_log_hash(&mut self) {
+        let gen = self.st.gen;
+        self.st
+            .log_hashes
+            .retain(|k, _| k.split(':').next() == Some(gen.to_string().as_str()));
+        self.st.log_hashes.insert(
+            format!("{gen}:{}", self.st.log_count),
+            self.st.log_hash.clone(),
+        );
+    }
+
+    /// The `ctl` this member reports in its messages (B8).
+    fn ctl(&self) -> wire::Ctl {
+        wire::Ctl {
+            gen: self.st.gen,
+            log_count: self.st.log_count,
+            log_hash: self.st.log_hash.clone(),
+        }
+    }
+
+    /// B5.2 r6: a peer that accepted a different log for a position this
+    /// member has also accepted means the histories diverged.
+    fn check_ctl(&mut self, from: &str, ctl: &wire::Ctl) {
+        if ctl.gen != self.st.gen || ctl.log_count == 0 || self.st.history_diverged {
+            return;
+        }
+        let mine = self
+            .st
+            .log_hashes
+            .get(&format!("{}:{}", ctl.gen, ctl.log_count));
+        if let Some(mine) = mine {
+            if *mine != ctl.log_hash {
+                self.st.history_diverged = true;
+                self.st.events.push(format!(
+                    "group history differs from {from} at log position {}",
+                    ctl.log_count
+                ));
+            }
+        }
+    }
+
+    /// Test hook (F19): the admin rewrites an already published log
+    /// position with a fresh encryption of the current Directory, and
+    /// re-signs the header over the new chain, as an equivocating admin
+    /// would.
+    pub fn rewrite_log_for_test(&mut self, dht: &mut MockDht, pos: u32) -> Result<(), PocError> {
+        let control = self.st.control.clone().expect("admin has control");
+        let owner = self.st.control_owner.clone().expect("admin owns control");
+        let msg = self.directory_message()?;
+        let chunks = wire::chunk(Kind::Mls, &msg);
+        assert_eq!(chunks.len(), 1, "test rewrites a one-chunk entry");
+        dht.set(&control, pos, &chunks[0], &owner)?;
+        let mut h = String::new();
+        for k in 1..=self.st.log_count {
+            let v = dht.get(&control, k)?.expect("own log value");
+            h = chain(&h, &v);
+            self.st
+                .log_hashes
+                .insert(format!("{}:{k}", self.st.gen), h.clone());
+        }
+        self.st.log_hash = h;
+        self.write_header(dht)
     }
 
     fn write_header(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
@@ -873,6 +947,7 @@ impl Member {
             seq: self.st.my_seq,
             text: text.into(),
             prev: self.st.my_prev.clone(),
+            ctl: self.ctl(),
         };
         self.st.my_prev = wire::sha256_hex(&msg.encode());
         let bytes = self.encrypt(&msg)?;
@@ -955,6 +1030,10 @@ impl Member {
         let Some(control) = self.st.control.clone() else {
             return Ok(());
         };
+        // B5.2 r6: after diverging histories no further commit is accepted.
+        if self.st.history_diverged {
+            return Ok(());
+        }
         let Some(raw) = dht.get(&control, 0)? else {
             return Ok(());
         };
@@ -1032,6 +1111,7 @@ impl Member {
                 &self.st.log_hash,
                 &values[(consumed - len) as usize..consumed as usize],
             );
+            self.note_log_hash();
             if self.st.removed
                 || self.st.move_state != MoveState::Stable && self.st.gen != header.gen
             {
@@ -1326,7 +1406,10 @@ impl Member {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 let bytes = app.into_bytes();
                 match AppMsg::decode(&bytes) {
-                    Ok(AppMsg::Text { text, prev, .. }) => {
+                    Ok(AppMsg::Text {
+                        text, prev, ctl, ..
+                    }) => {
+                        self.check_ctl(&sender_cik, &ctl);
                         // `prev` chain: a referenced message not seen yet is
                         // awaited; it stops being a gap when it arrives.
                         let h = wire::sha256_hex(&bytes);

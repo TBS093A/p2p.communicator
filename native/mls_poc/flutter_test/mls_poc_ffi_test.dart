@@ -69,4 +69,27 @@ void main() {
     };
     expect(sizes['Welcome (2 members)'], lessThan(32 * 1024));
   });
+
+  // The entry point the Android bench app (android_bench/main.dart) uses.
+  test('bench entry point through FFI', () {
+    final lib = DynamicLibrary.open(_libraryPath());
+    final bench = lib.lookupFunction<_BenchC, _BenchDart>('p2pc_mls_poc_bench');
+    final free = lib.lookupFunction<_FreeC, _FreeDart>('p2pc_mls_poc_free');
+    final buf = bench(3);
+    final Map<String, dynamic> report;
+    try {
+      final len = buf.cast<Uint64>().value;
+      final json = Pointer<Uint8>.fromAddress(buf.address + 8).asTypedList(len);
+      report = jsonDecode(utf8.decode(json)) as Map<String, dynamic>;
+    } finally {
+      free(buf);
+    }
+    expect(report['ok'], isTrue);
+    expect(report['runs'], 3);
+    expect(report['median_ms'], isNotEmpty);
+    expect(report['rss_kib_peak'], greaterThan(0));
+  });
 }
+
+typedef _BenchC = Pointer<Uint8> Function(Uint32);
+typedef _BenchDart = Pointer<Uint8> Function(int);
