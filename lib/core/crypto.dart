@@ -84,6 +84,28 @@ class Crypto {
 
   static Future<KeyPair> newIdentity() => _cs.generateKeyPair();
 
+  /// Signs [data] with our identity key pair (ed25519).
+  static Future<String> sign(KeyPair me, Uint8List data) async =>
+      (await _cs.sign(me.key, me.secret, data)).toString();
+
+  /// True only if [signature] is a valid signature of [data] by [key]. A
+  /// malformed key or signature counts as invalid, never as an error.
+  static Future<bool> verify(
+    String key,
+    Uint8List data,
+    String signature,
+  ) async {
+    try {
+      return await _cs.verify(
+        PublicKey.fromString(key),
+        data,
+        Signature.fromString(signature),
+      );
+    } on Object {
+      return false;
+    }
+  }
+
   static Future<SharedSecret> _contextKey(
     SharedSecret key,
     String? context,

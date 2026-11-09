@@ -17,6 +17,7 @@ import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
 import 'app_link.dart';
+import 'dm_invite.dart';
 import 'global_profile.dart';
 import 'profile_directory.dart';
 
@@ -338,8 +339,13 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
       name: '${_me.name} & ${them.name}',
       peer: peer,
     );
+    final invite = dm.session.invite.encode();
+    final sig = await Crypto.sign(
+      _identity,
+      dmInviteSignedBytes(invite: invite, from: _profileKey, to: them.identity),
+    );
     final payload = utf8.encode(
-      jsonEncode({'invite': dm.session.invite.encode(), 'from': _profileKey}),
+      jsonEncode({'invite': invite, 'from': _profileKey, 'sig': sig}),
     );
     final sealed = await Crypto.sealTo(
       PublicKey.fromString(them.identity),
@@ -362,29 +368,66 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
   Future<void> _tryInvite(ChatMessage message) async {
     final sealed = message.extra?['s'];
     if (sealed is! String) return;
+    final Map<String, dynamic> j;
     try {
       final plain = await Crypto.openWith(
         _identity,
         base64Url.decode(sealed),
         context: _inviteContext,
       );
-      final j = jsonDecode(utf8.decode(plain)) as Map<String, dynamic>;
-      final invite = Invite.tryParse(j['invite'] as String? ?? '');
-      final from = j['from'] as String?;
-      if (invite == null || from == null) return;
-      if (rooms.any(
-        (r) => r.session.room.secrets.rosterKey == invite.rosterKey,
-      )) {
-        _markHandled(message.id);
-        return;
-      }
-      if (pendingInvites.any((p) => p.id == message.id)) return;
-      directory.track(from);
-      pendingInvites.add(PendingInvite(message.id, from, invite));
-      notifyListeners();
+      j = jsonDecode(utf8.decode(plain)) as Map<String, dynamic>;
     } on Object {
       // Sealed to someone else: that is the normal case, stay silent.
+      return;
     }
+    final raw = j['invite'];
+    final from = j['from'];
+    final sig = j['sig'];
+    final invite = raw is String ? Invite.tryParse(raw) : null;
+    if (invite == null || from is! String || sig is! String) {
+      // Unsigned (an app version from before signed invites) or malformed:
+      // the sender cannot be proven, so it is not shown.
+      debugPrint('[app] dropped a DM invite without a valid signature');
+      _markHandled(message.id);
+      return;
+    }
+    if (rooms.any(
+      (r) => r.session.room.secrets.rosterKey == invite.rosterKey,
+    )) {
+      _markHandled(message.id);
+      return;
+    }
+    if (pendingInvites.any((p) => p.id == message.id)) return;
+
+    // The claimed sender's profile names the identity key that must have
+    // signed the invite. The profile record is writable only by that key,
+    // so nobody else can swap in their own.
+    final signed = dmInviteSignedBytes(
+      invite: raw as String,
+      from: from,
+      to: _identity.key.toString(),
+    );
+    for (var attempt = 0; ; attempt++) {
+      final profile = await directory.load(from);
+      if (profile != null && profile.identity.isNotEmpty) {
+        if (!await Crypto.verify(profile.identity, signed, sig)) {
+          debugPrint('[app] dropped a DM invite with a forged sender');
+          _markHandled(message.id);
+          return;
+        }
+        break;
+      }
+      // Profile not reachable yet: try for about a minute, then give up
+      // without showing it (the sender can invite again).
+      if (attempt >= 4 || _closed) {
+        debugPrint('[app] DM invite sender unverifiable, not shown');
+        return;
+      }
+      await Future<void>.delayed(Duration(seconds: 5 * (attempt + 1)));
+    }
+    if (_closed || pendingInvites.any((p) => p.id == message.id)) return;
+    pendingInvites.add(PendingInvite(message.id, from, invite));
+    notifyListeners();
   }
 
   Future<PublicRoom> acceptInvite(PendingInvite p) async {
