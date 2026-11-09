@@ -22,13 +22,17 @@ source.
 |---|---|---|---|
 | ![Room settings](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/05_room_settings.png) | ![Styled chat](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/06_chat_styled.png) | ![Profile](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/08_profile_status.png) | ![Private](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/09_private_room.png) |
 
+| Members | Moving to a new phone |
+|---|---|
+| ![Members](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/07_members.png) | ![Move](https://raw.githubusercontent.com/TBS093A/p2p.communicator/screenshots/10_move_send.png) |
+
 ## DMs, groups and private rooms
 
 | | DM / group (public) | Private room |
 |---|---|---|
 | Listed on the home screen | yes (DM \| Grupy) | **never** |
 | Opens with | the app PIN | **its own password** (private mode, key icon) |
-| Your identity | one **global profile**: name, picture (GIF ok), bubble color, status | a separate name per room, **unlinkable** to your profile |
+| Your identity | one **global profile**: name, picture (GIF ok), status | a separate name per room, **unlinkable** to your profile |
 | Status / presence | yes | no |
 
 * **Statuses**: available, away, do not disturb, invisible. The app writes a
@@ -49,25 +53,57 @@ and refreshed on the `screenshots` branch only when the UI changes.
 
 Rooms are customizable, Discord-style, and every member sees the same thing:
 
-* **Room look** (shared, any member can change it): an **uploaded room
-  picture** (GIF allowed), the name, the **chat background**: any RGB color
-  (sliders or HEX) and/or a **picture or animated GIF** with adjustable
-  dimming, and a **custom emoji pack** of up to 80 images.
-* **GIFs everywhere**: room pictures, profile pictures and backgrounds can be
-  animated GIF/WebP; they are stored as-is so the animation survives. Static
-  photos are scaled down on the phone first (avatars 256×256, backgrounds
-  1440 px), so a 12 MP photo costs tens of KB on the network. Animated
-  **GIF/WebP emoji** play inline; type `:code:` or pick from the emoji
-  button. A message of only 1–3 emoji is shown large.
-* **Your profile per room**: an uploaded picture, display name and **bubble
-  color** (any RGB) for all your bubbles: text, photos, video and voice
-  notes. Default bubbles: blue `#0084FF` for yours, grey for others. Each
-  room has its own profile, so rooms stay unlinkable.
-* **Members list** with avatars and colors.
+* **Room look** (shared, any member can change it, in DMs too): an
+  **uploaded room picture** (GIF allowed), the name, the **chat
+  background**: any RGB color (sliders or HEX) and/or a **picture or
+  animated GIF** with adjustable dimming.
+* **Bubble colors per room**: one color for **your messages** and one for
+  **everyone else's** (text, photos, video and voice notes). Defaults: blue
+  `#0084FF` for yours, grey for others.
+* **See-through bars**: the background picture runs under the top bar and
+  the message bar, which are tinted with the room's background color at an
+  adjustable transparency (25% by default), so the picture shows through
+  while the bars stay distinct.
+* **Sender avatars**, Telegram style: one avatar per run of messages from
+  the same person, sticking to the bottom of that run while you scroll.
+* **Custom emoji pack** of up to 80 images, added **one by one or in bulk**
+  (codes are suggested from the file names). Animated **GIF/WebP emoji**
+  play inline; type `:code:` or pick from the emoji button. A message of only
+  1–3 emoji is shown large.
+* **Automatic shrinking**: emoji over 512 KB are scaled down (and their
+  frame rate thinned, for GIFs) until they fit, instead of being refused.
+  Animated avatars (1 MB) and backgrounds (4 MB) work the same way; GIFs
+  within the limit are stored byte for byte. Static photos are scaled down
+  on the phone first, so a 12 MP photo costs tens of KB on the network.
+* **Members list** with avatars and statuses.
 * **App theme** (this phone only): system, light or dark.
 
 Where it lives: the room look in roster subkey 0, your profile in the head of
 your own outbox, images in encrypted DHT records like any other media.
+
+## Moving to a new phone
+
+1. On the **new** phone, install the app and choose *Przenieś z innego
+   telefonu*. It shows a QR code: a one-time public key that exists only in
+   that screen's memory.
+2. On the **old** phone, go to *Mój profil → Przenieś na nowy telefon*, scan
+   the code and add the private rooms you want to take along (by password:
+   the app itself cannot tell they exist).
+3. The old phone writes one file **sealed to that key** (HPKE for the file
+   key, then AEAD per entry, file names included) and opens the share sheet:
+   Quick Share, Bluetooth, a cable, anything. Nobody but the new phone can
+   open it, not even whatever carries it.
+4. The new phone imports it under a **new app PIN**: your identity and
+   profile, every DM and group with its history, all photos, videos, voice
+   notes, avatars, backgrounds and emoji, and the private rooms (same
+   passwords). Everything is re-encrypted with the new phone's own PIN and
+   Keystore pepper.
+5. Back on the old phone, *Wyczyść ten telefon* deletes the vault and its
+   Keystore pepper. Do it: two phones on one account would write to the
+   same outboxes.
+
+NFC would only be fast enough for the key, which the QR already carries, so
+it is not used.
 
 ## CI/CD (GitHub Actions)
 
@@ -85,7 +121,7 @@ your own outbox, images in encrypted DHT records like any other media.
 | SAST | Gitleaks | secrets in git history | yes |
 | SCA | OSV-Scanner | vulnerabilities in `pubspec.lock` (blocking) and in Veilid's `Cargo.lock` (report only) | pub: yes |
 | SCA | Dependabot | weekly update PRs for pub and Actions (7-day cooldown) | n/a |
-| DAST | emulator + [`integration_test`](integration_test/app_test.dart) | the real app on the Veilid network: app PIN setup, DM/groups, a private room never listed and opened only by its password, wrong PIN/password opens nothing, no crashes; plus the R8 release build must start | yes |
+| DAST | emulator + [`integration_test`](integration_test/app_test.dart) | the real app on the Veilid network: app PIN setup, DM/groups, a private room never listed and opened only by its password, wrong PIN/password opens nothing, room customization and bulk emoji, moving everything to a "new phone" and wiping the old one, no crashes; plus the R8 release build must start | yes |
 | MAST | MobSF | analysis of the signed APK, PDF report attached to the release | report |
 
 SAST and SCA results also show up under **Security → Code scanning**. All
