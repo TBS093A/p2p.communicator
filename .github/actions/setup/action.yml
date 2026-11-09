@@ -21,18 +21,34 @@ runs:
         channel: stable
         cache: true
 
+    # Google Play requires 64-bit native libraries aligned to 16 KB pages.
+    # The NDK clang the Rust hook links with still defaults to 4 KB, and
+    # Flutter passes build hooks no CARGO_* variables, only HOME; so the
+    # linker flag goes into ~/.cargo/config.toml, which cargo always reads.
+    - name: 16 KB page alignment for Rust (Android)
+      shell: bash
+      run: |
+        mkdir -p ~/.cargo
+        cat >> ~/.cargo/config.toml <<'EOF'
+        [target.aarch64-linux-android]
+        rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+        [target.x86_64-linux-android]
+        rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+        EOF
+
     # The veilid build hook compiles veilid-core (Rust) with the toolchain the
     # veilid repo pins (rust-toolchain.toml); rustup on the runner fetches it.
     # Cache crates and the compiled targets: a cold veilid build takes long.
+    # ("rust16k": libraries built before the 16 KB flag must not come back.)
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           .dart_tool/hooks_runner
-        key: rust-${{ inputs.cache-key }}-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+        key: rust16k-${{ inputs.cache-key }}-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
         restore-keys: |
-          rust-${{ inputs.cache-key }}-${{ runner.os }}-
+          rust16k-${{ inputs.cache-key }}-${{ runner.os }}-
 
     - name: Pub get
       shell: bash

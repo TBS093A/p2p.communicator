@@ -9,6 +9,7 @@ import '../app_state/global_profile.dart';
 import '../room/room_session.dart';
 import '../vault/room_secrets.dart';
 import 'migration_screens.dart';
+import 'update_screen.dart';
 import 'widgets/avatar.dart';
 
 /// The one profile everyone in your DMs and groups sees: picture (GIF ok),
@@ -216,6 +217,19 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => MigrationSendScreen(app: app),
+                    ),
+                  ),
+                ),
+                ListTile(
+                  key: const ValueKey('updates'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.system_update_alt),
+                  title: const Text('Aktualizacje'),
+                  subtitle: const Text('Wersja aplikacji, nowe wydania'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const UpdateScreen(),
                     ),
                   ),
                 ),

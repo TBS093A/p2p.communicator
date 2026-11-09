@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- GitHub build only: installs its own verified update. The user still
+         confirms every install, and Android only accepts an APK signed with
+         the same key. Never in the Play build (Play policy). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+</manifest>

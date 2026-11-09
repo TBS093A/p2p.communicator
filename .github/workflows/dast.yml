@@ -39,9 +39,11 @@ jobs:
       # emulator, debug-signed: no secrets needed on PRs) and smoke-test it.
       - name: Build release APK for the smoke test
         run: |
-          flutter build apk --release --target-platform android-x64
+          flutter build apk --release --flavor github --target-platform android-x64
           mkdir -p build/release-smoke
-          cp build/app/outputs/flutter-apk/app-release.apk build/release-smoke/app-release.apk
+          cp build/app/outputs/flutter-apk/app-github-release.apk build/release-smoke/app-release.apk
+          # Google Play rejects 64-bit libraries not aligned to 16 KB pages.
+          bash .github/scripts/check_16k.sh build/release-smoke/app-release.apk
 
       - name: Run app on emulator
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
@@ -57,7 +59,7 @@ jobs:
           script: |
             mkdir -p build
             adb logcat -c
-            flutter drive --driver=test_driver/integration_test.dart --target=integration_test/app_test.dart || (adb logcat -d > build/logcat.txt; exit 1)
+            flutter drive --flavor github --driver=test_driver/integration_test.dart --target=integration_test/app_test.dart || (adb logcat -d > build/logcat.txt; exit 1)
             adb logcat -d > build/logcat.txt
             ! grep -E "Process: com\.p2pcommunicator|Fatal signal.*p2pcommunicator" build/logcat.txt
             bash .github/scripts/release_smoke.sh build/release-smoke/app-release.apk build/release-smoke
