@@ -1,0 +1,12 @@
+# gitleaks: the default rules everywhere, except in lockfiles, which only
+# hold package names, versions and checksums. A package named
+# "libcrux-secrets" in Cargo.lock tripped generic-api-key.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Dependency lockfiles (package names and checksums, never credentials)"
+paths = [
+  '''(^|/)Cargo\.lock$''',
+  '''(^|/)pubspec\.lock$''',
+]
