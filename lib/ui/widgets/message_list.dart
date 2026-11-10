@@ -1,5 +1,3 @@
-import 'dart:ui' show ImageFilter;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 
@@ -115,8 +113,8 @@ class MessageList extends StatelessWidget {
   }
 }
 
-/// Messages fade and blur out over a narrow band at the top and bottom of
-/// the list instead of being cut off by a hard edge while scrolling.
+/// Messages fade out over a narrow band at the top and bottom of the list
+/// instead of being cut off by a hard edge while scrolling.
 class SoftEdges extends StatelessWidget {
   const SoftEdges({super.key, required this.child, this.band = 18});
 
@@ -131,38 +129,25 @@ class SoftEdges extends StatelessWidget {
       builder: (context, box) {
         final h = box.maxHeight;
         final stop = h <= 0 || !h.isFinite ? 0.0 : (band / h).clamp(0.0, 0.5);
-        final faded = ShaderMask(
+        // A gradient mask only: a live blur (BackdropFilter) over a
+        // scrolling list costs whole seconds per frame on weak or
+        // software-rendered GPUs. The list repaints in its own layer.
+        return ShaderMask(
           blendMode: BlendMode.dstIn,
           shaderCallback: (rect) => LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: const [
               Color(0x00000000),
+              Color(0x99000000),
               Color(0xFF000000),
               Color(0xFF000000),
+              Color(0x99000000),
               Color(0x00000000),
             ],
-            stops: [0, stop, 1 - stop, 1],
+            stops: [0, stop * 0.5, stop, 1 - stop, 1 - stop * 0.5, 1],
           ).createShader(rect),
-          child: child,
-        );
-        Widget blur(Alignment at) => Align(
-          alignment: at,
-          child: IgnorePointer(
-            child: ClipRect(
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 1.5, sigmaY: 1.5),
-                child: SizedBox(width: double.infinity, height: band * 0.6),
-              ),
-            ),
-          ),
-        );
-        return Stack(
-          children: [
-            faded,
-            blur(Alignment.topCenter),
-            blur(Alignment.bottomCenter),
-          ],
+          child: RepaintBoundary(child: child),
         );
       },
     );

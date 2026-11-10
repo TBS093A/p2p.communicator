@@ -178,7 +178,16 @@ void main() {
   Future<void> backToHome(WidgetTester t) async {
     while (find.byType(HomeScreen).evaluate().isEmpty ||
         find.byType(ChatScreen).evaluate().isNotEmpty) {
+      // A route that is popping keeps its back button until its exit
+      // animation ends (slow on the software-rendered emulator): wait for
+      // it to go before pressing Back again.
+      final backs = find.byTooltip('Back').evaluate().length;
       await t.pageBack();
+      final end = DateTime.now().add(const Duration(seconds: 15));
+      while (find.byTooltip('Back').evaluate().length >= backs &&
+          DateTime.now().isBefore(end)) {
+        await idle(t, const Duration(milliseconds: 200));
+      }
       await settle(t);
     }
   }
