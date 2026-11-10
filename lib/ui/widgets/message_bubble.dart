@@ -279,7 +279,7 @@ class _MessageBubbleState extends State<MessageBubble>
           child: AnimatedAlign(
             duration: const Duration(milliseconds: 200),
             curve: Curves.easeOutCubic,
-            alignment: Alignment.bottomCenter,
+            alignment: mine ? Alignment.bottomRight : Alignment.bottomLeft,
             heightFactor: bare || _showTime ? 1 : 0,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 2),

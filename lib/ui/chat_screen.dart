@@ -140,7 +140,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted) return;
         setState(() => _highlight = r.id);
         _highlightTimer?.cancel();
-        _highlightTimer = Timer(const Duration(milliseconds: 1500), () {
+        _highlightTimer = Timer(const Duration(milliseconds: 2500), () {
           if (mounted) setState(() => _highlight = null);
         });
         return;
@@ -690,15 +690,13 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// The message bar's color: the chat background's own color, so the bar
-  /// matches the room. Over a plain colored background the same hue is
-  /// shifted in lightness, or it would vanish into the background.
+  /// The message bar's color: the chat background's own hue, so the bar
+  /// matches the room, shifted in lightness so it stays visible on that
+  /// background (and on a dimmed picture over it).
   Color _barAccent(BuildContext context) {
-    final meta = _session.meta;
-    final bg = meta.background;
+    final bg = _session.meta.background;
     if (bg == null) return Theme.of(context).colorScheme.primary;
     final c = Color(bg);
-    if (meta.backgroundImage != null) return c;
     final hsl = HSLColor.fromColor(c);
     final light = c.computeLuminance() > 0.45;
     return hsl

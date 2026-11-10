@@ -427,17 +427,22 @@ void main() {
       timeout: const Duration(seconds: 30),
     );
     await hideKeyboard(t);
-    // The picture runs under the top bar and the message field; both take
-    // the room's background color (#1B2A41) at the default 25 %
-    // transparency (the field has no bar behind it any more).
+    // The picture runs under the top bar, which takes the room's background
+    // color (#1B2A41) at the default 25 % transparency. The message field
+    // has no bar behind it any more: it is filled with the room's hue
+    // (lightened to stay visible) at the same transparency.
     final top = t.widget<AppBar>(find.byKey(const ValueKey('chat-top-bar')));
-    final field = t.widget<TextField>(
-      find.byKey(const ValueKey('composer-field')),
+    expect(top.backgroundColor!.toARGB32() & 0xFFFFFF, 0x1B2A41);
+    expect((top.backgroundColor!.a * 100).round(), 75);
+    final fieldFill = t
+        .widget<TextField>(find.byKey(const ValueKey('composer-field')))
+        .decoration!
+        .fillColor!;
+    expect((fieldFill.a * 100).round(), 75);
+    expect(
+      HSLColor.fromColor(fieldFill).hue,
+      closeTo(HSLColor.fromColor(const Color(0xFF1B2A41)).hue, 1),
     );
-    for (final c in [top.backgroundColor!, field.decoration!.fillColor!]) {
-      expect(c.toARGB32() & 0xFFFFFF, 0x1B2A41);
-      expect((c.a * 100).round(), 75);
-    }
     final chatScaffold = find.ancestor(
       of: find.byKey(const ValueKey('chat-top-bar')),
       matching: find.byType(Scaffold),
@@ -476,15 +481,18 @@ void main() {
       findsOneWidget,
     );
     await hideKeyboard(t);
+    await shot(t, '06b_reply');
     await t.tap(quote.first);
-    await settle(t);
-    expect(
-      t
-          .widgetList<MessageBubble>(find.byType(MessageBubble))
-          .where((b) => b.highlighted)
-          .map((b) => b.message.text),
-      [question],
+    // Scrolls to the original and wobbles it (highlighted for a moment).
+    await pumpUntil(
+      t,
+      find.byWidgetPredicate(
+        (w) =>
+            w is MessageBubble && w.highlighted && w.message.text == question,
+      ),
+      timeout: const Duration(seconds: 10),
     );
+    await settle(t);
 
     // "Is typing" is opt-in per conversation: off until switched on here.
     // (A checked menu item ignores pointers on its text: tap the item.)
