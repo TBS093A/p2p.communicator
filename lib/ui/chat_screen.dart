@@ -63,6 +63,7 @@ class _ChatScreenState extends State<ChatScreen> {
   ChatMessage? _replyTo;
   final _scroll = ScrollController();
   final _itemKeys = <String, GlobalKey>{};
+  final _entrances = BubbleEntrances();
   final _textFocus = FocusNode();
   String? _highlight;
   Timer? _highlightTimer;
@@ -563,6 +564,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     return MessageList(
                       session: _session,
                       controller: _scroll,
+                      entrances: _entrances,
                       itemKeys: _itemKeys,
                       onReply: _startReply,
                       onQuoteTap: _goToOriginal,
