@@ -149,9 +149,18 @@ void main() {
     await settle(t);
   }
 
+  /// Types [text] into the composer and sends it. The emulator's real
+  /// keyboard can push an older copy of the field back after `enterText`
+  /// (see [pickColor]), so retype until the field holds the text.
   Future<void> send(WidgetTester t, String text) async {
-    await t.enterText(find.byType(TextField).last, text);
-    await t.pump();
+    final field = find.byType(TextField).last;
+    String current() => t.widget<TextField>(field).controller!.text;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      await t.enterText(field, text);
+      await idle(t, const Duration(milliseconds: 500));
+      if (current() == text) break;
+    }
+    expect(current(), text, reason: 'IME reverted');
     await t.tap(find.byTooltip('Wyślij'));
     await settle(t);
   }
