@@ -431,10 +431,16 @@ void main() {
     // Reply to a message: long-press it, the composer shows what is being
     // answered, the sent reply carries a quote, and tapping the quote jumps
     // to (and marks) the original.
-    await t.longPress(find.text(hello));
+    // The original is the newest message, so it is on screen (older ones
+    // may sit under the composer by now).
+    const question = 'Kto bierze termos?';
+    await send(t, question);
+    await pumpUntil(t, find.text(question));
+    await hideKeyboard(t);
+    await t.longPress(find.text(question));
     await settle(t);
     await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
-    const answer = 'Ja jadę, biorę termos ☕';
+    const answer = 'Ja, z herbatą ☕';
     await send(t, answer);
     await pumpUntil(t, find.text(answer));
     expect(find.byKey(const ValueKey('reply-bar')), findsNothing);
@@ -444,7 +450,7 @@ void main() {
     );
     await pumpUntil(t, quote);
     expect(
-      find.descendant(of: quote, matching: find.textContaining('Jutro o 6:00')),
+      find.descendant(of: quote, matching: find.text(question)),
       findsOneWidget,
     );
     await hideKeyboard(t);
@@ -455,7 +461,7 @@ void main() {
           .widgetList<MessageBubble>(find.byType(MessageBubble))
           .where((b) => b.highlighted)
           .map((b) => b.message.text),
-      [hello],
+      [question],
     );
 
     await openMenu(t, 'Osoby');
