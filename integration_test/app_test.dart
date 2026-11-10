@@ -155,6 +155,16 @@ void main() {
   Future<void> send(WidgetTester t, String text) async {
     final field = find.byType(TextField).last;
     String current() => t.widget<TextField>(field).controller!.text;
+    // After hideKeyboard the real keyboard reconnects with its own (empty)
+    // copy of the field: let it come up and settle before typing.
+    if (t.view.viewInsets.bottom == 0) {
+      await t.tap(field);
+      final end = DateTime.now().add(const Duration(seconds: 5));
+      while (t.view.viewInsets.bottom == 0 && DateTime.now().isBefore(end)) {
+        await idle(t, const Duration(milliseconds: 200));
+      }
+      await idle(t, const Duration(milliseconds: 600));
+    }
     for (var attempt = 1; attempt <= 3; attempt++) {
       await t.enterText(field, text);
       await idle(t, const Duration(milliseconds: 500));
