@@ -77,6 +77,13 @@ void main() {
     });
   });
 
+  test('incoming label', () {
+    expect(Typing.incomingLabel(0), '');
+    expect(Typing.incomingLabel(1), 'Odbieram 1 wiadomość…');
+    expect(Typing.incomingLabel(3), 'Odbieram 3 wiadomości…');
+    expect(Typing.incomingLabel(12), 'Odbieram 12 wiadomości…');
+  });
+
   test('labels', () {
     expect(Typing.label([]), '');
     expect(Typing.label(['Ola']), 'Ola pisze…');

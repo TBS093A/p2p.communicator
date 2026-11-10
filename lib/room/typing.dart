@@ -17,6 +17,10 @@ class Typing {
   /// The sender rewrites its head at most this often while typing.
   static const refreshEvery = Duration(seconds: 8);
 
+  /// "Odbieram 1 wiadomość…", "Odbieram 3 wiadomości…"; empty for none.
+  static String incomingLabel(int n) =>
+      n <= 0 ? '' : 'Odbieram $n ${n == 1 ? 'wiadomość' : 'wiadomości'}…';
+
   /// "X pisze…", "X i Y piszą…", "Kilka osób pisze…"; empty for nobody.
   static String label(List<String> names) => switch (names.length) {
     0 => '',

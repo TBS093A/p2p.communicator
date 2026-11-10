@@ -51,6 +51,59 @@ class TypingIndicator extends StatelessWidget {
   }
 }
 
+/// "Odbieram N wiadomości…": someone's head already announced messages whose
+/// encrypted content is still on its way through the DHT. Shows up before
+/// the text itself, so waiting for sync is visible.
+class IncomingIndicator extends StatelessWidget {
+  const IncomingIndicator({super.key, required this.session});
+
+  final RoomSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: session,
+      builder: (context, _) {
+        final n = session.incomingCount;
+        final style = Theme.of(context).textTheme.labelMedium;
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 200),
+          alignment: Alignment.bottomLeft,
+          child: n == 0
+              ? const SizedBox(width: double.infinity)
+              : Padding(
+                  key: const ValueKey('incoming-indicator'),
+                  padding: const EdgeInsets.fromLTRB(14, 2, 14, 2),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: style?.color,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(Icons.lock_outline, size: 14, color: style?.color),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          Typing.incomingLabel(n),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: style,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+        );
+      },
+    );
+  }
+}
+
 class TypingDots extends StatefulWidget {
   const TypingDots({super.key});
 

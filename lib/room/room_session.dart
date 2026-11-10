@@ -106,6 +106,48 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   bool get shareTyping => _shareTyping;
   bool _shareTyping = false;
 
+  /// Messages the others' heads already announced but whose (encrypted)
+  /// content has not reached us yet, per member. Shown as "Odbieram N
+  /// wiadomości…" so waiting for the DHT is visible before the text lands.
+  final _incoming = <String, int>{};
+  final _incomingAt = <String, DateTime>{};
+  Timer? _incomingTimer;
+
+  /// A message that stays missing this long (lost, not just slow) no longer
+  /// counts as "on its way"; the cursor still retries it in the background.
+  static const incomingShownFor = Duration(seconds: 60);
+
+  /// How many announced messages are still on their way, in total.
+  int get incomingCount {
+    final now = DateTime.now();
+    var n = 0;
+    _incoming.forEach((o, c) {
+      final at = _incomingAt[o];
+      if (at != null && now.difference(at) < incomingShownFor) n += c;
+    });
+    return n;
+  }
+
+  void _setIncoming(String outbox, int n) {
+    final before = _incoming[outbox] ?? 0;
+    if (n == before) return;
+    if (n == 0) {
+      _incoming.remove(outbox);
+      _incomingAt.remove(outbox);
+    } else {
+      _incoming[outbox] = n;
+      _incomingAt[outbox] = DateTime.now();
+      _incomingTimer?.cancel();
+      if (!_closed) {
+        // Redraw once the oldest count stops being shown.
+        _incomingTimer = Timer(incomingShownFor, () {
+          if (!_closed) notifyListeners();
+        });
+      }
+    }
+    notifyListeners();
+  }
+
   /// Display names of the others typing right now (oldest first).
   List<String> get typingNames => [
     for (final o in _typing.typing(DateTime.now().millisecondsSinceEpoch))
@@ -246,6 +288,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     }
     _retryTimers.clear();
     _typingTimer?.cancel();
+    _incomingTimer?.cancel();
     await _sub?.cancel();
     _saveTimer?.cancel();
     app?.directory.removeListener(notifyListeners);
@@ -480,6 +523,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
 
     final cursor = _cursors.putIfAbsent(outbox, OutboxCursor.new);
     final due = cursor.due(count, RoomLayout.outboxRing);
+    _setIncoming(outbox, due.length);
     final missed = <int>{};
     var added = false;
     for (final i in due) {
@@ -517,6 +561,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     }
     final hadMissing = cursor.missing.isNotEmpty;
     cursor.settle(count, due, missed);
+    _setIncoming(outbox, cursor.missing.length);
     if (cursor.missing.isNotEmpty || hadMissing) _scheduleSave();
     if (cursor.missing.isNotEmpty) {
       // Slots the head announced but our replica does not have yet.
