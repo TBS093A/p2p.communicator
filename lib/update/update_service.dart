@@ -124,6 +124,9 @@ class UpdateService extends ChangeNotifier {
   /// On the home screen: a quiet check, release builds only. GitHub is
   /// asked at most about once a day and only if allowed in settings.
   Future<void> autoCheck() async {
+    // iOS installs only signed builds through its own channels: nothing to
+    // check, and no reason to contact GitHub.
+    if (Platform.isIOS) return;
     if (!kReleaseMode || phase != UpdatePhase.idle) return;
     await _init();
     if (store == UpdateStore.github) {
