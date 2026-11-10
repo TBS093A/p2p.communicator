@@ -458,6 +458,8 @@ void main() {
     await hideKeyboard(t);
     await t.longPress(find.text(question));
     await settle(t);
+    await pumpUntil(t, find.byKey(const ValueKey('msg-reply')));
+    await tapKey(t, 'msg-reply');
     await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
     const answer = 'Ja, z herbatą ☕';
     await send(t, answer);

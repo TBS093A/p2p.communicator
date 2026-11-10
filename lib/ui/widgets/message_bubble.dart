@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../room/message.dart';
@@ -215,14 +216,51 @@ class MessageBubble extends StatelessWidget {
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
         child: onReply == null
             ? bubble
-            : GestureDetector(
-                onLongPress: () => onReply!(message),
-                child: bubble,
-              ),
+            : GestureDetector(onLongPress: () => _menu(context), child: bubble),
       ),
     );
     if (onReply == null || message.status == MsgStatus.sending) return row;
     return SwipeToReply(onReply: () => onReply!(message), child: row);
+  }
+
+  /// Long-press menu (like most messengers): reply, and copy for text.
+  Future<void> _menu(BuildContext context) async {
+    HapticFeedback.mediumImpact();
+    final text = message.text;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            if (message.status != MsgStatus.sending)
+              ListTile(
+                key: const ValueKey('msg-reply'),
+                leading: const Icon(Icons.reply),
+                title: const Text('Odpowiedz'),
+                onTap: () => Navigator.pop(context, 'reply'),
+              ),
+            if (text != null && text.isNotEmpty)
+              ListTile(
+                key: const ValueKey('msg-copy'),
+                leading: const Icon(Icons.copy),
+                title: const Text('Kopiuj'),
+                onTap: () => Navigator.pop(context, 'copy'),
+              ),
+          ],
+        ),
+      ),
+    );
+    switch (action) {
+      case 'reply':
+        onReply?.call(message);
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: text ?? ''));
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Skopiowano')));
+        }
+    }
   }
 
   Widget _content(BuildContext context, Color fg) {
@@ -235,6 +273,8 @@ class MessageBubble extends StatelessWidget {
           text: message.text ?? '',
           session: session,
           style: TextStyle(color: fg),
+          // Long-press opens the message menu (with Copy) instead.
+          selectable: onReply == null,
         );
       case MsgType.image:
         return _MediaLoader(

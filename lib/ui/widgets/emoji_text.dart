@@ -14,18 +14,25 @@ class EmojiText extends StatelessWidget {
     required this.text,
     required this.session,
     this.style,
+    this.selectable = true,
   });
 
   final String text;
   final RoomSession session;
   final TextStyle? style;
 
+  /// Plain text can be selected by long-pressing. Off in chat bubbles,
+  /// where long-press opens the message menu (reply, copy) instead.
+  final bool selectable;
+
   @override
   Widget build(BuildContext context) {
     final emoji = session.meta.emoji;
     final parts = EmojiCode.split(text, emoji.keys.toSet());
     if (parts.every((p) => p.code == null)) {
-      return SelectableText(text, style: style);
+      return selectable
+          ? SelectableText(text, style: style)
+          : Text(text, style: style);
     }
     final jumbo = EmojiCode.isJumbo(parts);
     final base = style ?? DefaultTextStyle.of(context).style;
