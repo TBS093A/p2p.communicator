@@ -485,6 +485,14 @@ void main() {
       [question],
     );
 
+    // "Is typing" is opt-in per conversation: off until switched on here.
+    await openMenu(t, 'Pokazuj, że piszę');
+    await pumpUntil(t, find.text('Inni w tej rozmowie zobaczą, kiedy piszesz'));
+    await settle(t);
+    await openMenu(t, 'Pokazuj, że piszę');
+    await pumpUntil(t, find.text('Nie pokazujesz już, że piszesz'));
+    await settle(t);
+
     await openMenu(t, 'Osoby');
     await pumpUntil(t, find.byType(MembersScreen));
     // The group nickname, with the global name behind it.
