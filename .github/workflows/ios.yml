@@ -1,0 +1,94 @@
+name: ios
+
+# Unsigned iOS build (no Apple developer account). The .ipa is signed and
+# installed on the user's own iPhone with a free Apple ID through Sideloadly
+# or AltStore (docs/IOS.md); such an install runs for 7 days and is then
+# re-signed. Runs on PRs that touch the app and on every push to main.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "lib/**"
+      - "ios/**"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - ".github/workflows/ios.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: iOS unsigned build
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          # Same version as local development and the Android build.
+          flutter-version: 3.47.9
+          channel: stable
+          cache: true
+
+      # The veilid build hook compiles veilid-core (Rust) for the target with
+      # the toolchain veilid pins; make sure the iOS targets are available.
+      - name: Rust targets for iOS
+        run: |
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+          rustup show
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .dart_tool/hooks_runner
+          key: ios-rust-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            ios-rust-${{ runner.os }}-
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Version
+        id: version
+        run: |
+          base=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
+          majmin=${base%.*}
+          echo "name=${majmin}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (release, no code signing)
+        run: |
+          flutter build ios --release --no-codesign \
+            --build-name "${{ steps.version.outputs.name }}" \
+            --build-number "${{ steps.version.outputs.number }}"
+
+      - name: Package .ipa
+        run: |
+          out="$RUNNER_TEMP/ipa"
+          mkdir -p "$out/Payload"
+          cp -R build/ios/iphoneos/Runner.app "$out/Payload/"
+          (cd "$out" && zip -qr "p2p-communicator-${{ steps.version.outputs.name }}-unsigned.ipa" Payload)
+          shasum -a 256 "$out"/*.ipa | tee "$out/sha256.txt"
+          echo "IPA=$(ls "$out"/*.ipa)" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-unsigned-ipa
+          path: |
+            ${{ env.IPA }}
+            ${{ runner.temp }}/ipa/sha256.txt
+          retention-days: 30

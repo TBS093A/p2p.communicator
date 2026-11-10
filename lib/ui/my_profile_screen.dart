@@ -229,30 +229,45 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                     ),
                   ),
                 ),
-                ListTile(
-                  key: const ValueKey('updates'),
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.system_update_alt),
-                  title: const Text('Aktualizacje'),
-                  subtitle: ListenableBuilder(
-                    listenable: UpdateService.instance,
-                    builder: (context, _) {
-                      final v = UpdateService.instance.current;
-                      return Text(
-                        v == null
-                            ? 'Wersja aplikacji, nowe wydania'
-                            : 'Wersja $v · nowe wydania',
-                        key: const ValueKey('app-version'),
-                      );
-                    },
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const UpdateScreen(),
+                // iOS has no self-update: a new build is installed the way
+                // the app was (docs/IOS.md); the tile only says so.
+                if (Platform.isIOS)
+                  const ListTile(
+                    key: ValueKey('updates-ios'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.system_update_alt),
+                    title: Text('Aktualizacje'),
+                    subtitle: Text(
+                      'Na iOS aktualizujesz, instalując nowy plik IPA tak '
+                      'samo jak pierwszy raz (Sideloadly lub AltStore). Dane '
+                      'w aplikacji zostają.',
                     ),
                   ),
-                ),
+                if (!Platform.isIOS)
+                  ListTile(
+                    key: const ValueKey('updates'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.system_update_alt),
+                    title: const Text('Aktualizacje'),
+                    subtitle: ListenableBuilder(
+                      listenable: UpdateService.instance,
+                      builder: (context, _) {
+                        final v = UpdateService.instance.current;
+                        return Text(
+                          v == null
+                              ? 'Wersja aplikacji, nowe wydania'
+                              : 'Wersja $v · nowe wydania',
+                          key: const ValueKey('app-version'),
+                        );
+                      },
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const UpdateScreen(),
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 16),
                 Text(
                   'Ten profil widzą osoby z twoich rozmów i grup. Pokoje '
