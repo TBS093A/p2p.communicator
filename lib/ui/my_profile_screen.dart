@@ -230,7 +230,19 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                   ),
                 ),
                 // iOS has no self-update: a new build is installed the way
-                // the app was (see docs/IOS.md).
+                // the app was (docs/IOS.md); the tile only says so.
+                if (Platform.isIOS)
+                  const ListTile(
+                    key: ValueKey('updates-ios'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.system_update_alt),
+                    title: Text('Aktualizacje'),
+                    subtitle: Text(
+                      'Na iOS aktualizujesz, instalując nowy plik IPA tak '
+                      'samo jak pierwszy raz (Sideloadly lub AltStore). Dane '
+                      'w aplikacji zostają.',
+                    ),
+                  ),
                 if (!Platform.isIOS)
                   ListTile(
                     key: const ValueKey('updates'),
