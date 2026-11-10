@@ -225,7 +225,7 @@ class MessageBubble extends StatelessWidget {
 
   /// Long-press menu (like most messengers): reply, and copy for text.
   Future<void> _menu(BuildContext context) async {
-    HapticFeedback.mediumImpact();
+    unawaited(HapticFeedback.mediumImpact());
     final text = message.text;
     final action = await showModalBottomSheet<String>(
       context: context,
