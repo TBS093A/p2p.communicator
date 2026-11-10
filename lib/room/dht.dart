@@ -42,24 +42,35 @@ class Dht {
     RecordKey key,
     int subkey, {
     bool refresh = true,
+  }) async => (await getValue(key, subkey, refresh: refresh))?.data;
+
+  /// Like [get], but keeps the value's sequence number, so a caller can
+  /// tell a newer value from an older one (lagging replica, late update).
+  static Future<ValueData?> getValue(
+    RecordKey key,
+    int subkey, {
+    bool refresh = true,
   }) async {
     final v = await retry(
       () => rc.getDHTValue(key, subkey, forceRefresh: refresh),
       what: 'get ${_short(key)}#$subkey',
     );
     if (v == null || v.data.isEmpty) return null;
-    return v.data;
+    return v;
   }
 
   static Future<Map<String, dynamic>?> getJson(
     RecordKey key,
     int subkey, {
     bool refresh = true,
-  }) async {
-    final data = await get(key, subkey, refresh: refresh);
-    if (data == null) return null;
+  }) async => decodeJson(await get(key, subkey, refresh: refresh));
+
+  /// A JSON object from DHT bytes; null for empty or malformed data.
+  static Map<String, dynamic>? decodeJson(Uint8List? data) {
+    if (data == null || data.isEmpty) return null;
     try {
-      return jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+      final j = jsonDecode(utf8.decode(data));
+      return j is Map<String, dynamic> ? j : null;
     } on FormatException {
       return null;
     }
