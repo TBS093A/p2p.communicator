@@ -9,6 +9,74 @@ import '../../room/message.dart';
 import '../../room/room_session.dart';
 import '../../room/room_style.dart';
 import 'emoji_text.dart';
+import 'swipe_to_reply.dart';
+
+/// How a quoted message reads in one line: its text, or its media type.
+String replyPreviewText(ReplyRef r) => switch (r.type) {
+  MsgType.text => r.preview,
+  MsgType.image => r.preview.isEmpty ? '📷 Zdjęcie' : '📷 ${r.preview}',
+  MsgType.video => r.preview.isEmpty ? '🎬 Film' : '🎬 ${r.preview}',
+  MsgType.voice => '🎤 Wiadomość głosowa',
+  MsgType.dmInvite => '',
+};
+
+/// A quote: a bar, the original's author and one line of its content. Used
+/// inside a reply bubble and above the composer while replying.
+class ReplyQuote extends StatelessWidget {
+  const ReplyQuote({
+    super.key,
+    required this.reply,
+    required this.session,
+    required this.color,
+    this.onTap,
+  });
+
+  final ReplyRef reply;
+  final RoomSession session;
+  final Color color;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = reply.author == session.myOutbox
+        ? 'Ty'
+        : session.nameOf(reply.author);
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+        decoration: BoxDecoration(
+          color: color.withAlpha(30),
+          borderRadius: BorderRadius.circular(8),
+          border: Border(left: BorderSide(color: color, width: 3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.w600,
+                fontSize: 12,
+              ),
+            ),
+            Text(
+              replyPreviewText(reply),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color.withAlpha(220), fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class MessageBubble extends StatelessWidget {
   const MessageBubble({
@@ -16,6 +84,9 @@ class MessageBubble extends StatelessWidget {
     required this.message,
     required this.session,
     this.showName = true,
+    this.onReply,
+    this.onQuoteTap,
+    this.highlighted = false,
   });
 
   final ChatMessage message;
@@ -24,6 +95,15 @@ class MessageBubble extends StatelessWidget {
   /// The author's name above the bubble: only on the first message of a
   /// group from one person.
   final bool showName;
+
+  /// Swipe right or long-press: reply to this message.
+  final ValueChanged<ChatMessage>? onReply;
+
+  /// Tap on the quote of a reply: go to the original.
+  final ValueChanged<ReplyRef>? onQuoteTap;
+
+  /// Briefly marked after jumping here from a quote.
+  final bool highlighted;
 
   @override
   Widget build(BuildContext context) {
@@ -54,7 +134,9 @@ class MessageBubble extends StatelessWidget {
     final bg = jumbo ? Colors.transparent : fill;
     final fg = jumbo ? scheme.onSurface : onColor(fill);
 
-    final bubble = Container(
+    final reply = message.replyTo;
+    final bubble = AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
       constraints: BoxConstraints(
         maxWidth: MediaQuery.sizeOf(context).width * 0.72,
       ),
@@ -63,6 +145,10 @@ class MessageBubble extends StatelessWidget {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: highlighted ? scheme.tertiary : Colors.transparent,
+          width: 2,
+        ),
       ),
       child: DefaultTextStyle.merge(
         style: TextStyle(color: fg),
@@ -81,6 +167,17 @@ class MessageBubble extends StatelessWidget {
                       color: custom != null ? fg : scheme.primary,
                       fontSize: 13,
                     ),
+                  ),
+                ),
+              if (reply != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: ReplyQuote(
+                    key: ValueKey('quote-${message.id}'),
+                    reply: reply,
+                    session: session,
+                    color: jumbo ? scheme.primary : fg,
+                    onTap: onQuoteTap == null ? null : () => onQuoteTap!(reply),
                   ),
                 ),
               _content(context, fg),
@@ -112,13 +209,20 @@ class MessageBubble extends StatelessWidget {
 
     // No avatar here: the chat list draws one per message group, sticking to
     // the bottom of the group while scrolling (see GroupAvatar).
-    return Padding(
+    final row = Padding(
       padding: EdgeInsets.only(left: mine ? 0 : 8, right: mine ? 4 : 0),
       child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-        child: bubble,
+        child: onReply == null
+            ? bubble
+            : GestureDetector(
+                onLongPress: () => onReply!(message),
+                child: bubble,
+              ),
       ),
     );
+    if (onReply == null || message.status == MsgStatus.sending) return row;
+    return SwipeToReply(onReply: () => onReply!(message), child: row);
   }
 
   Widget _content(BuildContext context, Color fg) {

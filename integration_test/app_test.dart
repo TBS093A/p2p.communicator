@@ -29,6 +29,7 @@ import 'package:p2p_communicator/ui/room_settings_screen.dart';
 import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/update_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
+import 'package:p2p_communicator/ui/widgets/message_bubble.dart';
 
 import 'test_images.dart';
 import 'test_platforms.dart';
@@ -426,6 +427,36 @@ void main() {
       isTrue,
     );
     await shot(t, '06_chat_styled');
+
+    // Reply to a message: long-press it, the composer shows what is being
+    // answered, the sent reply carries a quote, and tapping the quote jumps
+    // to (and marks) the original.
+    await t.longPress(find.text(hello));
+    await settle(t);
+    await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
+    const answer = 'Ja jadę, biorę termos ☕';
+    await send(t, answer);
+    await pumpUntil(t, find.text(answer));
+    expect(find.byKey(const ValueKey('reply-bar')), findsNothing);
+    final quote = find.descendant(
+      of: find.byType(MessageBubble),
+      matching: find.byType(ReplyQuote),
+    );
+    await pumpUntil(t, quote);
+    expect(
+      find.descendant(of: quote, matching: find.textContaining('Jutro o 6:00')),
+      findsOneWidget,
+    );
+    await hideKeyboard(t);
+    await t.tap(quote.first);
+    await settle(t);
+    expect(
+      t
+          .widgetList<MessageBubble>(find.byType(MessageBubble))
+          .where((b) => b.highlighted)
+          .map((b) => b.message.text),
+      [hello],
+    );
 
     await openMenu(t, 'Osoby');
     await pumpUntil(t, find.byType(MembersScreen));

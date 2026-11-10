@@ -48,6 +48,10 @@ dependencies:
   # transitive dependency).
   crypto: ^3.0.7
 
+  # Grapheme-safe cutting of reply previews (dart-lang; already in the lock
+  # as a transitive dependency of Flutter).
+  characters: ^1.4.1
+
   # Invites
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.1.0

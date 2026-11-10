@@ -21,6 +21,7 @@ import 'room_settings_screen.dart';
 import 'widgets/avatar.dart';
 import 'widgets/emoji_text.dart';
 import 'widgets/media_image.dart';
+import 'widgets/message_bubble.dart';
 import 'widgets/message_list.dart';
 import 'widgets/network_dot.dart';
 
@@ -58,6 +59,14 @@ class _ChatScreenState extends State<ChatScreen> {
   DateTime? _recordingSince;
   Timer? _recordTicker;
 
+  // Replies.
+  ChatMessage? _replyTo;
+  final _scroll = ScrollController();
+  final _itemKeys = <String, GlobalKey>{};
+  final _textFocus = FocusNode();
+  String? _highlight;
+  Timer? _highlightTimer;
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +75,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _highlightTimer?.cancel();
+    _scroll.dispose();
+    _textFocus.dispose();
     _recordTicker?.cancel();
     unawaited(_recorder.dispose());
     _text.dispose();
@@ -81,7 +93,61 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _sendText() async {
     final t = _text.text;
     _text.clear();
-    await _session.sendText(t);
+    await _session.sendText(t, replyTo: _takeReply());
+  }
+
+  /// The message being replied to, cleared from the composer.
+  ChatMessage? _takeReply() {
+    final r = _replyTo;
+    if (r != null) setState(() => _replyTo = null);
+    return r;
+  }
+
+  void _startReply(ChatMessage m) {
+    if (m.type.hidden) return;
+    setState(() => _replyTo = m);
+    _textFocus.requestFocus();
+  }
+
+  /// Scrolls to the quoted original and marks it briefly. The list is lazy,
+  /// so an original far up is not built yet: scroll towards older messages
+  /// a screen at a time until it is.
+  Future<void> _goToOriginal(ReplyRef r) async {
+    if (_session.messageById(r.id) == null) {
+      _toast('Oryginał niedostępny');
+      return;
+    }
+    for (var step = 0; step < 50 && mounted; step++) {
+      final ctx = _itemKeys[r.id]?.currentContext;
+      if (ctx != null && ctx.mounted) {
+        await Scrollable.ensureVisible(
+          ctx,
+          alignment: 0.5,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+        if (!mounted) return;
+        setState(() => _highlight = r.id);
+        _highlightTimer?.cancel();
+        _highlightTimer = Timer(const Duration(milliseconds: 1500), () {
+          if (mounted) setState(() => _highlight = null);
+        });
+        return;
+      }
+      if (!_scroll.hasClients) return;
+      final pos = _scroll.position;
+      if (pos.pixels >= pos.maxScrollExtent) break;
+      // Reversed list: older messages are at larger offsets.
+      await _scroll.animateTo(
+        (pos.pixels + pos.viewportDimension * 0.8).clamp(
+          0,
+          pos.maxScrollExtent,
+        ),
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.linear,
+      );
+    }
+    if (mounted) _toast('Oryginał niedostępny');
   }
 
   Future<void> _attach() async {
@@ -151,7 +217,13 @@ class _ChatScreenState extends State<ChatScreen> {
       h = img.height;
       img.dispose();
     }
-    await _session.sendFile(file, type, width: w, height: h);
+    await _session.sendFile(
+      file,
+      type,
+      width: w,
+      height: h,
+      replyTo: _takeReply(),
+    );
   }
 
   Future<void> _toggleRecording() async {
@@ -205,6 +277,7 @@ class _ChatScreenState extends State<ChatScreen> {
       file,
       MsgType.voice,
       durationMs: duration.inMilliseconds,
+      replyTo: _takeReply(),
     );
     await file.delete();
   }
@@ -487,7 +560,14 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                       );
                     }
-                    return MessageList(session: _session);
+                    return MessageList(
+                      session: _session,
+                      controller: _scroll,
+                      itemKeys: _itemKeys,
+                      onReply: _startReply,
+                      onQuoteTap: _goToOriginal,
+                      highlight: _highlight,
+                    );
                   },
                 ),
               ),
@@ -535,68 +615,103 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _composer(BuildContext context) {
     final recording = _recordingSince != null;
     final hasText = _text.text.trim().isNotEmpty;
+    final replying = _replyTo == null ? null : ReplyRef.of(_replyTo!);
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            if (recording) ...[
-              IconButton(
-                tooltip: 'Anuluj',
-                icon: const Icon(Icons.delete_outline),
-                onPressed: () => _finishRecording(send: false),
-              ),
-              const Icon(Icons.fiber_manual_record, color: Colors.red),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _fmt(DateTime.now().difference(_recordingSince!)),
-                  style: Theme.of(context).textTheme.titleMedium,
+            if (replying != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 0, 4),
+                child: Row(
+                  key: const ValueKey('reply-bar'),
+                  children: [
+                    const Icon(Icons.reply, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ReplyQuote(
+                        reply: replying,
+                        session: _session,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                    IconButton(
+                      key: const ValueKey('reply-cancel'),
+                      tooltip: 'Anuluj odpowiedź',
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => _replyTo = null),
+                    ),
+                  ],
                 ),
               ),
-            ] else ...[
-              IconButton(
-                tooltip: 'Załącz',
-                icon: const Icon(Icons.add_circle_outline),
-                onPressed: _attach,
-              ),
-              IconButton(
-                tooltip: 'Emoji pokoju',
-                icon: const Icon(Icons.emoji_emotions_outlined),
-                onPressed: _pickEmoji,
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _text,
-                  minLines: 1,
-                  maxLines: 5,
-                  maxLength: 3000,
-                  textCapitalization: TextCapitalization.sentences,
-                  decoration: const InputDecoration(
-                    hintText: 'Wiadomość',
-                    counterText: '',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.all(Radius.circular(24)),
-                    ),
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-            IconButton.filled(
-              tooltip: hasText
-                  ? 'Wyślij'
-                  : (recording ? 'Wyślij głosówkę' : 'Nagraj głosówkę'),
-              icon: Icon(hasText || recording ? Icons.send : Icons.mic),
-              onPressed: hasText ? _sendText : _toggleRecording,
-            ),
+            _composerRow(context, recording, hasText),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _composerRow(BuildContext context, bool recording, bool hasText) {
+    return Row(
+      children: [
+        if (recording) ...[
+          IconButton(
+            tooltip: 'Anuluj',
+            icon: const Icon(Icons.delete_outline),
+            onPressed: () => _finishRecording(send: false),
+          ),
+          const Icon(Icons.fiber_manual_record, color: Colors.red),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _fmt(DateTime.now().difference(_recordingSince!)),
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+        ] else ...[
+          IconButton(
+            tooltip: 'Załącz',
+            icon: const Icon(Icons.add_circle_outline),
+            onPressed: _attach,
+          ),
+          IconButton(
+            tooltip: 'Emoji pokoju',
+            icon: const Icon(Icons.emoji_emotions_outlined),
+            onPressed: _pickEmoji,
+          ),
+          Expanded(
+            child: TextField(
+              controller: _text,
+              focusNode: _textFocus,
+              minLines: 1,
+              maxLines: 5,
+              maxLength: 3000,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(
+                hintText: 'Wiadomość',
+                counterText: '',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(24)),
+                ),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
+              ),
+            ),
+          ),
+        ],
+        IconButton.filled(
+          tooltip: hasText
+              ? 'Wyślij'
+              : (recording ? 'Wyślij głosówkę' : 'Nagraj głosówkę'),
+          icon: Icon(hasText || recording ? Icons.send : Icons.mic),
+          onPressed: hasText ? _sendText : _toggleRecording,
+        ),
+      ],
     );
   }
 
