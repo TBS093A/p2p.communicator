@@ -3,7 +3,9 @@ name: ios
 # Unsigned iOS build (no Apple developer account). The .ipa is signed and
 # installed on the user's own iPhone with a free Apple ID through Sideloadly
 # or AltStore (docs/IOS.md); such an install runs for 7 days and is then
-# re-signed. Runs on PRs that touch the app and on every push to main.
+# re-signed. Runs on PRs that touch the app (build check only) and from
+# postmerge after each release, which passes the release's tag and version:
+# then the .ipa and its .sha256 are attached to that release.
 on:
   pull_request:
     branches: [main]
@@ -13,16 +15,30 @@ on:
       - "pubspec.yaml"
       - "pubspec.lock"
       - ".github/workflows/ios.yml"
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      tag:
+        description: Release to attach the .ipa to (e.g. v0.1.27).
+        type: string
+        required: true
+      build-name:
+        description: Version name, the same as the APK's.
+        type: string
+        required: true
+      build-number:
+        description: Build number, the same as the APK's version code.
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer PR push cancels the older build; release builds are never
+# cancelled (each release needs its own .ipa).
 concurrency:
-  group: ios-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ios-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -62,13 +78,22 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      # From postmerge: the release's version. Otherwise (PR check): a
+      # throwaway version from this run.
       - name: Version
         id: version
+        env:
+          IN_NAME: ${{ inputs.build-name }}
+          IN_NUMBER: ${{ inputs.build-number }}
         run: |
-          base=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
-          majmin=${base%.*}
-          echo "name=${majmin}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          echo "number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          if [ -n "$IN_NAME" ]; then
+            echo "name=$IN_NAME" >> "$GITHUB_OUTPUT"
+            echo "number=$IN_NUMBER" >> "$GITHUB_OUTPUT"
+          else
+            base=$(sed -n 's/^version:[[:space:]]*\([0-9]*\.[0-9]*\)\..*/\1/p' pubspec.yaml)
+            echo "name=${base}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build (release, no code signing)
         run: |
@@ -77,18 +102,47 @@ jobs:
             --build-number "${{ steps.version.outputs.number }}"
 
       - name: Package .ipa
+        env:
+          BUILD_NAME: ${{ steps.version.outputs.name }}
         run: |
           out="$RUNNER_TEMP/ipa"
+          ipa="p2p-communicator-${BUILD_NAME}-ios-unsigned.ipa"
           mkdir -p "$out/Payload"
           cp -R build/ios/iphoneos/Runner.app "$out/Payload/"
-          (cd "$out" && zip -qr "p2p-communicator-${{ steps.version.outputs.name }}-unsigned.ipa" Payload)
-          shasum -a 256 "$out"/*.ipa | tee "$out/sha256.txt"
-          echo "IPA=$(ls "$out"/*.ipa)" >> "$GITHUB_ENV"
+          cd "$out"
+          zip -qr "$ipa" Payload
+          rm -rf Payload
+          # Same format as the APK's .sha256 (hash, two spaces, file name).
+          shasum -a 256 "$ipa" | tee "$ipa.sha256"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios-unsigned-ipa
-          path: |
-            ${{ env.IPA }}
-            ${{ runner.temp }}/ipa/sha256.txt
+          path: ${{ runner.temp }}/ipa/
           retention-days: 30
+
+  # Only when called from postmerge with a release tag: attach the .ipa and
+  # its hash to that release. The only job with write access.
+  publish:
+    name: attach .ipa to release
+    needs: build
+    if: ${{ inputs.tag != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ios-unsigned-ipa
+          path: ipa
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          cd ipa
+          sha256sum -c ./*.sha256
+          gh release upload "$TAG" ./*.ipa ./*.ipa.sha256 \
+            --repo "$GITHUB_REPOSITORY" --clobber
