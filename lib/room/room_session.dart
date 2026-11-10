@@ -22,6 +22,7 @@ import 'outbox_cursor.dart';
 import 'room_protocol.dart';
 import 'room_style.dart';
 import 'sync_gate.dart';
+import 'typing.dart';
 
 class StyleException implements Exception {
   StyleException(this.message);
@@ -94,6 +95,22 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   StreamSubscription<VeilidUpdate>? _sub;
   Timer? _poll;
   Timer? _saveTimer;
+
+  // "Is typing" (v1: a `ty` stamp in the outbox head; see typing.dart).
+  final _typing = TypingBoard();
+  final _typingThrottle = TypingThrottle();
+  Timer? _typingTimer;
+
+  /// Whether this conversation shows others that I am typing. Off by
+  /// default (presence is opt-in), kept only in the local encrypted cache.
+  bool get shareTyping => _shareTyping;
+  bool _shareTyping = false;
+
+  /// Display names of the others typing right now (oldest first).
+  List<String> get typingNames => [
+    for (final o in _typing.typing(DateTime.now().millisecondsSinceEpoch))
+      if (o != myOutbox) nameOf(o),
+  ];
 
   String get roomName => meta.name;
   String get myOutbox => room.secrets.outboxKey;
@@ -228,6 +245,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       t.cancel();
     }
     _retryTimers.clear();
+    _typingTimer?.cancel();
     await _sub?.cancel();
     _saveTimer?.cancel();
     app?.directory.removeListener(notifyListeners);
@@ -439,6 +457,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     final head = Dht.decodeJson(v.data);
     if (head == null) return;
     final count = head['count'] as int? ?? 0;
+    _noteTyping(outbox, head);
     // Public rooms show the global profile; the head only carries a name
     // fallback. Private rooms keep the whole per-room profile in the head.
     final before = profiles[outbox];
@@ -514,7 +533,54 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     }
   }
 
+  /// A member's head was read: update who is typing.
+  void _noteTyping(String outbox, Map<String, dynamic> head) {
+    if (_typing.note(outbox, head['ty'])) _typingChanged();
+  }
+
+  /// Redraws now and again when the next typing stamp runs out.
+  void _typingChanged() {
+    notifyListeners();
+    _typingTimer?.cancel();
+    final next = _typing.nextExpiry(DateTime.now().millisecondsSinceEpoch);
+    if (next != null && !_closed) {
+      _typingTimer = Timer(next + const Duration(milliseconds: 50), () {
+        if (!_closed) _typingChanged();
+      });
+    }
+  }
+
+  /// The composer's text changed. With [shareTyping] on, stamps our head
+  /// at the start of typing and at most every 8 s after (never per
+  /// keystroke, never on focus alone). Serialized with sends, so the head's
+  /// message count can never go backwards.
+  void userTyping() {
+    if (!_shareTyping || !_connected || _closed) return;
+    if (!_typingThrottle.shouldSend(DateTime.now().millisecondsSinceEpoch)) {
+      return;
+    }
+    final job = _sendChain.then(
+      (_) => Dht.setJsonSoon(
+        _outboxKey,
+        0,
+        _head(_myCount, ty: DateTime.now().millisecondsSinceEpoch),
+      ),
+    );
+    _sendChain = job.catchError((Object e) => debugPrint('typing: $e'));
+  }
+
+  void setShareTyping(bool on) {
+    if (_shareTyping == on) return;
+    _shareTyping = on;
+    _typingThrottle.reset();
+    notifyListeners();
+    _scheduleSave();
+  }
+
   bool _insert(ChatMessage m) {
+    if (m.author != myOutbox && _typing.messageFrom(m.author)) {
+      _typingChanged();
+    }
     if (!_ids.add(m.id)) return false;
     var i = messages.length;
     while (i > 0 && messages[i - 1].ts > m.ts) {
@@ -645,19 +711,21 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     }
     await Dht.set(_outboxKey, 1 + seq % RoomLayout.outboxRing, data);
     await Dht.setJson(_outboxKey, 0, _head(seq + 1));
+    _typingThrottle.reset(); // the head has no `ty` any more
     _myCount = seq + 1;
   }
 
   /// Outbox head. Public rooms point to the global profile (`p`) and keep a
   /// name as fallback; private rooms carry the full per-room profile.
-  Map<String, dynamic> _head(int count) => isPublic
+  Map<String, dynamic> _head(int count, {int? ty}) => isPublic
       ? {
           'name': app!.myGlobal.name,
           'p': app!.myProfileKey,
           'nick': ?myNick,
           'count': count,
+          'ty': ?ty,
         }
-      : {...myProfile.toJson(), 'count': count};
+      : {...myProfile.toJson(), 'count': count, 'ty': ?ty};
 
   static String? _cleanNick(Object? raw) => cleanNick(raw, max: maxNickLength);
 
@@ -944,6 +1012,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       'nicks': _nicks,
       'lastSeen': {for (final e in _cursors.entries) e.key: e.value.toJson()},
       'myCount': _myCount,
+      if (_shareTyping) 'shareTyping': true,
       'messages': [for (final m in keep) m.toCache()],
     });
     await PinVault.instance.writeData(room, utf8.encode(json));
@@ -990,6 +1059,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         _cursors[e.key as String] = OutboxCursor.fromJson(e.value);
       }
       _myCount = j['myCount'] as int? ?? 0;
+      _shareTyping = j['shareTyping'] == true;
       for (final m in (j['messages'] as List).cast<Map<String, dynamic>>()) {
         _insert(ChatMessage.fromCache(m));
       }

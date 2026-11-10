@@ -24,6 +24,7 @@ import 'widgets/media_image.dart';
 import 'widgets/message_bubble.dart';
 import 'widgets/message_list.dart';
 import 'widgets/network_dot.dart';
+import 'widgets/typing_indicator.dart';
 
 class ChatScreen extends StatefulWidget {
   /// A public room: [session] stays open in [app] after the screen closes.
@@ -67,11 +68,19 @@ class _ChatScreenState extends State<ChatScreen> {
   final _textFocus = FocusNode();
   String? _highlight;
   Timer? _highlightTimer;
+  String _lastText = '';
 
   @override
   void initState() {
     super.initState();
-    _text.addListener(() => setState(() {}));
+    _text.addListener(() {
+      setState(() {});
+      // Only real edits count as typing (not cursor moves or focus), and
+      // clearing the field after sending does not.
+      final t = _text.text;
+      if (t != _lastText && t.trim().isNotEmpty) _session.userTyping();
+      _lastText = t;
+    });
   }
 
   @override
@@ -305,6 +314,14 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       case 'settings':
         await _open(RoomSettingsScreen(session: _session));
+      case 'typing':
+        final on = !_session.shareTyping;
+        _session.setShareTyping(on);
+        _toast(
+          on
+              ? 'Inni w tej rozmowie zobaczą, kiedy piszesz'
+              : 'Nie pokazujesz już, że piszesz',
+        );
       case 'forget':
         final private = widget.app == null;
         final yes = await showDialog<bool>(
@@ -513,15 +530,24 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           PopupMenuButton<String>(
             onSelected: _menu,
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'invite', child: Text('Zaproś')),
-              PopupMenuItem(value: 'members', child: Text('Osoby')),
-              PopupMenuItem(value: 'profile', child: Text('Mój profil')),
-              PopupMenuItem(
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'invite', child: Text('Zaproś')),
+              const PopupMenuItem(value: 'members', child: Text('Osoby')),
+              const PopupMenuItem(value: 'profile', child: Text('Mój profil')),
+              const PopupMenuItem(
                 value: 'settings',
                 child: Text('Ustawienia pokoju'),
               ),
-              PopupMenuItem(value: 'forget', child: Text('Usuń z telefonu')),
+              CheckedPopupMenuItem(
+                key: const ValueKey('menu-share-typing'),
+                value: 'typing',
+                checked: _session.shareTyping,
+                child: const Text('Pokazuj, że piszę'),
+              ),
+              const PopupMenuItem(
+                value: 'forget',
+                child: Text('Usuń z telefonu'),
+              ),
             ],
           ),
         ],
@@ -573,6 +599,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   },
                 ),
               ),
+              TypingIndicator(session: _session),
               // The message bar matches the top bar.
               tinted
                   ? Material(

@@ -532,6 +532,12 @@ outbox it came from):
   global `seen`, nothing shared across conversations. Turning it off stops
   further updates. The DHT writes themselves still show members when you
   send something; that is accepted and out of scope (THREAT_MODEL §7).
+* **Typing** ("X pisze…") follows the same rules: off by default, opt-in
+  per conversation for the sender, coarse. In v2 it is an ephemeral `typing`
+  MLS message, never a field in the outbox head. v1 does it temporarily
+  with a `ty: <ms>` stamp in the head, written at most every 8 s while
+  typing and serialized with sends. Receivers show it for 12 s and clear it
+  when a message from that member arrives.
 
 | Leak in v1 | v2.0 |
 | --- | --- |
