@@ -1,3 +1,5 @@
+import 'package:characters/characters.dart';
+
 enum MsgType {
   text,
   image,
@@ -68,6 +70,77 @@ class MediaRef {
   );
 }
 
+/// What a reply quotes: enough to show the quote even when the original is
+/// no longer available (outbox ring overwritten, cache trimmed, joined
+/// later). Media is quoted by type and caption only, never by MediaRef.
+class ReplyRef {
+  const ReplyRef({
+    required this.id,
+    required this.author,
+    required this.type,
+    this.preview = '',
+  });
+
+  /// Longest preview kept, in user-perceived characters.
+  static const maxPreview = 100;
+
+  final String id;
+
+  /// Outbox key of the original's author.
+  final String author;
+  final MsgType type;
+
+  /// Start of the original's text (or caption), at most [maxPreview]
+  /// characters.
+  final String preview;
+
+  /// Quote of [m]; null for types that cannot be replied to.
+  static ReplyRef? of(ChatMessage m) {
+    if (m.type.hidden) return null;
+    return ReplyRef(
+      id: m.id,
+      author: m.author,
+      type: m.type,
+      preview: clip(m.text ?? ''),
+    );
+  }
+
+  /// [s] cut to [maxPreview] characters by grapheme, so an emoji or an
+  /// accented letter is never split.
+  static String clip(String s) {
+    final flat = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final c = flat.characters;
+    return c.length <= maxPreview ? flat : '${c.take(maxPreview)}…';
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'a': author,
+    't': type.name,
+    if (preview.isNotEmpty) 'p': preview,
+  };
+
+  /// Never throws: anything malformed gives null, so the reply itself is
+  /// still shown (as a normal message).
+  static ReplyRef? tryParse(Object? j) {
+    if (j is! Map) return null;
+    final id = j['id'];
+    final author = j['a'];
+    final type = MsgType.values.where((t) => t.name == j['t']).firstOrNull;
+    final preview = j['p'];
+    if (id is! String || id.isEmpty || author is! String || type == null) {
+      return null;
+    }
+    if (type.hidden) return null;
+    return ReplyRef(
+      id: id,
+      author: author,
+      type: type,
+      preview: preview is String ? clip(preview) : '',
+    );
+  }
+}
+
 class ChatMessage {
   ChatMessage({
     required this.id,
@@ -79,9 +152,13 @@ class ChatMessage {
     this.seq,
     this.status = MsgStatus.sent,
     this.extra,
+    this.replyTo,
   });
 
   final String id;
+
+  /// The message this one answers, if any (wire key `re`).
+  final ReplyRef? replyTo;
 
   /// Type-specific fields (a DM invite's addressee and sealed payload).
   final Map<String, dynamic>? extra;
@@ -106,6 +183,7 @@ class ChatMessage {
     if (text != null) 'text': text,
     if (media != null) 'm': media!.toJson(),
     if (extra != null) 'x': extra,
+    if (replyTo != null) 're': replyTo!.toJson(),
   };
 
   /// Throws [FormatException] for message types this version does not know
@@ -124,6 +202,7 @@ class ChatMessage {
           : MediaRef.fromJson(j['m'] as Map<String, dynamic>),
       seq: j['seq'] as int?,
       extra: (j['x'] as Map?)?.cast<String, dynamic>(),
+      replyTo: ReplyRef.tryParse(j['re']),
     );
   }
 

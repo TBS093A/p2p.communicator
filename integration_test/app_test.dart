@@ -29,6 +29,7 @@ import 'package:p2p_communicator/ui/room_settings_screen.dart';
 import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/update_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
+import 'package:p2p_communicator/ui/widgets/message_bubble.dart';
 
 import 'test_images.dart';
 import 'test_platforms.dart';
@@ -148,9 +149,28 @@ void main() {
     await settle(t);
   }
 
+  /// Types [text] into the composer and sends it. The emulator's real
+  /// keyboard can push an older copy of the field back after `enterText`
+  /// (see [pickColor]), so retype until the field holds the text.
   Future<void> send(WidgetTester t, String text) async {
-    await t.enterText(find.byType(TextField).last, text);
-    await t.pump();
+    final field = find.byType(TextField).last;
+    String current() => t.widget<TextField>(field).controller!.text;
+    // After hideKeyboard the real keyboard reconnects with its own (empty)
+    // copy of the field: let it come up and settle before typing.
+    if (t.view.viewInsets.bottom == 0) {
+      await t.tap(field);
+      final end = DateTime.now().add(const Duration(seconds: 5));
+      while (t.view.viewInsets.bottom == 0 && DateTime.now().isBefore(end)) {
+        await idle(t, const Duration(milliseconds: 200));
+      }
+      await idle(t, const Duration(milliseconds: 600));
+    }
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      await t.enterText(field, text);
+      await idle(t, const Duration(milliseconds: 500));
+      if (current() == text) break;
+    }
+    expect(current(), text, reason: 'IME reverted');
     await t.tap(find.byTooltip('Wyślij'));
     await settle(t);
   }
@@ -426,6 +446,44 @@ void main() {
       isTrue,
     );
     await shot(t, '06_chat_styled');
+
+    // Reply to a message: long-press it, the composer shows what is being
+    // answered, the sent reply carries a quote, and tapping the quote jumps
+    // to (and marks) the original.
+    // The original is the newest message, so it is on screen (older ones
+    // may sit under the composer by now).
+    const question = 'Kto bierze termos?';
+    await send(t, question);
+    await pumpUntil(t, find.text(question));
+    await hideKeyboard(t);
+    await t.longPress(find.text(question));
+    await settle(t);
+    await pumpUntil(t, find.byKey(const ValueKey('msg-reply')));
+    await tapKey(t, 'msg-reply');
+    await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
+    const answer = 'Ja, z herbatą ☕';
+    await send(t, answer);
+    await pumpUntil(t, find.text(answer));
+    expect(find.byKey(const ValueKey('reply-bar')), findsNothing);
+    final quote = find.descendant(
+      of: find.byType(MessageBubble),
+      matching: find.byType(ReplyQuote),
+    );
+    await pumpUntil(t, quote);
+    expect(
+      find.descendant(of: quote, matching: find.text(question)),
+      findsOneWidget,
+    );
+    await hideKeyboard(t);
+    await t.tap(quote.first);
+    await settle(t);
+    expect(
+      t
+          .widgetList<MessageBubble>(find.byType(MessageBubble))
+          .where((b) => b.highlighted)
+          .map((b) => b.message.text),
+      [question],
+    );
 
     await openMenu(t, 'Osoby');
     await pumpUntil(t, find.byType(MembersScreen));

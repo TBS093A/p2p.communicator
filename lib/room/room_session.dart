@@ -526,12 +526,17 @@ class RoomSession extends ChangeNotifier implements MediaSource {
 
   // ----------------------------------------------------------------- send
 
-  Future<void> sendText(String text) async {
+  Future<void> sendText(String text, {ChatMessage? replyTo}) async {
     final t = text.trim();
     if (t.isEmpty) return;
-    final msg = _newMessage(MsgType.text, text: t);
+    final msg = _newMessage(MsgType.text, text: t, replyTo: replyTo);
     await _enqueue(msg, () async => null);
   }
+
+  /// The loaded message with [id], if it is still here (it may have left
+  /// the outbox ring or the cache, or predate our joining).
+  ChatMessage? messageById(String id) =>
+      messages.where((m) => m.id == id).firstOrNull;
 
   /// Sends an image, video or voice note from a local file.
   Future<void> sendFile(
@@ -540,6 +545,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     int? width,
     int? height,
     int? durationMs,
+    ChatMessage? replyTo,
   }) async {
     final bytes = await file.readAsBytes();
     final mime = _mimeFor(file.path, type);
@@ -557,8 +563,9 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       height: height,
       durationMs: durationMs,
     );
-    var msg = _newMessage(type, media: placeholder);
+    var msg = _newMessage(type, media: placeholder, replyTo: replyTo);
     final id = msg.id;
+    final reply = msg.replyTo;
 
     await _enqueue(msg, () async {
       final ref = await BlobStore.upload(
@@ -581,22 +588,28 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         type: type,
         media: ref,
         status: MsgStatus.sending,
+        replyTo: reply,
       );
       if (idx >= 0) messages[idx] = msg;
       return msg;
     });
   }
 
-  ChatMessage _newMessage(MsgType type, {String? text, MediaRef? media}) =>
-      ChatMessage(
-        id: _uuid.v4(),
-        author: myOutbox,
-        ts: DateTime.now().millisecondsSinceEpoch,
-        type: type,
-        text: text,
-        media: media,
-        status: MsgStatus.sending,
-      );
+  ChatMessage _newMessage(
+    MsgType type, {
+    String? text,
+    MediaRef? media,
+    ChatMessage? replyTo,
+  }) => ChatMessage(
+    id: _uuid.v4(),
+    author: myOutbox,
+    ts: DateTime.now().millisecondsSinceEpoch,
+    type: type,
+    text: text,
+    media: media,
+    status: MsgStatus.sending,
+    replyTo: replyTo == null ? null : ReplyRef.of(replyTo),
+  );
 
   /// Shows [msg] now, then runs [prepare] (uploads) and appends the final
   /// message to our outbox. Sends go out one at a time, in order.

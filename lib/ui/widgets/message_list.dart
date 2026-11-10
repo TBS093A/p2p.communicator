@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 
+import '../../room/message.dart';
 import '../../room/message_groups.dart';
 import '../../room/room_session.dart';
 import '../../vault/room_secrets.dart';
@@ -13,9 +14,27 @@ import 'message_bubble.dart';
 /// until the group's top edge pushes it away. Your own messages and DMs have
 /// no avatars (you know who is talking), like in most messengers.
 class MessageList extends StatelessWidget {
-  const MessageList({super.key, required this.session});
+  const MessageList({
+    super.key,
+    required this.session,
+    this.controller,
+    this.itemKeys,
+    this.onReply,
+    this.onQuoteTap,
+    this.highlight,
+  });
 
   final RoomSession session;
+  final ScrollController? controller;
+
+  /// Filled with one key per built message, so the chat can scroll to a
+  /// quoted original.
+  final Map<String, GlobalKey>? itemKeys;
+  final ValueChanged<ChatMessage>? onReply;
+  final ValueChanged<ReplyRef>? onQuoteTap;
+
+  /// Id of the message briefly marked after jumping to it.
+  final String? highlight;
 
   static const avatarRadius = 16.0;
 
@@ -24,6 +43,7 @@ class MessageList extends StatelessWidget {
     final groups = groupMessages(session.messages);
     final avatars = session.kind != RoomKind.dm;
     return StickyGroupList(
+      controller: controller,
       groupCount: groups.length,
       itemCount: (g) => groups[g].messages.length,
       hasAvatar: (g) => avatars && groups[g].author != session.myOutbox,
@@ -36,11 +56,20 @@ class MessageList extends StatelessWidget {
       ),
       item: (g, i) {
         final m = groups[g].messages[i];
-        return MessageBubble(
+        final bubble = MessageBubble(
           key: ValueKey(m.id),
           message: m,
           session: session,
           showName: i == 0,
+          onReply: onReply,
+          onQuoteTap: onQuoteTap,
+          highlighted: m.id == highlight,
+        );
+        final keys = itemKeys;
+        if (keys == null) return bubble;
+        return KeyedSubtree(
+          key: keys.putIfAbsent(m.id, GlobalKey.new),
+          child: bubble,
         );
       },
     );
