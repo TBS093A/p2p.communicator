@@ -1,9 +1,10 @@
 # iOS: installing without the App Store
 
 There is no Apple developer account yet, so the app is not on the App Store
-or TestFlight. CI builds an **unsigned** `.ipa` (workflow `ios`, artifact
-`ios-unsigned-ipa`), and you sign it with your own, free Apple ID while
-installing it on your iPhone.
+or TestFlight. Every release on GitHub carries, next to the APK, an
+**unsigned** `p2p-communicator-<version>-ios-unsigned.ipa` (same version as
+the APK), and you sign it with your own, free Apple ID while installing it
+on your iPhone.
 
 ## Limits of a free Apple ID
 
@@ -16,10 +17,10 @@ installing it on your iPhone.
 
 ## Install
 
-1. Download `ios-unsigned-ipa` from the latest `ios` workflow run on `main`
-   (GitHub → Actions → ios → the run → Artifacts) and unzip it.
-2. **Check the file before signing it.** Compare its SHA-256 with
-   `sha256.txt` from the same artifact (macOS: `shasum -a 256 file.ipa`,
+1. Download the `.ipa` and its `.ipa.sha256` from the latest release
+   (GitHub → Releases).
+2. **Check the file before signing it.** Compare its SHA-256 with the
+   `.ipa.sha256` file (macOS: `shasum -a 256 file.ipa`,
    Windows: `certutil -hashfile file.ipa SHA256`). Never install an `.ipa`
    from anywhere else: whoever built it controls the app and your keys.
 3. **Use only these well-known tools, downloaded from their official

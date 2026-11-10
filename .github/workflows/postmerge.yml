@@ -103,6 +103,8 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      name: ${{ steps.version.outputs.name }}
+      code: ${{ steps.version.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -236,6 +238,21 @@ jobs:
       - name: Clean up signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/release.p12"
+
+  # The same version as an unsigned iOS build, attached to the release
+  # (sideloaded with a free Apple ID, docs/IOS.md). A failure here shows red
+  # but does not hold back the APK, which is already published.
+  ios:
+    name: iOS unsigned build → release
+    needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/ios.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      build-name: ${{ needs.release.outputs.name }}
+      build-number: ${{ needs.release.outputs.code }}
 
   mobsf:
     name: MobSF (release apk)
