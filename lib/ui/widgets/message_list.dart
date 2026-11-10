@@ -18,6 +18,7 @@ class MessageList extends StatelessWidget {
     super.key,
     required this.session,
     this.controller,
+    this.entrances,
     this.itemKeys,
     this.onReply,
     this.onQuoteTap,
@@ -26,6 +27,10 @@ class MessageList extends StatelessWidget {
 
   final RoomSession session;
   final ScrollController? controller;
+
+  /// Decides which bubbles animate in (only messages that arrive while the
+  /// chat is open, not the history shown on opening).
+  final BubbleEntrances? entrances;
 
   /// Filled with one key per built message, so the chat can scroll to a
   /// quoted original.
@@ -42,6 +47,7 @@ class MessageList extends StatelessWidget {
   Widget build(BuildContext context) {
     final groups = groupMessages(session.messages);
     final avatars = session.kind != RoomKind.dm;
+    entrances?.update(session.messages);
     return StickyGroupList(
       controller: controller,
       groupCount: groups.length,
@@ -65,13 +71,109 @@ class MessageList extends StatelessWidget {
           onQuoteTap: onQuoteTap,
           highlighted: m.id == highlight,
         );
-        final keys = itemKeys;
-        if (keys == null) return bubble;
-        return KeyedSubtree(
-          key: keys.putIfAbsent(m.id, GlobalKey.new),
+        final animated = BubbleEntrance(
+          animate: entrances?.take(m.id) ?? false,
+          fromRight: m.author == session.myOutbox,
           child: bubble,
         );
+        final keys = itemKeys;
+        if (keys == null) return animated;
+        // A GlobalKey keeps the entrance animation's state when the message
+        // moves to another index (a newer one arrives right after it).
+        return KeyedSubtree(
+          key: keys.putIfAbsent(m.id, GlobalKey.new),
+          child: animated,
+        );
       },
+    );
+  }
+}
+
+/// Remembers which messages the chat has already shown. The history present
+/// when the chat opens never animates; a message added later animates once,
+/// the first time its bubble is built.
+class BubbleEntrances {
+  final _known = <String>{};
+  final _fresh = <String>{};
+  bool _primed = false;
+
+  void update(List<ChatMessage> messages) {
+    if (!_primed) {
+      _primed = messages.isNotEmpty;
+      _known.addAll(messages.map((m) => m.id));
+      return;
+    }
+    for (final m in messages) {
+      if (_known.add(m.id)) _fresh.add(m.id);
+    }
+  }
+
+  /// True once for a message that arrived while the chat was open.
+  bool take(String id) => _fresh.remove(id);
+}
+
+/// A new bubble grows into place (the list above slides up smoothly instead
+/// of jumping), fades in and slides a little from its side.
+class BubbleEntrance extends StatefulWidget {
+  const BubbleEntrance({
+    super.key,
+    required this.animate,
+    required this.fromRight,
+    required this.child,
+  });
+
+  /// Only read when first built: later rebuilds never restart it.
+  final bool animate;
+  final bool fromRight;
+  final Widget child;
+
+  static const duration = Duration(milliseconds: 280);
+
+  @override
+  State<BubbleEntrance> createState() => _BubbleEntranceState();
+}
+
+class _BubbleEntranceState extends State<BubbleEntrance>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: BubbleEntrance.duration,
+    value: widget.animate ? 0 : 1,
+  );
+  late final Animation<double> _curve = CurvedAnimation(
+    parent: _c,
+    curve: Curves.easeOutCubic,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.animate) _c.forward();
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  // The same widget tree before, during and after the animation, so the
+  // bubble's own state (players, downloads) is never rebuilt from scratch.
+  @override
+  Widget build(BuildContext context) {
+    return SizeTransition(
+      sizeFactor: _curve,
+      alignment: Alignment.bottomCenter,
+      child: FadeTransition(
+        opacity: _curve,
+        child: SlideTransition(
+          position: Tween(
+            begin: Offset(widget.fromRight ? 0.08 : -0.08, 0.35),
+            end: Offset.zero,
+          ).animate(_curve),
+          child: widget.child,
+        ),
+      ),
     );
   }
 }

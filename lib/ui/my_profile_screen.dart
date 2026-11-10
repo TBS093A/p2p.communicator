@@ -7,6 +7,7 @@ import '../app.dart';
 import '../app_state/app_session.dart';
 import '../app_state/global_profile.dart';
 import '../room/room_session.dart';
+import '../update/update_service.dart';
 import '../vault/room_secrets.dart';
 import 'migration_screens.dart';
 import 'update_screen.dart';
@@ -32,6 +33,14 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
   bool _busy = false;
 
   AppSession get app => widget.app;
+
+  @override
+  void initState() {
+    super.initState();
+    // The installed version for the updates tile (null until read, and in
+    // debug builds without the platform channel).
+    UpdateService.instance.prepare();
+  }
 
   @override
   void dispose() {
@@ -225,7 +234,18 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.system_update_alt),
                   title: const Text('Aktualizacje'),
-                  subtitle: const Text('Wersja aplikacji, nowe wydania'),
+                  subtitle: ListenableBuilder(
+                    listenable: UpdateService.instance,
+                    builder: (context, _) {
+                      final v = UpdateService.instance.current;
+                      return Text(
+                        v == null
+                            ? 'Wersja aplikacji, nowe wydania'
+                            : 'Wersja $v · nowe wydania',
+                        key: const ValueKey('app-version'),
+                      );
+                    },
+                  ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(

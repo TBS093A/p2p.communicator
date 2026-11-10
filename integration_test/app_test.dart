@@ -590,6 +590,12 @@ void main() {
           )
           .first,
     );
+    // The tile itself shows the installed version.
+    await pumpUntil(
+      t,
+      find.text('Wersja 0.1.0 · nowe wydania'),
+      timeout: const Duration(seconds: 15),
+    );
     await tapKey(t, 'updates');
     await pumpUntil(t, find.byType(UpdateScreen));
     await settle(t);
