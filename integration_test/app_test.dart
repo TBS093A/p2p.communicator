@@ -436,22 +436,18 @@ void main() {
       timeout: const Duration(seconds: 30),
     );
     await hideKeyboard(t);
-    // The picture runs under the top bar, which takes the room's background
-    // color (#1B2A41) at the default 25 % transparency. The message field
-    // has no bar behind it any more: it is filled with the room's hue
-    // (lightened to stay visible) at the same transparency.
+    // The picture runs under the top bar and the message field; both take
+    // exactly the room's background color (#1B2A41) at the default 25 %
+    // transparency, so the bottom looks like the top.
     final top = t.widget<AppBar>(find.byKey(const ValueKey('chat-top-bar')));
-    expect(top.backgroundColor!.toARGB32() & 0xFFFFFF, 0x1B2A41);
-    expect((top.backgroundColor!.a * 100).round(), 75);
     final fieldFill = t
         .widget<TextField>(find.byKey(const ValueKey('composer-field')))
         .decoration!
         .fillColor!;
-    expect((fieldFill.a * 100).round(), 75);
-    expect(
-      HSLColor.fromColor(fieldFill).hue,
-      closeTo(HSLColor.fromColor(const Color(0xFF1B2A41)).hue, 1),
-    );
+    for (final c in [top.backgroundColor!, fieldFill]) {
+      expect(c.toARGB32() & 0xFFFFFF, 0x1B2A41);
+      expect((c.a * 100).round(), 75);
+    }
     final chatScaffold = find.ancestor(
       of: find.byKey(const ValueKey('chat-top-bar')),
       matching: find.byType(Scaffold),
