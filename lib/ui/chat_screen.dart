@@ -690,31 +690,24 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// The message bar's color: the chat background's own hue, so the bar
-  /// matches the room, shifted in lightness so it stays visible on that
-  /// background (and on a dimmed picture over it).
+  /// The message bar's color: the room color, the same as the top bar's
+  /// (the theme accent when the room has none).
   Color _barAccent(BuildContext context) {
     final bg = _session.meta.background;
-    if (bg == null) return Theme.of(context).colorScheme.primary;
-    final c = Color(bg);
-    final hsl = HSLColor.fromColor(c);
-    final light = c.computeLuminance() > 0.45;
-    return hsl
-        .withLightness(
-          light
-              ? (hsl.lightness - 0.35).clamp(0.0, 1.0)
-              : (hsl.lightness + 0.35).clamp(0.0, 1.0),
-        )
-        .toColor();
+    return bg == null ? Theme.of(context).colorScheme.primary : Color(bg);
   }
 
   Widget _composerRow(BuildContext context, bool recording, bool hasText) {
+    // Exactly the top bar's colors: the room color at the bars'
+    // transparency (the room's slider), with the top bar's text and icon
+    // color on it.
     final accent = _barAccent(context);
-    // The field is filled with the same color, as see-through as the bars
-    // (the room's bar transparency slider).
     final fill = accent.withAlpha(_session.meta.barAlpha);
-    final onFill = onColor(fill);
-    final iconStyle = IconButton.styleFrom(foregroundColor: accent);
+    final onFill = onColor(accent);
+    final iconStyle = IconButton.styleFrom(
+      foregroundColor: onFill,
+      backgroundColor: fill,
+    );
     final border = OutlineInputBorder(
       borderRadius: const BorderRadius.all(Radius.circular(24)),
       borderSide: BorderSide(color: accent),
