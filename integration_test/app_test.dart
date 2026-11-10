@@ -486,10 +486,18 @@ void main() {
     );
 
     // "Is typing" is opt-in per conversation: off until switched on here.
-    await openMenu(t, 'Pokazuj, że piszę');
+    // (A checked menu item ignores pointers on its text: tap the item.)
+    Future<void> toggleTyping() async {
+      await t.tap(find.byType(PopupMenuButton<String>));
+      await pumpUntil(t, find.byKey(const ValueKey('menu-share-typing')));
+      await settle(t);
+      await tapKey(t, 'menu-share-typing');
+    }
+
+    await toggleTyping();
     await pumpUntil(t, find.text('Inni w tej rozmowie zobaczą, kiedy piszesz'));
     await settle(t);
-    await openMenu(t, 'Pokazuj, że piszę');
+    await toggleTyping();
     await pumpUntil(t, find.text('Nie pokazujesz już, że piszesz'));
     await settle(t);
 
