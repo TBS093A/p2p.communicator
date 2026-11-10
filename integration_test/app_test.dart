@@ -427,13 +427,14 @@ void main() {
       timeout: const Duration(seconds: 30),
     );
     await hideKeyboard(t);
-    // The picture runs under both bars; they take the room's background
-    // color (#1B2A41) at the default 25 % transparency.
+    // The picture runs under the top bar and the message field; both take
+    // the room's background color (#1B2A41) at the default 25 %
+    // transparency (the field has no bar behind it any more).
     final top = t.widget<AppBar>(find.byKey(const ValueKey('chat-top-bar')));
-    final bottom = t.widget<Material>(
-      find.byKey(const ValueKey('chat-bottom-bar')),
+    final field = t.widget<TextField>(
+      find.byKey(const ValueKey('composer-field')),
     );
-    for (final c in [top.backgroundColor!, bottom.color!]) {
+    for (final c in [top.backgroundColor!, field.decoration!.fillColor!]) {
       expect(c.toARGB32() & 0xFFFFFF, 0x1B2A41);
       expect((c.a * 100).round(), 75);
     }

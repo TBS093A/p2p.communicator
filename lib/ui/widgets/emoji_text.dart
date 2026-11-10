@@ -21,6 +21,12 @@ class EmojiText extends StatelessWidget {
   final RoomSession session;
   final TextStyle? style;
 
+  /// A message of 1–3 custom emoji and nothing else (was 64).
+  static const customJumboSize = 128.0;
+
+  /// A message of 1–3 ordinary emoji and nothing else.
+  static const unicodeJumboSize = 56.0;
+
   /// Plain text can be selected by long-pressing. Off in chat bubbles,
   /// where long-press opens the message menu (reply, copy) instead.
   final bool selectable;
@@ -30,13 +36,20 @@ class EmojiText extends StatelessWidget {
     final emoji = session.meta.emoji;
     final parts = EmojiCode.split(text, emoji.keys.toSet());
     if (parts.every((p) => p.code == null)) {
+      // Only ordinary emoji: large, like a lone custom emoji.
+      final big = EmojiCode.isUnicodeJumbo(text)
+          ? (style ?? const TextStyle()).copyWith(
+              fontSize: unicodeJumboSize,
+              height: 1.1,
+            )
+          : style;
       return selectable
-          ? SelectableText(text, style: style)
-          : Text(text, style: style);
+          ? SelectableText(text, style: big)
+          : Text(text, style: big);
     }
     final jumbo = EmojiCode.isJumbo(parts);
     final base = style ?? DefaultTextStyle.of(context).style;
-    final size = jumbo ? 64.0 : (base.fontSize ?? 14) * 1.6;
+    final size = jumbo ? customJumboSize : (base.fontSize ?? 14) * 1.6;
 
     return Text.rich(
       TextSpan(

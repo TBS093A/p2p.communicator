@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 
@@ -23,7 +25,11 @@ class MessageList extends StatelessWidget {
     this.onReply,
     this.onQuoteTap,
     this.highlight,
+    this.onAvatarTap,
   });
+
+  /// Tap on a group's avatar: show that member's profile.
+  final ValueChanged<String>? onAvatarTap;
 
   final RoomSession session;
   final ScrollController? controller;
@@ -48,41 +54,115 @@ class MessageList extends StatelessWidget {
     final groups = groupMessages(session.messages);
     final avatars = session.kind != RoomKind.dm;
     entrances?.update(session.messages);
-    return StickyGroupList(
-      controller: controller,
-      groupCount: groups.length,
-      itemCount: (g) => groups[g].messages.length,
-      hasAvatar: (g) => avatars && groups[g].author != session.myOutbox,
-      groupKey: (g) => groups[g].messages.first.id,
-      avatar: (g) => Avatar.member(
-        session,
-        groups[g].author,
-        radius: avatarRadius,
-        key: const ValueKey('group-avatar'),
+    // The "sent" tick goes under your newest message only.
+    final lastMine = session.messages.reversed
+        .where((m) => m.author == session.myOutbox)
+        .firstOrNull
+        ?.id;
+    return SoftEdges(
+      child: StickyGroupList(
+        controller: controller,
+        groupCount: groups.length,
+        itemCount: (g) => groups[g].messages.length,
+        hasAvatar: (g) => avatars && groups[g].author != session.myOutbox,
+        groupKey: (g) => groups[g].messages.first.id,
+        avatar: (g) {
+          final author = groups[g].author;
+          final avatar = Avatar.member(
+            session,
+            author,
+            radius: avatarRadius,
+            key: const ValueKey('group-avatar'),
+          );
+          final tap = onAvatarTap;
+          if (tap == null) return avatar;
+          return GestureDetector(
+            key: ValueKey('avatar-$author'),
+            onTap: () => tap(author),
+            child: avatar,
+          );
+        },
+        item: (g, i) =>
+            _item(groups[g].messages[i], i == 0 && avatars, lastMine),
       ),
-      item: (g, i) {
-        final m = groups[g].messages[i];
-        final bubble = MessageBubble(
-          key: ValueKey(m.id),
-          message: m,
-          session: session,
-          showName: i == 0,
-          onReply: onReply,
-          onQuoteTap: onQuoteTap,
-          highlighted: m.id == highlight,
+    );
+  }
+
+  Widget _item(ChatMessage m, bool firstOfGroup, String? lastMine) {
+    final bubble = MessageBubble(
+      key: ValueKey(m.id),
+      message: m,
+      session: session,
+      showName: firstOfGroup,
+      showStatus: m.id == lastMine,
+      onReply: onReply,
+      onQuoteTap: onQuoteTap,
+      highlighted: m.id == highlight,
+    );
+    final animated = BubbleEntrance(
+      animate: entrances?.take(m.id) ?? false,
+      fromRight: m.author == session.myOutbox,
+      child: bubble,
+    );
+    final keys = itemKeys;
+    if (keys == null) return animated;
+    // A GlobalKey keeps the entrance animation's state when the message
+    // moves to another index (a newer one arrives right after it).
+    return KeyedSubtree(
+      key: keys.putIfAbsent(m.id, GlobalKey.new),
+      child: animated,
+    );
+  }
+}
+
+/// Messages fade and blur out over a narrow band at the top and bottom of
+/// the list instead of being cut off by a hard edge while scrolling.
+class SoftEdges extends StatelessWidget {
+  const SoftEdges({super.key, required this.child, this.band = 18});
+
+  final Widget child;
+
+  /// Height of the fading band at each edge.
+  final double band;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, box) {
+        final h = box.maxHeight;
+        final stop = h <= 0 || !h.isFinite ? 0.0 : (band / h).clamp(0.0, 0.5);
+        final faded = ShaderMask(
+          blendMode: BlendMode.dstIn,
+          shaderCallback: (rect) => LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: const [
+              Color(0x00000000),
+              Color(0xFF000000),
+              Color(0xFF000000),
+              Color(0x00000000),
+            ],
+            stops: [0, stop, 1 - stop, 1],
+          ).createShader(rect),
+          child: child,
         );
-        final animated = BubbleEntrance(
-          animate: entrances?.take(m.id) ?? false,
-          fromRight: m.author == session.myOutbox,
-          child: bubble,
+        Widget blur(Alignment at) => Align(
+          alignment: at,
+          child: IgnorePointer(
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 1.5, sigmaY: 1.5),
+                child: SizedBox(width: double.infinity, height: band * 0.6),
+              ),
+            ),
+          ),
         );
-        final keys = itemKeys;
-        if (keys == null) return animated;
-        // A GlobalKey keeps the entrance animation's state when the message
-        // moves to another index (a newer one arrives right after it).
-        return KeyedSubtree(
-          key: keys.putIfAbsent(m.id, GlobalKey.new),
-          child: animated,
+        return Stack(
+          children: [
+            faded,
+            blur(Alignment.topCenter),
+            blur(Alignment.bottomCenter),
+          ],
         );
       },
     );

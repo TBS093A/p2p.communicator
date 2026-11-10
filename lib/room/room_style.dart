@@ -276,6 +276,32 @@ class EmojiCode {
     }
     return count > 0 && count <= max;
   }
+
+  /// Code points that start an emoji: pictographs, symbols and dingbats,
+  /// flags (regional indicators), and a few lone symbols drawn as emoji.
+  static bool _emojiStart(int c) =>
+      (c >= 0x1F000 && c <= 0x1FAFF) ||
+      (c >= 0x2600 && c <= 0x27BF) ||
+      (c >= 0x2300 && c <= 0x23FF) ||
+      (c >= 0x2B00 && c <= 0x2BFF) ||
+      (c >= 0x2190 && c <= 0x21FF) ||
+      c == 0x2764 ||
+      c == 0x3030 ||
+      c == 0x303D ||
+      c == 0x3297 ||
+      c == 0x3299 ||
+      c == 0x00A9 ||
+      c == 0x00AE ||
+      c == 0x2122;
+
+  /// A message of only 1–[max] ordinary (Unicode) emoji, no other text:
+  /// shown large without a bubble, like a lone custom emoji. Checked per
+  /// grapheme, so skin tones, ZWJ families and flags count as one each.
+  static bool isUnicodeJumbo(String text, {int max = 3}) {
+    final glyphs = text.characters.where((g) => g.trim().isNotEmpty).toList();
+    if (glyphs.isEmpty || glyphs.length > max) return false;
+    return glyphs.every((g) => _emojiStart(g.runes.first));
+  }
 }
 
 class EmojiPart {

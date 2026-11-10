@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
@@ -79,7 +80,7 @@ class ReplyQuote extends StatelessWidget {
   }
 }
 
-class MessageBubble extends StatelessWidget {
+class MessageBubble extends StatefulWidget {
   const MessageBubble({
     super.key,
     required this.message,
@@ -88,124 +89,210 @@ class MessageBubble extends StatelessWidget {
     this.onReply,
     this.onQuoteTap,
     this.highlighted = false,
+    this.showStatus = false,
   });
 
   final ChatMessage message;
   final RoomSession session;
 
-  /// The author's name above the bubble: only on the first message of a
-  /// group from one person.
+  /// The author's name above the bubble (outside it): only on the first
+  /// message of a group from someone else.
   final bool showName;
 
-  /// Swipe right or long-press: reply to this message.
+  /// Swipe (right for others, left for your own) or long-press: reply.
   final ValueChanged<ChatMessage>? onReply;
 
   /// Tap on the quote of a reply: go to the original.
   final ValueChanged<ReplyRef>? onQuoteTap;
 
-  /// Briefly marked after jumping here from a quote.
+  /// Briefly wobbles after jumping here from a quote.
   final bool highlighted;
+
+  /// Show the "sent" tick under it (your newest message only).
+  final bool showStatus;
+
+  static const _radius = 18.0;
+
+  @override
+  State<MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<MessageBubble>
+    with SingleTickerProviderStateMixin {
+  ChatMessage get message => widget.message;
+  RoomSession get session => widget.session;
+  ValueChanged<ChatMessage>? get onReply => widget.onReply;
+
+  /// The time slides out from under the bubble on tap.
+  bool _showTime = false;
+
+  late final AnimationController _wobble = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 700),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.highlighted) _wobble.forward();
+  }
+
+  @override
+  void didUpdateWidget(MessageBubble old) {
+    super.didUpdateWidget(old);
+    if (widget.highlighted && !old.highlighted) _wobble.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _wobble.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final mine = message.author == session.myOutbox;
     final scheme = Theme.of(context).colorScheme;
-    final profile = session.profileOf(message.author);
     final time = DateTime.fromMillisecondsSinceEpoch(message.ts);
     final hhmm =
         '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-
-    // The room sets both bubble colors (like a chat theme): one for your own
-    // messages, one for everyone else's; defaults are blue and grey.
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final roomBubble = mine ? session.meta.bubble : session.meta.otherBubble;
-    final custom = roomBubble != null ? Color(roomBubble) : null;
+    final fill = bubbleFill(context, session, mine: mine);
+    final text = message.text ?? '';
     final jumbo =
         message.type == MsgType.text &&
-        EmojiCode.isJumbo(
-          EmojiCode.split(message.text ?? '', session.meta.emoji.keys.toSet()),
-        );
-    final fill =
-        custom ??
-        Color(
-          mine
-              ? defaultMyBubble
-              : (dark ? defaultOtherBubbleDark : defaultOtherBubbleLight),
-        );
-    final bg = jumbo ? Colors.transparent : fill;
-    final fg = jumbo ? scheme.onSurface : onColor(fill);
+        (EmojiCode.isJumbo(
+              EmojiCode.split(text, session.meta.emoji.keys.toSet()),
+            ) ||
+            EmojiCode.isUnicodeJumbo(text));
+    // Photos and videos stand on their own, without a bubble around them;
+    // their time is always shown (a tap opens or plays them).
+    final bare =
+        jumbo || message.type == MsgType.image || message.type == MsgType.video;
+    final fg = bare ? scheme.onSurface : onColor(fill);
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.72;
 
+    final content = DefaultTextStyle.merge(
+      style: TextStyle(color: fg),
+      child: IconTheme.merge(
+        data: IconThemeData(color: fg),
+        child: _content(context, fg),
+      ),
+    );
+    final body = Container(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      padding: bare ? EdgeInsets.zero : const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      decoration: bare
+          ? null
+          : BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(MessageBubble._radius),
+            ),
+      child: content,
+    );
+    final tappable = GestureDetector(
+      key: ValueKey('bubble-${message.id}'),
+      onTap: bare ? null : () => setState(() => _showTime = !_showTime),
+      onLongPress: onReply == null ? null : () => _menu(context),
+      child: body,
+    );
+    // A short wobble after a jump from a quote.
+    final wobbling = AnimatedBuilder(
+      animation: _wobble,
+      builder: (context, child) {
+        final v = _wobble.value;
+        if (v == 0 || v == 1) return child!;
+        final fade = 1 - v;
+        return Transform.rotate(
+          angle: math.sin(v * math.pi * 6) * 0.045 * fade,
+          child: Transform.scale(
+            scale: 1 + 0.05 * math.sin(v * math.pi) * fade,
+            child: child,
+          ),
+        );
+      },
+      child: tappable,
+    );
+
+    final small = Theme.of(context).textTheme.labelSmall;
+    final status = mine
+        ? switch (message.status) {
+            MsgStatus.sending => const Icon(Icons.schedule, size: 14),
+            MsgStatus.failed => Icon(
+              Icons.error_outline,
+              size: 16,
+              color: scheme.error,
+            ),
+            MsgStatus.sent => null,
+          }
+        : null;
+    final timeLabel = _Pill(
+      child: Text(hhmm, style: small, key: ValueKey('time-${message.id}')),
+    );
     final reply = message.replyTo;
-    final bubble = AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      constraints: BoxConstraints(
-        maxWidth: MediaQuery.sizeOf(context).width * 0.72,
-      ),
-      margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: highlighted ? scheme.tertiary : Colors.transparent,
-          width: 2,
-        ),
-      ),
-      child: DefaultTextStyle.merge(
-        style: TextStyle(color: fg),
-        child: IconTheme.merge(
-          data: IconThemeData(color: fg),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!mine && showName)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(
-                    profile.name,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: custom != null ? fg : scheme.primary,
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-              if (reply != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: ReplyQuote(
-                    key: ValueKey('quote-${message.id}'),
-                    reply: reply,
-                    session: session,
-                    color: jumbo ? scheme.primary : fg,
-                    onTap: onQuoteTap == null ? null : () => onQuoteTap!(reply),
-                  ),
-                ),
-              _content(context, fg),
-              const SizedBox(height: 2),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    hhmm,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.labelSmall?.copyWith(color: fg),
-                  ),
-                  if (mine) ...[
-                    const SizedBox(width: 4),
-                    Icon(switch (message.status) {
-                      MsgStatus.sending => Icons.schedule,
-                      MsgStatus.sent => Icons.done,
-                      MsgStatus.failed => Icons.error_outline,
-                    }, size: 14),
-                  ],
-                ],
+
+    final column = Column(
+      crossAxisAlignment: mine
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (!mine && widget.showName)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+            child: _Pill(
+              child: Text(
+                session.profileOf(message.author).name,
+                style: small?.copyWith(fontWeight: FontWeight.w600),
               ),
+            ),
+          ),
+        // The quoted message peeks out from under the reply, see-through.
+        if (reply != null)
+          Transform.translate(
+            offset: const Offset(0, 14),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: _TuckedQuote(
+                key: ValueKey('quote-${message.id}'),
+                reply: reply,
+                session: session,
+                maxWidth: maxWidth * 0.85,
+                onTap: widget.onQuoteTap == null
+                    ? null
+                    : () => widget.onQuoteTap!(reply),
+              ),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (status != null) ...[status, const SizedBox(width: 4)],
+              Flexible(child: wobbling),
             ],
           ),
         ),
-      ),
+        // Time: always for photos and videos, otherwise on tap, sliding
+        // down from under the bubble.
+        ClipRect(
+          child: AnimatedAlign(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.bottomCenter,
+            heightFactor: bare || _showTime ? 1 : 0,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 2),
+              child: timeLabel,
+            ),
+          ),
+        ),
+        if (widget.showStatus && mine && message.status == MsgStatus.sent)
+          Padding(
+            padding: const EdgeInsets.only(right: 10, bottom: 2),
+            child: Icon(Icons.done, size: 14, color: scheme.onSurfaceVariant),
+          ),
+      ],
     );
 
     // No avatar here: the chat list draws one per message group, sticking to
@@ -214,13 +301,15 @@ class MessageBubble extends StatelessWidget {
       padding: EdgeInsets.only(left: mine ? 0 : 8, right: mine ? 4 : 0),
       child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-        child: onReply == null
-            ? bubble
-            : GestureDetector(onLongPress: () => _menu(context), child: bubble),
+        child: column,
       ),
     );
     if (onReply == null || message.status == MsgStatus.sending) return row;
-    return SwipeToReply(onReply: () => onReply!(message), child: row);
+    return SwipeToReply(
+      toLeft: mine,
+      onReply: () => onReply!(message),
+      child: row,
+    );
   }
 
   /// Long-press menu (like most messengers): reply, and copy for text.
@@ -286,7 +375,7 @@ class MessageBubble extends StatelessWidget {
               MaterialPageRoute<void>(builder: (_) => _ImageViewer(file: file)),
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(16),
               child: Image.file(file, fit: BoxFit.cover),
             ),
           ),
@@ -317,6 +406,91 @@ class MessageBubble extends StatelessWidget {
 
   static String _mb(int bytes) =>
       '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+/// The room's bubble color for your own messages or everyone else's (like a
+/// chat theme); defaults are blue and grey.
+Color bubbleFill(
+  BuildContext context,
+  RoomSession session, {
+  required bool mine,
+}) {
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  final room = mine ? session.meta.bubble : session.meta.otherBubble;
+  if (room != null) return Color(room);
+  return Color(
+    mine
+        ? defaultMyBubble
+        : (dark ? defaultOtherBubbleDark : defaultOtherBubbleLight),
+  );
+}
+
+/// Small text on the chat background (names, times): a soft pill keeps it
+/// readable over any background color or picture.
+class _Pill extends StatelessWidget {
+  const _Pill({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: scheme.surface.withAlpha(150),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DefaultTextStyle.merge(
+        style: TextStyle(color: scheme.onSurface),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// The message a reply answers: a smaller, see-through bubble in its
+/// author's bubble color, tucked from above under the reply.
+class _TuckedQuote extends StatelessWidget {
+  const _TuckedQuote({
+    super.key,
+    required this.reply,
+    required this.session,
+    required this.maxWidth,
+    this.onTap,
+  });
+
+  final ReplyRef reply;
+  final RoomSession session;
+  final double maxWidth;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fill = bubbleFill(
+      context,
+      session,
+      mine: reply.author == session.myOutbox,
+    );
+    return Opacity(
+      opacity: 0.6,
+      child: Container(
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        // The bottom 14 px sit under the reply bubble.
+        padding: const EdgeInsets.fromLTRB(4, 4, 4, 18),
+        decoration: BoxDecoration(
+          color: fill,
+          borderRadius: BorderRadius.circular(MessageBubble._radius - 4),
+        ),
+        child: ReplyQuote(
+          reply: reply,
+          session: session,
+          color: onColor(fill),
+          onTap: onTap,
+        ),
+      ),
+    );
+  }
 }
 
 /// Fetches the plain media file (local copy or DHT download) and shows
@@ -405,7 +579,7 @@ class _MediaLoaderState extends State<_MediaLoader> {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: Colors.black12,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(16),
       ),
       padding: const EdgeInsets.all(8),
       child: child,
@@ -468,7 +642,7 @@ class _VideoTileState extends State<_VideoTile> {
           );
         }
         return ClipRRect(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(16),
           child: AspectRatio(
             aspectRatio: _c.value.aspectRatio,
             child: Stack(

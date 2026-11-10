@@ -14,6 +14,7 @@ import '../room/room_session.dart';
 import '../room/room_style.dart';
 import '../vault/pin_vault.dart';
 import 'invite_screen.dart';
+import 'member_profile_screen.dart';
 import 'members_screen.dart';
 import 'my_profile_screen.dart';
 import 'profile_screen.dart';
@@ -595,19 +596,25 @@ class _ChatScreenState extends State<ChatScreen> {
                       onReply: _startReply,
                       onQuoteTap: _goToOriginal,
                       highlight: _highlight,
+                      onAvatarTap: (outbox) => _open(
+                        MemberProfileScreen(
+                          session: _session,
+                          outbox: outbox,
+                          app: widget.app,
+                        ),
+                      ),
                     );
                   },
                 ),
               ),
+              IncomingIndicator(session: _session),
               TypingIndicator(session: _session),
-              // The message bar matches the top bar.
-              tinted
-                  ? Material(
-                      key: const ValueKey('chat-bottom-bar'),
-                      color: barColor,
-                      child: _composer(context),
-                    )
-                  : _composer(context),
+              // No bar behind the message field and buttons: they take the
+              // chat's color themselves (see _barAccent).
+              KeyedSubtree(
+                key: const ValueKey('chat-bottom-bar'),
+                child: _composer(context),
+              ),
             ],
           );
           if (bgImage == null) return conversation;
@@ -683,12 +690,43 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// The message bar's color: the chat background's own color, so the bar
+  /// matches the room. Over a plain colored background the same hue is
+  /// shifted in lightness, or it would vanish into the background.
+  Color _barAccent(BuildContext context) {
+    final meta = _session.meta;
+    final bg = meta.background;
+    if (bg == null) return Theme.of(context).colorScheme.primary;
+    final c = Color(bg);
+    if (meta.backgroundImage != null) return c;
+    final hsl = HSLColor.fromColor(c);
+    final light = c.computeLuminance() > 0.45;
+    return hsl
+        .withLightness(
+          light
+              ? (hsl.lightness - 0.35).clamp(0.0, 1.0)
+              : (hsl.lightness + 0.35).clamp(0.0, 1.0),
+        )
+        .toColor();
+  }
+
   Widget _composerRow(BuildContext context, bool recording, bool hasText) {
+    final accent = _barAccent(context);
+    // The field is filled with the same color, as see-through as the bars
+    // (the room's bar transparency slider).
+    final fill = accent.withAlpha(_session.meta.barAlpha);
+    final onFill = onColor(fill);
+    final iconStyle = IconButton.styleFrom(foregroundColor: accent);
+    final border = OutlineInputBorder(
+      borderRadius: const BorderRadius.all(Radius.circular(24)),
+      borderSide: BorderSide(color: accent),
+    );
     return Row(
       children: [
         if (recording) ...[
           IconButton(
             tooltip: 'Anuluj',
+            style: iconStyle,
             icon: const Icon(Icons.delete_outline),
             onPressed: () => _finishRecording(send: false),
           ),
@@ -703,29 +741,39 @@ class _ChatScreenState extends State<ChatScreen> {
         ] else ...[
           IconButton(
             tooltip: 'Załącz',
+            style: iconStyle,
             icon: const Icon(Icons.add_circle_outline),
             onPressed: _attach,
           ),
           IconButton(
             tooltip: 'Emoji pokoju',
+            style: iconStyle,
             icon: const Icon(Icons.emoji_emotions_outlined),
             onPressed: _pickEmoji,
           ),
           Expanded(
             child: TextField(
+              key: const ValueKey('composer-field'),
               controller: _text,
               focusNode: _textFocus,
               minLines: 1,
               maxLines: 5,
               maxLength: 3000,
               textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(
+              cursorColor: onFill,
+              style: TextStyle(color: onFill),
+              decoration: InputDecoration(
                 hintText: 'Wiadomość',
+                hintStyle: TextStyle(color: onFill.withAlpha(150)),
                 counterText: '',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(24)),
+                filled: true,
+                fillColor: fill,
+                border: border,
+                enabledBorder: border,
+                focusedBorder: border.copyWith(
+                  borderSide: BorderSide(color: accent, width: 2),
                 ),
-                contentPadding: EdgeInsets.symmetric(
+                contentPadding: const EdgeInsets.symmetric(
                   horizontal: 16,
                   vertical: 10,
                 ),
@@ -737,6 +785,10 @@ class _ChatScreenState extends State<ChatScreen> {
           tooltip: hasText
               ? 'Wyślij'
               : (recording ? 'Wyślij głosówkę' : 'Nagraj głosówkę'),
+          style: IconButton.styleFrom(
+            backgroundColor: accent,
+            foregroundColor: onColor(accent),
+          ),
           icon: Icon(hasText || recording ? Icons.send : Icons.mic),
           onPressed: hasText ? _sendText : _toggleRecording,
         ),

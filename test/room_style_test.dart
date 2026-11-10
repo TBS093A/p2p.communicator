@@ -237,4 +237,21 @@ void main() {
     // Emoji are never cut in half (one 🏔️ is several UTF-16 units).
     expect(cleanNick('🏔️' * 5, max: 3), '🏔️🏔️🏔️');
   });
+
+  test('lone ordinary emoji are shown large', () {
+    for (final s in [
+      '😀',
+      ' 🏔️ ',
+      '👍🏽',
+      '👨‍👩‍👧‍👦',
+      '🇵🇱',
+      '❤️🔥',
+      '😀 😀 😀',
+    ]) {
+      expect(EmojiCode.isUnicodeJumbo(s), isTrue, reason: s);
+    }
+    for (final s in ['', 'ok', 'ok 😀', '😀😀😀😀', '123', '#', '😀!']) {
+      expect(EmojiCode.isUnicodeJumbo(s), isFalse, reason: s);
+    }
+  });
 }
