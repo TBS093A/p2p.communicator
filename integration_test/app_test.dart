@@ -522,18 +522,24 @@ void main() {
           k.value.startsWith('reaction-') &&
           k.value.endsWith('-$code');
     });
+    // The original's own bubble, by its key (the reply quotes the same
+    // text).
+    final originalId = t
+        .widgetList<MessageBubble>(find.byType(MessageBubble))
+        .firstWhere((b) => b.message.text == question)
+        .message
+        .id;
+    final original = find.byKey(ValueKey('bubble-$originalId'));
+    // Let the highlight from the quote jump end first.
+    await idle(t, const Duration(seconds: 3));
     Future<String> react(String? code) async {
-      // The original's own bubble (the reply quotes the same text).
-      await t.longPress(
-        find.descendant(
-          of: find.byWidgetPredicate(
-            (w) => w is MessageBubble && w.message.text == question,
-          ),
-          matching: find.text(question),
-        ),
-      );
-      await settle(t);
-      await pumpUntil(t, find.byKey(const ValueKey('msg-reactions')));
+      final menu = find.byKey(const ValueKey('msg-reactions'));
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        await t.longPress(original);
+        await settle(t);
+        if (menu.evaluate().isNotEmpty) break;
+      }
+      await pumpUntil(t, menu, timeout: const Duration(seconds: 10));
       final picked =
           code ??
           t
