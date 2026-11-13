@@ -1,0 +1,15 @@
+name: p2pc_core
+description: The v2 protocol core (Rust, native/mls_poc) as a Flutter code asset.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+# Same versions the app already resolves through veilid-flutter: nothing new
+# enters the dependency tree.
+dependencies:
+  code_assets: ^1.2.1
+  ffi: ^2.2.0
+  hooks: ^2.2.0
+  native_toolchain_rust: ^1.0.6

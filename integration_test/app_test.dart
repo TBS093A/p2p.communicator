@@ -17,6 +17,7 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:integration_test/integration_test.dart';
 import 'package:p2p_communicator/core/crypto.dart';
 import 'package:p2p_communicator/main.dart' as app;
+import 'package:p2pc_core/p2pc_core.dart';
 import 'package:p2p_communicator/migration/migration_archive.dart';
 import 'package:share_plus_platform_interface/share_plus_platform_interface.dart';
 import 'package:p2p_communicator/ui/chat_screen.dart';
@@ -294,6 +295,12 @@ void main() {
     // Bulk add: three GIFs plus one far over the 512 KB emoji limit, which
     // must be shrunk automatically rather than refused.
     final bulkEmoji = [...await emojiPack(), await bigGif()];
+
+    // The v2 core (Rust) is built into this app and works on the device:
+    // its end-to-end self-test (group, join, messages, rotation, restart,
+    // removal) on an in-memory DHT.
+    final core = coreSelfTest();
+    expect(core['ok'], isTrue, reason: '${core['steps']}');
 
     app.main();
     await pumpUntil(t, find.byType(SetupScreen));

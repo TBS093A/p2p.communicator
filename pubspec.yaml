@@ -48,6 +48,11 @@ dependencies:
   # transitive dependency).
   crypto: ^3.0.7
 
+  # The v2 protocol core (Rust, native/mls_poc) as a code asset built by its
+  # hook, like veilid. docs/V2_PLAN.md phase 1.
+  p2pc_core:
+    path: packages/p2pc_core
+
   # Grapheme-safe cutting of reply previews (dart-lang; already in the lock
   # as a transitive dependency of Flutter).
   characters: ^1.4.1
