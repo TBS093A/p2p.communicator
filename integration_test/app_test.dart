@@ -478,7 +478,7 @@ void main() {
     expect(find.byKey(const ValueKey('reply-bar')), findsNothing);
     final quote = find.descendant(
       of: find.byType(MessageBubble),
-      matching: find.byType(ReplyQuote),
+      matching: find.byType(QuotedBubble),
     );
     await pumpUntil(t, quote);
     expect(

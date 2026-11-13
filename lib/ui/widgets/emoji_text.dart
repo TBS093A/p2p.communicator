@@ -21,11 +21,11 @@ class EmojiText extends StatelessWidget {
   final RoomSession session;
   final TextStyle? style;
 
-  /// A message of 1–3 custom emoji and nothing else (was 64).
-  static const customJumboSize = 128.0;
+  /// A message of 1–3 custom emoji and nothing else.
+  static const customJumboSize = 256.0;
 
   /// A message of 1–3 ordinary emoji and nothing else.
-  static const unicodeJumboSize = 56.0;
+  static const unicodeJumboSize = 112.0;
 
   /// Plain text can be selected by long-pressing. Off in chat bubbles,
   /// where long-press opens the message menu (reply, copy) instead.

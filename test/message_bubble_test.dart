@@ -84,12 +84,36 @@ void main() {
     await t.pumpWidget(app());
     final quote = find.descendant(
       of: find.byType(MessageBubble),
-      matching: find.byType(ReplyQuote),
+      matching: find.byType(QuotedBubble),
     );
     expect(quote, findsOneWidget);
     expect(
       find.descendant(of: quote, matching: find.text('Kto bierze termos?')),
       findsOneWidget,
+    );
+    // Drawn 1:1 like the original: the same fill and shape, no inner box
+    // or side bar.
+    BoxDecoration deco(Finder of) => t
+        .widgetList<Container>(
+          find.descendant(of: of, matching: find.byType(Container)),
+        )
+        .map((c) => c.decoration)
+        .whereType<BoxDecoration>()
+        .first;
+    final quoted = deco(quote);
+    final original = deco(find.byKey(const ValueKey('bubble-o1')));
+    expect(quoted.color, original.color);
+    expect(quoted.borderRadius, original.borderRadius);
+    expect(quoted.border, isNull);
+    expect(
+      t
+          .widgetList<Container>(
+            find.descendant(of: quote, matching: find.byType(Container)),
+          )
+          .where((c) => c.decoration != null)
+          .length,
+      1,
+      reason: 'no bubble inside the bubble',
     );
     await t.tap(quote, warnIfMissed: true);
     await t.pump();
