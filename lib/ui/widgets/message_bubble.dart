@@ -246,13 +246,24 @@ class _MessageBubbleState extends State<MessageBubble>
               ),
             ),
           ),
-        // The quoted message peeks out from under the reply, see-through.
+        // Who is being answered, then the quoted message itself peeking out
+        // from under the reply, see-through.
+        if (reply != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+            child: _Pill(
+              child: Text(
+                '↩ ${reply.author == session.myOutbox ? 'Ty' : session.nameOf(reply.author)}',
+                style: small,
+              ),
+            ),
+          ),
         if (reply != null)
           Transform.translate(
-            offset: const Offset(0, 14),
+            offset: const Offset(0, QuotedBubble.tuck),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: _TuckedQuote(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: QuotedBubble(
                 key: ValueKey('quote-${message.id}'),
                 reply: reply,
                 session: session,
@@ -449,10 +460,11 @@ class _Pill extends StatelessWidget {
   }
 }
 
-/// The message a reply answers: a smaller, see-through bubble in its
-/// author's bubble color, tucked from above under the reply.
-class _TuckedQuote extends StatelessWidget {
-  const _TuckedQuote({
+/// The message a reply answers, tucked from above under the reply and
+/// see-through, drawn the way the original looks (like Messenger): the same
+/// bubble with its text, or a quoted photo on its own without any frame.
+class QuotedBubble extends StatefulWidget {
+  const QuotedBubble({
     super.key,
     required this.reply,
     required this.session,
@@ -465,29 +477,75 @@ class _TuckedQuote extends StatelessWidget {
   final double maxWidth;
   final VoidCallback? onTap;
 
+  /// The part hidden under the reply bubble.
+  static const tuck = 14.0;
+
+  @override
+  State<QuotedBubble> createState() => _QuotedBubbleState();
+}
+
+class _QuotedBubbleState extends State<QuotedBubble> {
+  Future<File>? _photo;
+
+  @override
+  void initState() {
+    super.initState();
+    // A quoted photo shows the picture itself, if the original is still
+    // here (its file is cached locally or downloads like any other).
+    final original = widget.session.messageById(widget.reply.id);
+    final media = original?.media;
+    if (widget.reply.type == MsgType.image && media != null) {
+      _photo = widget.session.mediaFile(original!.id, media);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final reply = widget.reply;
+    return GestureDetector(
+      onTap: widget.onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Opacity(
+        opacity: 0.6,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: widget.maxWidth),
+          child: _photo == null
+              ? _bubble(context, reply)
+              : FutureBuilder<File>(
+                  future: _photo,
+                  builder: (context, snap) => snap.hasData
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(16),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 160),
+                            child: Image.file(snap.data!, fit: BoxFit.cover),
+                          ),
+                        )
+                      : _bubble(context, reply),
+                ),
+        ),
+      ),
+    );
+  }
+
+  /// The original's own bubble: its author's color and shape, its text.
+  Widget _bubble(BuildContext context, ReplyRef reply) {
     final fill = bubbleFill(
       context,
-      session,
-      mine: reply.author == session.myOutbox,
+      widget.session,
+      mine: reply.author == widget.session.myOutbox,
     );
-    return Opacity(
-      opacity: 0.6,
-      child: Container(
-        constraints: BoxConstraints(maxWidth: maxWidth),
-        // The bottom 14 px sit under the reply bubble.
-        padding: const EdgeInsets.fromLTRB(4, 4, 4, 18),
-        decoration: BoxDecoration(
-          color: fill,
-          borderRadius: BorderRadius.circular(MessageBubble._radius - 4),
-        ),
-        child: ReplyQuote(
-          reply: reply,
-          session: session,
-          color: onColor(fill),
-          onTap: onTap,
-        ),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8 + QuotedBubble.tuck),
+      decoration: BoxDecoration(
+        color: fill,
+        borderRadius: BorderRadius.circular(MessageBubble._radius),
+      ),
+      child: Text(
+        replyPreviewText(reply),
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: onColor(fill)),
       ),
     );
   }
