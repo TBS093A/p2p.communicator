@@ -59,6 +59,50 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
+              'Zdjęcie w $where (opcjonalnie)',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Avatar.member(
+                  room,
+                  room.myOutbox,
+                  radius: 28,
+                  key: const ValueKey('room-avatar-preview'),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Wrap(
+                    spacing: 4,
+                    children: [
+                      TextButton.icon(
+                        key: const ValueKey('room-avatar-pick'),
+                        onPressed: _busy ? null : () => _pickRoomAvatar(room),
+                        icon: const Icon(Icons.photo),
+                        label: const Text('Wybierz'),
+                      ),
+                      if (room.myRoomAvatar != null)
+                        TextButton(
+                          key: const ValueKey('room-avatar-clear'),
+                          onPressed: _busy
+                              ? null
+                              : () => _run(() => room.setRoomAvatar(null)),
+                          child: const Text('Użyj zdjęcia globalnego'),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            Text(
+              room.myRoomAvatar == null
+                  ? 'Teraz: zdjęcie globalne'
+                  : 'Teraz: osobne zdjęcie w $where',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Text(
               'Pseudonim w $where (opcjonalnie)',
               style: Theme.of(context).textTheme.titleSmall,
             ),
@@ -110,6 +154,16 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// A picture for this DM/group only (the global one stays everywhere
+  /// else).
+  Future<void> _pickRoomAvatar(RoomSession room) async {
+    final picked = await AutoLock.suppress(
+      () => ImagePicker().pickImage(source: ImageSource.gallery),
+    );
+    if (picked == null) return;
+    await _run(() => room.setRoomAvatar(File(picked.path)));
   }
 
   Future<void> _uploadAvatar() async {

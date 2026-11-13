@@ -63,6 +63,10 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   final _watched = <String, RecordKey>{}; // other members' outboxes
   final _profileKeys = <String, String>{}; // outbox -> global profile key
   final _nicks = <String, String>{}; // outbox -> nickname in this room
+  final _roomAvatars = <String, MediaRef>{}; // outbox -> picture in this room
+
+  /// Our own picture in this public room (null = the global one).
+  MediaRef? get myRoomAvatar => _roomAvatars[myOutbox];
   final _uuid = const Uuid();
 
   /// Our nickname in this public room (null = the global name).
@@ -163,7 +167,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       : profiles[myOutbox] ?? MemberProfile(name: room.secrets.myName);
 
   /// In public rooms a member's global profile wins over their outbox head,
-  /// except for the name when they set a nickname for this room.
+  /// except for the name and picture they set for this room only.
   MemberProfile profileOf(String author) {
     if (author == myOutbox) return myProfile;
     final key = _profileKeys[author];
@@ -176,8 +180,21 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   }
 
   MemberProfile _withNick(String author, MemberProfile p) {
-    final nick = isPublic ? _nicks[author] : null;
-    return nick == null ? p : p.copyWith(name: nick);
+    if (!isPublic) return p;
+    final nick = _nicks[author];
+    final avatar = _roomAvatars[author];
+    if (nick == null && avatar == null) return p;
+    return p.copyWith(name: nick, avatar: avatar);
+  }
+
+  /// A room picture from an outbox head; null when absent or malformed.
+  static MediaRef? _parseAvatar(Object? raw) {
+    if (raw is! Map) return null;
+    try {
+      return MediaRef.fromJson(raw.cast<String, dynamic>());
+    } on Object {
+      return null;
+    }
   }
 
   String nameOf(String author) => profileOf(author).name;
@@ -251,6 +268,14 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         // Same for our nickname in a public room.
         if (isPublic && !_profileFromCache && head?['nick'] is String) {
           _nicks[myOutbox] = head!['nick'] as String;
+          notifyListeners();
+        }
+        // And our picture for this room.
+        final av = isPublic && !_profileFromCache
+            ? _parseAvatar(head?['av'])
+            : null;
+        if (av != null) {
+          _roomAvatars[myOutbox] = av;
           notifyListeners();
         }
 
@@ -513,7 +538,15 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     } else {
       _nicks[outbox] = nick;
     }
+    final avatarBefore = _roomAvatars[outbox]?.hash;
+    final roomAvatar = isPublic ? _parseAvatar(head['av']) : null;
+    if (roomAvatar == null) {
+      _roomAvatars.remove(outbox);
+    } else {
+      _roomAvatars[outbox] = roomAvatar;
+    }
     if (nickBefore != nick ||
+        avatarBefore != roomAvatar?.hash ||
         before?.name != profile.name ||
         before?.color != profile.color ||
         before?.avatar?.hash != profile.avatar?.hash) {
@@ -767,6 +800,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
           'name': app!.myGlobal.name,
           'p': app!.myProfileKey,
           'nick': ?myNick,
+          'av': ?myRoomAvatar?.toJson(),
           'count': count,
           'ty': ?ty,
         }
@@ -793,6 +827,29 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       (_) => Dht.setJsonSoon(_outboxKey, 0, _head(_myCount)),
     );
     _sendChain = job.catchError((Object e) => debugPrint('nick: $e'));
+    await job;
+  }
+
+  /// Sets our picture for this public room only ([file] null = back to the
+  /// global picture). Like a nickname: everyone here sees it, nobody
+  /// elsewhere. The image is uploaded like any avatar (encrypted blob).
+  Future<void> setRoomAvatar(File? file) async {
+    if (!isPublic) {
+      throw StateError('private rooms have their own per-room profile');
+    }
+    if (file == null && myRoomAvatar == null) return;
+    final ref = file == null ? null : await _uploadImage(file, ImageUse.avatar);
+    if (ref == null) {
+      _roomAvatars.remove(myOutbox);
+    } else {
+      _roomAvatars[myOutbox] = ref;
+    }
+    notifyListeners();
+    _scheduleSave();
+    final job = _sendChain.then(
+      (_) => Dht.setJsonSoon(_outboxKey, 0, _head(_myCount)),
+    );
+    _sendChain = job.catchError((Object e) => debugPrint('room avatar: $e'));
     await job;
   }
 
@@ -1055,6 +1112,9 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       'meta': meta.toJson(),
       'profiles': {for (final e in profiles.entries) e.key: e.value.toJson()},
       'nicks': _nicks,
+      'roomAvatars': {
+        for (final e in _roomAvatars.entries) e.key: e.value.toJson(),
+      },
       'lastSeen': {for (final e in _cursors.entries) e.key: e.value.toJson()},
       'myCount': _myCount,
       if (_shareTyping) 'shareTyping': true,
@@ -1087,6 +1147,15 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         for (final e in nicks.entries) {
           if (e.key is String && e.value is String) {
             _nicks[e.key as String] = e.value as String;
+          }
+        }
+      }
+      final avatars = j['roomAvatars'];
+      if (avatars is Map) {
+        for (final e in avatars.entries) {
+          final ref = _parseAvatar(e.value);
+          if (e.key is String && ref != null) {
+            _roomAvatars[e.key as String] = ref;
           }
         }
       }

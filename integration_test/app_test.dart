@@ -400,9 +400,23 @@ void main() {
     await topAvatarShows(t);
     await tapKey(t, 'status-away');
     await waitSaved(t);
-    // Opened from the group, it also takes a nickname for this group only.
+    // Opened from the group, it also takes a picture and a nickname for
+    // this group only.
     await t.drag(find.byType(ListView).first, const Offset(0, 1500));
     await settle(t);
+    gallery.queue.add(roomPicture);
+    await tapKey(t, 'room-avatar-pick');
+    await waitSaved(t);
+    await pumpUntil(t, find.text('Teraz: osobne zdjęcie w tej grupie'));
+    expect(find.byKey(const ValueKey('room-avatar-clear')), findsOneWidget);
+    await pumpUntil(
+      t,
+      find.descendant(
+        of: find.byKey(const ValueKey('room-avatar-preview')),
+        matching: find.byType(Image),
+      ),
+      timeout: const Duration(seconds: 30),
+    );
     final nick = find.byKey(const ValueKey('room-nick'));
     await pumpUntil(t, nick);
     for (var attempt = 1; attempt <= 3; attempt++) {
