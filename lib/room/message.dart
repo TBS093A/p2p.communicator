@@ -8,9 +8,14 @@ enum MsgType {
 
   /// Hidden: a DM invite sealed to one member's identity key. Never shown in
   /// the conversation; only the addressee can open it.
-  dmInvite;
+  dmInvite,
 
-  bool get hidden => this == MsgType.dmInvite;
+  /// Hidden: the author's reaction to a message, `x: {to: <id>, e: <code>}`
+  /// with one of the room's custom emoji codes, or `e: null` to take it back.
+  /// Shown under the target message, never as a message of its own.
+  reaction;
+
+  bool get hidden => this == MsgType.dmInvite || this == MsgType.reaction;
 }
 
 enum MsgStatus { sending, sent, failed }

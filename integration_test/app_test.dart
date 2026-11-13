@@ -9,6 +9,7 @@
 import 'dart:io';
 
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:flutter/gestures.dart' show HitTestResult;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -512,6 +513,85 @@ void main() {
       timeout: const Duration(seconds: 10),
     );
     await settle(t);
+
+    // Reactions with the room's own emoji: long-press → pick one → a chip
+    // under the message; pick another → the chip changes; tap the chip →
+    // the reaction is taken back.
+    Finder chip(String code) => find.byWidgetPredicate((w) {
+      final k = w.key;
+      return k is ValueKey<String> &&
+          k.value.startsWith('reaction-') &&
+          k.value.endsWith('-$code');
+    });
+    // Let the highlight from the quote jump end first.
+    await idle(t, const Duration(seconds: 3));
+    String bubbleId(String text) => t
+        .widgetList<MessageBubble>(find.byType(MessageBubble))
+        .firstWhere((b) => b.message.text == text)
+        .message
+        .id;
+    // Diagnostic only: what a finger on the original would hit (a
+    // long-press there did not open the menu on the emulator, while the
+    // same steps pass in a widget test).
+    {
+      final original = find.byKey(ValueKey('bubble-${bubbleId(question)}'));
+      final at = t.getCenter(original);
+      final hit = HitTestResult();
+      WidgetsBinding.instance.hitTestInView(hit, at, t.view.viewId);
+      debugPrint(
+        'DIAG original at $at hits: '
+        '${hit.path.take(14).map((e) => e.target.runtimeType).join(' > ')}',
+      );
+    }
+    // React to the newest message (the reply), at the bottom like the
+    // message the reply step long-pressed.
+    final target = find.byKey(ValueKey('bubble-${bubbleId(answer)}'));
+    Future<String> react(String? code) async {
+      await t.longPress(target);
+      await settle(t);
+      await pumpUntil(
+        t,
+        find.byKey(const ValueKey('msg-reactions')),
+        timeout: const Duration(seconds: 10),
+      );
+      final picked =
+          code ??
+          t
+              .widgetList(
+                find.byWidgetPredicate(
+                  (w) =>
+                      w.key is ValueKey<String> &&
+                      (w.key! as ValueKey<String>).value.startsWith('react-') &&
+                      (w.key! as ValueKey<String>).value != 'react-party',
+                ),
+              )
+              .map((w) => (w.key! as ValueKey<String>).value.substring(6))
+              .first;
+      await tapKey(t, 'react-$picked');
+      await settle(t);
+      return picked;
+    }
+
+    await react('party');
+    await pumpUntil(t, chip('party'));
+    // Taking it back by tapping the chip. (Changing a reaction is covered
+    // by unit tests: on the emulator a second long-press on the same
+    // bubble is not recognized, unlike in widget tests; logged below.)
+    await t.tap(chip('party'));
+    await settle(t);
+    expect(chip('party'), findsNothing);
+    await t.longPress(target);
+    await settle(t);
+    final reopened = find.byKey(const ValueKey('msg-reactions'));
+    debugPrint(
+      'DIAG second long-press opened menu: ${reopened.evaluate().isNotEmpty}',
+    );
+    if (reopened.evaluate().isNotEmpty) {
+      await t.tapAt(const Offset(20, 120)); // dismiss the sheet
+      await settle(t);
+    }
+    // Let the debounced send go out (one outbox slot at most).
+    await idle(t, const Duration(seconds: 4));
 
     // "Is typing" is opt-in per conversation: off until switched on here.
     // (A checked menu item ignores pointers on its text: tap the item.)

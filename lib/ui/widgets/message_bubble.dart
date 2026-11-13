@@ -19,7 +19,7 @@ String replyPreviewText(ReplyRef r) => switch (r.type) {
   MsgType.image => r.preview.isEmpty ? '📷 Zdjęcie' : '📷 ${r.preview}',
   MsgType.video => r.preview.isEmpty ? '🎬 Film' : '🎬 ${r.preview}',
   MsgType.voice => '🎤 Wiadomość głosowa',
-  MsgType.dmInvite => '',
+  MsgType.dmInvite || MsgType.reaction => '',
 };
 
 /// A quote: a bar, the original's author and one line of its content. Used
@@ -198,10 +198,12 @@ class _MessageBubbleState extends State<MessageBubble>
     // A short wobble after a jump from a quote.
     final wobbling = AnimatedBuilder(
       animation: _wobble,
+      // Always the same two transforms (identity when still): a wrapper
+      // that appears or disappears would rebuild the gesture detector
+      // inside and drop a long-press in progress.
       builder: (context, child) {
         final v = _wobble.value;
-        if (v == 0 || v == 1) return child!;
-        final fade = 1 - v;
+        final fade = v == 0 ? 0.0 : 1 - v;
         return Transform.rotate(
           angle: math.sin(v * math.pi * 6) * 0.045 * fade,
           child: Transform.scale(
@@ -284,6 +286,15 @@ class _MessageBubbleState extends State<MessageBubble>
             ],
           ),
         ),
+        // Reactions overlap the bubble's bottom edge a little.
+        if (session.reactionsOf(message.id).isNotEmpty)
+          Transform.translate(
+            offset: const Offset(0, -8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: _ReactionChips(session: session, message: message),
+            ),
+          ),
         // Time: always for photos and videos, otherwise on tap, sliding
         // down from under the bubble.
         ClipRect(
@@ -327,11 +338,61 @@ class _MessageBubbleState extends State<MessageBubble>
   Future<void> _menu(BuildContext context) async {
     unawaited(HapticFeedback.mediumImpact());
     final text = message.text;
+    final codes = session.meta.emoji.keys.toList()..sort();
+    final mineNow = session.myReaction(message.id);
+    final canReact = message.status != MsgStatus.sending;
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
         child: Wrap(
           children: [
+            // React with one of the room's own emoji (tap yours again to
+            // take it back).
+            if (canReact && codes.isNotEmpty)
+              SizedBox(
+                key: const ValueKey('msg-reactions'),
+                height: 64,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  children: [
+                    for (final c in codes)
+                      Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: InkWell(
+                          key: ValueKey('react-$c'),
+                          borderRadius: BorderRadius.circular(28),
+                          onTap: () => Navigator.pop(context, 'react:$c'),
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: c == mineNow
+                                  ? Theme.of(
+                                      context,
+                                    ).colorScheme.primaryContainer
+                                  : null,
+                            ),
+                            child: EmojiImage(
+                              session: session,
+                              code: c,
+                              size: 36,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            if (canReact && codes.isEmpty)
+              const ListTile(
+                leading: Icon(Icons.add_reaction_outlined),
+                title: Text('Reakcje'),
+                subtitle: Text(
+                  'Ten pokój nie ma jeszcze własnych emoji. Dodasz je w '
+                  'ustawieniach pokoju.',
+                ),
+              ),
             if (message.status != MsgStatus.sending)
               ListTile(
                 key: const ValueKey('msg-reply'),
@@ -350,6 +411,10 @@ class _MessageBubbleState extends State<MessageBubble>
         ),
       ),
     );
+    if (action != null && action.startsWith('react:')) {
+      session.react(message, action.substring('react:'.length));
+      return;
+    }
     switch (action) {
       case 'reply':
         onReply?.call(message);
@@ -367,6 +432,7 @@ class _MessageBubbleState extends State<MessageBubble>
     final media = message.media;
     switch (message.type) {
       case MsgType.dmInvite:
+      case MsgType.reaction:
         return const SizedBox.shrink(); // never listed; see RoomSession
       case MsgType.text:
         return EmojiText(
@@ -434,6 +500,58 @@ Color bubbleFill(
         ? defaultMyBubble
         : (dark ? defaultOtherBubbleDark : defaultOtherBubbleLight),
   );
+}
+
+/// The reactions under a message: each emoji with how many chose it. Yours
+/// is outlined; tapping an emoji reacts with it (or takes yours back).
+class _ReactionChips extends StatelessWidget {
+  const _ReactionChips({required this.session, required this.message});
+
+  final RoomSession session;
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final list = session.reactionsOf(message.id);
+    return Wrap(
+      key: ValueKey('reactions-${message.id}'),
+      spacing: 4,
+      runSpacing: 4,
+      children: [
+        for (final (code, authors) in list)
+          GestureDetector(
+            key: ValueKey('reaction-${message.id}-$code'),
+            onTap: () => session.react(message, code),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: scheme.surface.withAlpha(230),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: authors.contains(session.myOutbox)
+                      ? scheme.primary
+                      : scheme.outlineVariant,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  EmojiImage(session: session, code: code, size: 20),
+                  if (authors.length > 1) ...[
+                    const SizedBox(width: 4),
+                    Text(
+                      '${authors.length}',
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 /// Small text on the chat background (names, times): a soft pill keeps it

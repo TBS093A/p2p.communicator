@@ -128,6 +128,64 @@ void main() {
     await t.pumpAndSettle();
   });
 
+  testWidgets('a long-press survives the wobble ending underneath it', (
+    t,
+  ) async {
+    await t.pumpWidget(app());
+    // Jump to the original: it starts wobbling (700 ms).
+    await t.tap(
+      find.descendant(
+        of: find.byType(MessageBubble),
+        matching: find.byType(QuotedBubble),
+      ),
+    );
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 400));
+    // Hold the original while the wobble ends (at 700 ms) and past the
+    // long-press timeout.
+    final gesture = await t.startGesture(
+      t.getCenter(find.byKey(const ValueKey('bubble-o1'))),
+    );
+    for (var i = 0; i < 8; i++) {
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    await gesture.up();
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('msg-reply')), findsOneWidget);
+  });
+
+  testWidgets('after a jump from the quote, long-pressing the original '
+      'opens its menu', (t) async {
+    await t.pumpWidget(app());
+    await t.tap(
+      find.descendant(
+        of: find.byType(MessageBubble),
+        matching: find.byType(QuotedBubble),
+      ),
+    );
+    await t.pumpAndSettle();
+    await t.longPress(find.byKey(const ValueKey('bubble-o1')));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('msg-reply')), findsOneWidget);
+  });
+
+  testWidgets('the menu opens again on a second long-press', (t) async {
+    await t.pumpWidget(app());
+    final bubble = find.byKey(const ValueKey('bubble-o1'));
+    for (var round = 1; round <= 3; round++) {
+      await t.longPress(bubble);
+      await t.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('msg-reply')),
+        findsOneWidget,
+        reason: 'round $round',
+      );
+      await t.tap(find.byKey(const ValueKey('msg-reply')));
+      await t.pumpAndSettle();
+    }
+    expect(replies.map((m) => m.id), ['o1', 'o1', 'o1']);
+  });
+
   testWidgets('time is hidden until the bubble is tapped', (t) async {
     await t.pumpWidget(app());
     final time = find.byKey(const ValueKey('time-o1'));
