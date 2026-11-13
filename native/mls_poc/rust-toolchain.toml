@@ -1,0 +1,17 @@
+# native_toolchain_rust (the Flutter build hook in packages/p2pc_core)
+# requires a pinned channel and the build targets listed here. Same channel
+# as veilid-flutter's, so the app builds both crates with one toolchain.
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]
+targets = [
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "x86_64-apple-ios",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]

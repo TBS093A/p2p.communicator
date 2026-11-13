@@ -6,8 +6,11 @@ publish = false
 description = "Proof of concept for p2p.communicator v2: OpenMLS groups with admin-sequenced commits over a mocked DHT (docs/PROTOCOL.md B13)."
 
 [lib]
-# rlib for the Rust tests, cdylib for the Flutter FFI test.
-crate-type = ["rlib", "cdylib"]
+# The Flutter build hook (packages/p2pc_core) needs the name spelled out.
+name = "mls_poc"
+# rlib for the Rust tests, cdylib for the app and the Flutter FFI test,
+# staticlib because the build hook requires it (iOS can link statically).
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 # Pinned exactly (supply-chain policy: reviewed versions only, none younger
