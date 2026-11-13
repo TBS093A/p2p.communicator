@@ -23,6 +23,80 @@ pub enum DhtError {
     NotWriter,
     #[error("value of {0} bytes exceeds the 32 KiB subkey limit")]
     TooLarge(usize),
+    /// Snapshot backend: the host has not provided a fresh record yet.
+    #[error("the host must provide more empty records first")]
+    NeedRecords,
+}
+
+/// What the protocol needs from the DHT. Implemented by [`MockDht`] for the
+/// tests and by [`crate::snapshot::SnapshotDht`] in the app, where the real
+/// Veilid DHT is driven from Dart (docs/V2_PLAN.md, option C).
+pub trait Dht {
+    /// The current time in protocol ticks (T_successor, grace period).
+    fn now(&self) -> u64;
+
+    /// The latest value of a subkey, or `None` when there is none yet (or
+    /// it has not propagated: the protocol simply waits for it).
+    fn get(&mut self, id: &RecordId, subkey: u32) -> Result<Option<Vec<u8>>, DhtError>;
+
+    fn set(
+        &mut self,
+        id: &RecordId,
+        subkey: u32,
+        value: &[u8],
+        writer_secret: &[u8],
+    ) -> Result<(), DhtError>;
+
+    /// A new, empty record with a fresh owner key: (record, owner secret).
+    /// Veilid assigns the key, so in the app the host creates records ahead
+    /// of time and this hands one out.
+    fn create(&mut self) -> Result<(RecordId, Vec<u8>), DhtError>;
+
+    /// A new one-time rendezvous record (Veilid SMPL): the owner plus one
+    /// extra writer for `slots`: (record, owner secret, slot secret).
+    fn create_rendezvous(
+        &mut self,
+        slots: std::ops::RangeInclusive<u32>,
+    ) -> Result<(RecordId, Vec<u8>, Vec<u8>), DhtError>;
+}
+
+impl Dht for MockDht {
+    fn now(&self) -> u64 {
+        self.now
+    }
+
+    fn get(&mut self, id: &RecordId, subkey: u32) -> Result<Option<Vec<u8>>, DhtError> {
+        MockDht::get(self, id, subkey)
+    }
+
+    fn set(
+        &mut self,
+        id: &RecordId,
+        subkey: u32,
+        value: &[u8],
+        writer_secret: &[u8],
+    ) -> Result<(), DhtError> {
+        MockDht::set(self, id, subkey, value, writer_secret)
+    }
+
+    fn create(&mut self) -> Result<(RecordId, Vec<u8>), DhtError> {
+        let secret = self.fresh_secret();
+        let id = MockDht::create(self, &secret);
+        Ok((id, secret))
+    }
+
+    fn create_rendezvous(
+        &mut self,
+        slots: std::ops::RangeInclusive<u32>,
+    ) -> Result<(RecordId, Vec<u8>, Vec<u8>), DhtError> {
+        let owner = self.fresh_secret();
+        let slot = self.fresh_secret();
+        let id = MockDht::create(self, &owner);
+        for k in slots {
+            self.allow_subkey_writer(&id, &owner, k, &slot)?;
+        }
+        Ok((id, owner, slot))
+    }
 }
 
 struct Version {
@@ -46,6 +120,7 @@ fn hash(secret: &[u8]) -> [u8; 32] {
 pub struct MockDht {
     records: HashMap<RecordId, Record>,
     next_id: u64,
+    next_secret: u64,
     /// Logical clock (ticks), advanced by tests.
     pub now: u64,
     /// Ticks before a write becomes visible to readers.
@@ -63,6 +138,13 @@ pub struct MockDht {
 impl MockDht {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An owner/writer secret for a new record. Unique, unpredictable
+    /// enough for tests (the mock checks writers by hash, nothing more).
+    fn fresh_secret(&mut self) -> Vec<u8> {
+        self.next_secret += 1;
+        Sha256::digest(format!("mock-secret-{}", self.next_secret)).to_vec()
     }
 
     /// New record owned by `owner_secret` (a member's fresh random key).

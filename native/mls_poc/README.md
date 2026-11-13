@@ -29,6 +29,25 @@ CI: `.github/workflows/mls-poc.yml`. It runs fmt, clippy `-D warnings`,
 the tests, the measurements (in the job summary) and the FFI test. SCA scans
 `Cargo.lock` as a gating check.
 
+## v2 phase 1a: the core without its own networking
+
+docs/V2_PLAN.md, option C. The protocol code talks to a `Dht` trait
+(`src/dht.rs`), not to the mock:
+
+* `MockDht` implements it for the tests below.
+* `SnapshotDht` (`src/snapshot.rs`) is what the app will hand the core: the
+  values the host (Dart, over Veilid) has read, records it created ahead of
+  time, and a list of writes to perform afterwards. A value not provided
+  reads as "not propagated yet", which the protocol already waits for (F1).
+* `snapshot::drive` is the reference host loop: dry runs on a restored
+  copy of the member until its reads settle, then one real run, then the
+  writes. An operation with side effects never runs twice.
+* Record creation comes first in every operation that needs one, so an
+  operation without a ready record changes nothing.
+
+`tests/snapshot.rs` drives the whole protocol (create, invite, join,
+messages, Update, restart, removal with the generation move) through it.
+
 ## Minimal scenario (§B13)
 
 | Step | Result |

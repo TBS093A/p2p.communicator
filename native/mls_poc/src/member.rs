@@ -15,7 +15,7 @@ use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::{random::OpenMlsRand, types::SignatureScheme, OpenMlsProvider};
 use serde::{Deserialize, Serialize};
 
-use crate::dht::{MockDht, RecordId};
+use crate::dht::{Dht, RecordId};
 use crate::provider::PocProvider;
 use crate::wire::{self, AppMsg, ControlHeader, Kind, OutboxHead};
 
@@ -362,7 +362,10 @@ impl Member {
     // ------------------------------------------------------ group set-up
 
     /// The admin creates the group, its control record and own outbox.
-    pub fn create_group(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    pub fn create_group(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
+        // Records first: if the host has none ready, nothing has changed.
+        let (control, owner) = dht.create()?;
+        let (outbox, secret) = self.new_outbox(dht)?;
         let group = MlsGroup::new(
             &self.provider,
             &self.signer,
@@ -373,22 +376,18 @@ impl Member {
         self.st.group_id = Some(group.group_id().as_slice().to_vec());
         self.group = Some(group);
         self.st.admin_cik = self.st.cik.clone();
-        self.st.last_admin_activity = dht.now;
-        let owner = self.random(32);
-        let control = dht.create(&owner);
+        self.st.last_admin_activity = dht.now();
         self.st.control_owner = Some(owner);
         self.st.control = Some(control);
         self.write_header(dht)?;
-        let (outbox, secret) = self.new_outbox(dht)?;
         self.st.my_outbox = Some((outbox.clone(), secret));
         let me = self.st.cik.clone();
         self.st.outboxes.insert(me, outbox);
         Ok(())
     }
 
-    fn new_outbox(&self, dht: &mut MockDht) -> Result<(RecordId, Vec<u8>), PocError> {
-        let secret = self.random(32);
-        let id = dht.create(&secret);
+    fn new_outbox(&self, dht: &mut dyn Dht) -> Result<(RecordId, Vec<u8>), PocError> {
+        let (id, secret) = dht.create()?;
         dht.set(&id, 0, &OutboxHead { count: 0 }.encode(), &secret)?;
         Ok((id, secret))
     }
@@ -399,13 +398,8 @@ impl Member {
     }
 
     /// Admin: a one-time invite with its own rendezvous record.
-    pub fn create_invite(&mut self, dht: &mut MockDht) -> Result<Invite, PocError> {
-        let owner = self.random(32);
-        let slot = self.random(32);
-        let rendezvous = dht.create(&owner);
-        for k in 1..=4 {
-            dht.allow_subkey_writer(&rendezvous, &owner, k, &slot)?;
-        }
+    pub fn create_invite(&mut self, dht: &mut dyn Dht) -> Result<Invite, PocError> {
+        let (rendezvous, owner, slot) = dht.create_rendezvous(1..=4)?;
         self.st.invites.insert(rendezvous.clone(), owner);
         Ok(Invite {
             rendezvous,
@@ -419,7 +413,7 @@ impl Member {
     /// request is sent.
     pub fn request_join(
         &mut self,
-        dht: &mut MockDht,
+        dht: &mut dyn Dht,
         invite: &Invite,
         verified_admin: &str,
     ) -> Result<usize, PocError> {
@@ -452,7 +446,7 @@ impl Member {
     }
 
     /// Admin: stages the Add for a pending join request (does not publish).
-    pub fn stage_add(&mut self, dht: &mut MockDht, rendezvous: &RecordId) -> Result<(), PocError> {
+    pub fn stage_add(&mut self, dht: &mut dyn Dht, rendezvous: &RecordId) -> Result<(), PocError> {
         self.stage_add_many(dht, std::slice::from_ref(rendezvous))
     }
 
@@ -460,7 +454,7 @@ impl Member {
     /// for many members).
     pub fn stage_add_many(
         &mut self,
-        dht: &mut MockDht,
+        dht: &mut dyn Dht,
         rendezvous: &[RecordId],
     ) -> Result<(), PocError> {
         self.require_no_pending()?;
@@ -494,7 +488,7 @@ impl Member {
 
     fn read_join_request(
         &self,
-        dht: &MockDht,
+        dht: &mut dyn Dht,
         rendezvous: &RecordId,
     ) -> Result<(KeyPackage, Joiner), PocError> {
         let owner = self
@@ -559,7 +553,7 @@ impl Member {
     }
 
     /// Admin: stages the removal of `cik` and a move to a new generation.
-    pub fn stage_remove(&mut self, dht: &mut MockDht, cik: &str) -> Result<(), PocError> {
+    pub fn stage_remove(&mut self, dht: &mut dyn Dht, cik: &str) -> Result<(), PocError> {
         self.require_no_pending()?;
         let group = self
             .group
@@ -571,8 +565,7 @@ impl Member {
             .map(|m| m.index)
             .ok_or_else(|| PocError::Rejected("not a member".into()))?;
         // 1. New control record first (B5.3 step 1).
-        let next_owner = self.random(32);
-        let next_control = dht.create(&next_owner);
+        let (next_control, next_owner) = dht.create()?;
         let gen = self.st.gen + 1;
         let header = ControlHeader {
             v: 2,
@@ -623,7 +616,7 @@ impl Member {
     }
 
     /// Admin: publishes the pending commit (all phases).
-    pub fn publish_pending(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    pub fn publish_pending(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         while self.st.pending.is_some() {
             self.publish_step(dht)?;
         }
@@ -635,7 +628,7 @@ impl Member {
 
     /// Admin: one publishing phase. A restart between phases resumes with
     /// identical writes, never a second, different commit (F9).
-    pub fn publish_step(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    pub fn publish_step(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let Some(mut p) = self.st.pending.clone() else {
             return Ok(());
         };
@@ -737,7 +730,7 @@ impl Member {
     }
 
     /// Admin: re-publishes the directory (after changing successors).
-    pub fn publish_directory_now(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    pub fn publish_directory_now(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let msg = self.directory_message()?;
         self.append_log(dht, Kind::Mls, &msg)?;
         self.write_header(dht)
@@ -745,12 +738,12 @@ impl Member {
 
     /// Test hook: the admin appends raw bytes to its log (duplicates and
     /// replays, F3/F4).
-    pub fn append_raw_for_test(&mut self, dht: &mut MockDht, msg: &[u8]) -> Result<(), PocError> {
+    pub fn append_raw_for_test(&mut self, dht: &mut dyn Dht, msg: &[u8]) -> Result<(), PocError> {
         self.append_log(dht, Kind::Mls, msg)?;
         self.write_header(dht)
     }
 
-    fn append_log(&mut self, dht: &mut MockDht, kind: Kind, msg: &[u8]) -> Result<(), PocError> {
+    fn append_log(&mut self, dht: &mut dyn Dht, kind: Kind, msg: &[u8]) -> Result<(), PocError> {
         let control = self.st.control.clone().expect("admin has control");
         let owner = self.st.control_owner.clone().expect("admin owns control");
         for c in wire::chunk(kind, msg) {
@@ -808,7 +801,7 @@ impl Member {
     /// position with a fresh encryption of the current Directory, and
     /// re-signs the header over the new chain, as an equivocating admin
     /// would.
-    pub fn rewrite_log_for_test(&mut self, dht: &mut MockDht, pos: u32) -> Result<(), PocError> {
+    pub fn rewrite_log_for_test(&mut self, dht: &mut dyn Dht, pos: u32) -> Result<(), PocError> {
         let control = self.st.control.clone().expect("admin has control");
         let owner = self.st.control_owner.clone().expect("admin owns control");
         let msg = self.directory_message()?;
@@ -827,7 +820,7 @@ impl Member {
         self.write_header(dht)
     }
 
-    fn write_header(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    fn write_header(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let control = self.st.control.clone().expect("admin has control");
         let owner = self.st.control_owner.clone().expect("admin owns control");
         let header = ControlHeader {
@@ -842,7 +835,7 @@ impl Member {
     }
 
     /// Joiner: picks up the Welcome once the admin answered.
-    pub fn complete_join(&mut self, dht: &mut MockDht, invite: &Invite) -> Result<bool, PocError> {
+    pub fn complete_join(&mut self, dht: &mut dyn Dht, invite: &Invite) -> Result<bool, PocError> {
         let Some(first) = dht.get(&invite.rendezvous, 10)? else {
             return Ok(false);
         };
@@ -890,7 +883,7 @@ impl Member {
         // earlier epochs are skipped as old (B5.2 r2).
         self.st.log_count = 0;
         self.st.log_hash = String::new();
-        self.st.last_admin_activity = dht.now;
+        self.st.last_admin_activity = dht.now();
         let me = self.st.cik.clone();
         let outbox = self
             .st
@@ -916,7 +909,7 @@ impl Member {
             .map_err(mls)
     }
 
-    fn write_outbox(&mut self, dht: &mut MockDht, kind: Kind, msg: &[u8]) -> Result<(), PocError> {
+    fn write_outbox(&mut self, dht: &mut dyn Dht, kind: Kind, msg: &[u8]) -> Result<(), PocError> {
         let (outbox, secret) = self
             .st
             .my_outbox
@@ -940,7 +933,7 @@ impl Member {
     }
 
     /// Sends a text message; returns the MLS ciphertext size.
-    pub fn send_text(&mut self, dht: &mut MockDht, text: &str) -> Result<usize, PocError> {
+    pub fn send_text(&mut self, dht: &mut dyn Dht, text: &str) -> Result<usize, PocError> {
         self.st.my_seq += 1;
         let msg = AppMsg::Text {
             id: wire::hex(&self.random(16)),
@@ -956,7 +949,7 @@ impl Member {
     }
 
     /// Sends an Update proposal (fresh leaf key) for the admin to commit.
-    pub fn propose_update(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    pub fn propose_update(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let group = self
             .group
             .as_mut()
@@ -969,7 +962,7 @@ impl Member {
     }
 
     /// Re-sends own outbox values the network lost (F16).
-    fn repair_own_outbox(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    fn repair_own_outbox(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let Some((outbox, secret)) = self.st.my_outbox.clone() else {
             return Ok(());
         };
@@ -990,7 +983,7 @@ impl Member {
 
     /// One round: own outbox repair, others' outboxes (proposals, texts),
     /// then the control log (commits), then the move state machine.
-    pub fn sync(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    pub fn sync(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         self.sync_with_move_steps(dht, 4)
     }
 
@@ -998,7 +991,7 @@ impl Member {
     /// generation move (tests restart the member between steps, F8).
     pub fn sync_with_move_steps(
         &mut self,
-        dht: &mut MockDht,
+        dht: &mut dyn Dht,
         move_steps: usize,
     ) -> Result<(), PocError> {
         if self.group.is_none() {
@@ -1026,7 +1019,7 @@ impl Member {
         self.st.removed
     }
 
-    fn sync_control(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    fn sync_control(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let Some(control) = self.st.control.clone() else {
             return Ok(());
         };
@@ -1122,7 +1115,7 @@ impl Member {
     }
 
     /// Returns false when the entry has to be retried later.
-    fn handle_control_entry(&mut self, dht: &mut MockDht, body: &[u8]) -> Result<bool, PocError> {
+    fn handle_control_entry(&mut self, dht: &mut dyn Dht, body: &[u8]) -> Result<bool, PocError> {
         let Ok(msg) = MlsMessageIn::tls_deserialize_exact(body) else {
             self.st.events.push("malformed log entry ignored".into());
             return Ok(true);
@@ -1183,7 +1176,7 @@ impl Member {
                     .merge_staged_commit(&self.provider, *staged)
                     .map_err(mls)?;
                 self.st.epoch = group.epoch().as_u64();
-                self.st.last_admin_activity = dht.now;
+                self.st.last_admin_activity = dht.now();
                 if removed_me {
                     self.st.removed = true;
                     self.st.events.push("removed from the group".into());
@@ -1196,7 +1189,7 @@ impl Member {
                         .push("log message not from the admin ignored".into());
                     return Ok(true);
                 }
-                self.st.last_admin_activity = dht.now;
+                self.st.last_admin_activity = dht.now();
                 match AppMsg::decode(&app.into_bytes()) {
                     Ok(AppMsg::Directory {
                         gen,
@@ -1248,7 +1241,7 @@ impl Member {
     }
 
     /// Reads every followed outbox (and old ones during a move).
-    fn sync_outboxes(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    fn sync_outboxes(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let mut targets: Vec<(String, RecordId)> = self
             .st
             .outboxes
@@ -1270,7 +1263,7 @@ impl Member {
 
     fn read_outbox(
         &mut self,
-        dht: &mut MockDht,
+        dht: &mut dyn Dht,
         owner: &str,
         outbox: &RecordId,
     ) -> Result<(), PocError> {
@@ -1348,7 +1341,7 @@ impl Member {
     /// to an epoch whose commit we have not seen yet, F1).
     fn handle_outbox_message(
         &mut self,
-        dht: &mut MockDht,
+        dht: &mut dyn Dht,
         owner: &str,
         body: &[u8],
     ) -> Result<bool, PocError> {
@@ -1400,7 +1393,7 @@ impl Member {
             return Ok(true);
         }
         if sender_cik == self.st.admin_cik {
-            self.st.last_admin_activity = dht.now;
+            self.st.last_admin_activity = dht.now();
         }
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app) => {
@@ -1458,14 +1451,14 @@ impl Member {
                 // (B5.4), and only after the admin was silent long enough
                 // and no admin commit exists for this epoch.
                 let first_successor = self.st.successors.first().cloned().unwrap_or_default();
-                let silent = dht.now.saturating_sub(self.st.last_admin_activity);
+                let silent = dht.now().saturating_sub(self.st.last_admin_activity);
                 if sender_cik == first_successor && silent >= T_SUCCESSOR {
                     group
                         .merge_staged_commit(&self.provider, *staged)
                         .map_err(mls)?;
                     self.st.epoch = group.epoch().as_u64();
                     self.st.admin_cik = sender_cik;
-                    self.st.last_admin_activity = dht.now;
+                    self.st.last_admin_activity = dht.now();
                     self.st
                         .events
                         .push("takeover by the first successor accepted".into());
@@ -1481,7 +1474,7 @@ impl Member {
     // -------------------------------------------- generation move (B5.3)
 
     /// One step of the move; every step is idempotent and persisted.
-    pub fn step_move(&mut self, dht: &mut MockDht) -> Result<(), PocError> {
+    pub fn step_move(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         match self.st.move_state.clone() {
             MoveState::Stable => {}
             MoveState::Moving { gen, control } => {
@@ -1530,7 +1523,7 @@ impl Member {
                 self.st.move_state = MoveState::Announced {
                     gen,
                     control,
-                    since: dht.now,
+                    since: dht.now(),
                 };
             }
             MoveState::Announced { gen, since, .. } => {
@@ -1540,7 +1533,7 @@ impl Member {
                         self.st.outboxes.insert(cik, outbox);
                     }
                 }
-                let expired = dht.now.saturating_sub(since) >= GRACE;
+                let expired = dht.now().saturating_sub(since) >= GRACE;
                 if self.st.old_outboxes.is_empty() || expired {
                     if expired && !self.st.old_outboxes.is_empty() {
                         self.st.events.push(format!(
@@ -1560,14 +1553,18 @@ impl Member {
 
     /// First successor: after `T_SUCCESSOR` without the admin, commit
     /// (empty, own leaf update) in its outbox and start a new generation.
-    pub fn try_takeover(&mut self, dht: &mut MockDht) -> Result<bool, PocError> {
+    pub fn try_takeover(&mut self, dht: &mut dyn Dht) -> Result<bool, PocError> {
         let first = self.st.successors.first().cloned().unwrap_or_default();
-        if first != self.st.cik || dht.now.saturating_sub(self.st.last_admin_activity) < T_SUCCESSOR
+        if first != self.st.cik
+            || dht.now().saturating_sub(self.st.last_admin_activity) < T_SUCCESSOR
         {
             return Ok(false);
         }
         // Only if the admin has not committed this epoch meanwhile.
         self.sync_control(dht)?;
+        // The new generation's record first: if the host has none ready,
+        // nothing has changed yet.
+        let (control, owner) = dht.create()?;
         let group = self.group.as_mut().expect("member has a group");
         let bundle = group
             .self_update(&self.provider, &self.signer, LeafNodeParameters::default())
@@ -1578,8 +1575,6 @@ impl Member {
         group.merge_pending_commit(&self.provider).map_err(mls)?;
         self.st.epoch = group.epoch().as_u64();
         // New generation owned by the new admin.
-        let owner = self.random(32);
-        let control = dht.create(&owner);
         let gen = self.st.gen + 1;
         let takeover = self.encrypt(&AppMsg::Takeover {
             gen,
