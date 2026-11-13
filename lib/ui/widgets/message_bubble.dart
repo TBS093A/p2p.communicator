@@ -198,10 +198,12 @@ class _MessageBubbleState extends State<MessageBubble>
     // A short wobble after a jump from a quote.
     final wobbling = AnimatedBuilder(
       animation: _wobble,
+      // Always the same two transforms (identity when still): a wrapper
+      // that appears or disappears would rebuild the gesture detector
+      // inside and drop a long-press in progress.
       builder: (context, child) {
         final v = _wobble.value;
-        if (v == 0 || v == 1) return child!;
-        final fade = 1 - v;
+        final fade = v == 0 ? 0.0 : 1 - v;
         return Transform.rotate(
           angle: math.sin(v * math.pi * 6) * 0.045 * fade,
           child: Transform.scale(

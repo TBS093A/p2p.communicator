@@ -533,13 +533,13 @@ void main() {
     // Let the highlight from the quote jump end first.
     await idle(t, const Duration(seconds: 3));
     Future<String> react(String? code) async {
-      final menu = find.byKey(const ValueKey('msg-reactions'));
-      for (var attempt = 1; attempt <= 3; attempt++) {
-        await t.longPress(original);
-        await settle(t);
-        if (menu.evaluate().isNotEmpty) break;
-      }
-      await pumpUntil(t, menu, timeout: const Duration(seconds: 10));
+      await t.longPress(original);
+      await settle(t);
+      await pumpUntil(
+        t,
+        find.byKey(const ValueKey('msg-reactions')),
+        timeout: const Duration(seconds: 10),
+      );
       final picked =
           code ??
           t
