@@ -384,7 +384,9 @@ class _RoomTile extends StatelessWidget {
       MsgType.image => '📷 Zdjęcie',
       MsgType.video => '🎥 Wideo',
       MsgType.voice => '🎤 Głosówka',
-      MsgType.dmInvite => '',
+      // Hidden types never reach the message list (reactions are shown
+      // under their message), so never the preview either.
+      MsgType.dmInvite || MsgType.reaction => '',
     };
     final who = m.author == s.myOutbox
         ? 'Ty'

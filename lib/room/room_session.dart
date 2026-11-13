@@ -19,6 +19,7 @@ import 'dht.dart';
 import 'invite.dart';
 import 'message.dart';
 import 'outbox_cursor.dart';
+import 'reactions.dart';
 import 'room_protocol.dart';
 import 'room_style.dart';
 import 'sync_gate.dart';
@@ -312,6 +313,15 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       t.cancel();
     }
     _retryTimers.clear();
+    // Reactions still waiting for their debounce go out now (the send
+    // queue below gets a bounded moment to finish).
+    for (final t in _reactTimers.values) {
+      t.cancel();
+    }
+    _reactTimers.clear();
+    for (final target in _pendingReactions.keys.toList()) {
+      unawaited(_sendReaction(target));
+    }
     _typingTimer?.cancel();
     _incomingTimer?.cancel();
     await _sub?.cancel();
@@ -586,6 +596,13 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         continue;
       }
       if (seq > i) continue; // slot already reused by a newer message
+      if (msg.type == MsgType.reaction) {
+        if (_ids.add(msg.id) && reactions.apply(msg)) {
+          notifyListeners();
+          _scheduleSave();
+        }
+        continue;
+      }
       if (msg.type.hidden) {
         if (_ids.add(msg.id)) app?.onHiddenMessage(this, msg);
         continue;
@@ -853,6 +870,88 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     await job;
   }
 
+  // ------------------------------------------------------------ reactions
+
+  /// Reactions with the room's custom emoji, from everyone's outboxes.
+  final reactions = Reactions();
+
+  /// Our reaction choices not sent yet (target id -> code, null = none),
+  /// shown at once and sent after [reactDebounce].
+  final _pendingReactions = <String, String?>{};
+  final _reactTimers = <String, Timer>{};
+
+  /// Every reaction takes a slot in our 200-message outbox ring, so changes
+  /// made within this time go out as one.
+  static const reactDebounce = Duration(seconds: 3);
+
+  /// Our current reaction to [target] (including one not sent yet).
+  String? myReaction(String target) => _pendingReactions.containsKey(target)
+      ? _pendingReactions[target]
+      : reactions.mine(target, myOutbox);
+
+  /// Reactions to [target] as shown: only emoji the room still has, ours
+  /// already updated with a choice that is not sent yet.
+  List<(String code, List<String> authors)> reactionsOf(String target) {
+    bool known(String c) => meta.emoji.containsKey(c);
+    final list = reactions.of(target, show: known);
+    if (!_pendingReactions.containsKey(target)) return list;
+    final pending = _pendingReactions[target];
+    final out = <String, List<String>>{
+      for (final (c, a) in list) c: [...a.where((x) => x != myOutbox)],
+    };
+    if (pending != null && known(pending)) {
+      out.putIfAbsent(pending, () => []).add(myOutbox);
+    }
+    return [
+      for (final e in out.entries)
+        if (e.value.isNotEmpty) (e.key, e.value),
+    ]..sort((a, b) => b.$2.length.compareTo(a.$2.length));
+  }
+
+  /// Reacts to [target] with [code]; choosing our current reaction again
+  /// takes it back (Messenger style). Shown at once, sent after a short
+  /// pause so quick changes cost one outbox slot.
+  void react(ChatMessage target, String code) {
+    if (target.type.hidden || _closed) return;
+    final next = myReaction(target.id) == code ? null : code;
+    _pendingReactions[target.id] = next;
+    notifyListeners();
+    _reactTimers[target.id]?.cancel();
+    _reactTimers[target.id] = Timer(reactDebounce, () {
+      _reactTimers.remove(target.id);
+      unawaited(_sendReaction(target.id));
+    });
+  }
+
+  Future<void> _sendReaction(String target) async {
+    if (!_pendingReactions.containsKey(target)) return;
+    final code = _pendingReactions[target];
+    // Nothing to send if it ends where it started.
+    if (code == reactions.mine(target, myOutbox)) {
+      _pendingReactions.remove(target);
+      notifyListeners();
+      return;
+    }
+    final msg = ChatMessage(
+      id: _uuid.v4(),
+      author: myOutbox,
+      ts: DateTime.now().millisecondsSinceEpoch,
+      type: MsgType.reaction,
+      extra: {'to': target, 'e': code},
+      status: MsgStatus.sending,
+    );
+    _ids.add(msg.id);
+    final job = _sendChain.then((_) async {
+      await _append(msg); // assigns msg.seq
+      reactions.apply(msg);
+      if (_pendingReactions[target] == code) _pendingReactions.remove(target);
+      if (!_disposed) notifyListeners();
+      _scheduleSave();
+    });
+    _sendChain = job.catchError((Object e) => debugPrint('reaction: $e'));
+    await _sendChain;
+  }
+
   /// Appends a message that is not shown in the conversation (e.g. a sealed
   /// DM invite). Goes through the same ordered send queue.
   Future<void> sendHidden(MsgType type, Map<String, dynamic> extra) {
@@ -1087,6 +1186,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         return 'audio/mp4';
       case MsgType.text:
       case MsgType.dmInvite:
+      case MsgType.reaction:
         return 'text/plain';
     }
   }
@@ -1119,6 +1219,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       'myCount': _myCount,
       if (_shareTyping) 'shareTyping': true,
       'messages': [for (final m in keep) m.toCache()],
+      'reactions': (reactions..prune({for (final m in keep) m.id})).toJson(),
     });
     await PinVault.instance.writeData(room, utf8.encode(json));
   }
@@ -1177,6 +1278,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       for (final m in (j['messages'] as List).cast<Map<String, dynamic>>()) {
         _insert(ChatMessage.fromCache(m));
       }
+      reactions.loadJson(j['reactions']);
     } on Object catch (e) {
       debugPrint('cache unreadable, starting empty: $e');
     }

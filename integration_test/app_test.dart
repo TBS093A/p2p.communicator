@@ -513,6 +513,56 @@ void main() {
     );
     await settle(t);
 
+    // Reactions with the room's own emoji: long-press → pick one → a chip
+    // under the message; pick another → the chip changes; tap the chip →
+    // the reaction is taken back.
+    Finder chip(String code) => find.byWidgetPredicate((w) {
+      final k = w.key;
+      return k is ValueKey<String> &&
+          k.value.startsWith('reaction-') &&
+          k.value.endsWith('-$code');
+    });
+    Future<String> react(String? code) async {
+      // The original's own bubble (the reply quotes the same text).
+      await t.longPress(
+        find.descendant(
+          of: find.byWidgetPredicate(
+            (w) => w is MessageBubble && w.message.text == question,
+          ),
+          matching: find.text(question),
+        ),
+      );
+      await settle(t);
+      await pumpUntil(t, find.byKey(const ValueKey('msg-reactions')));
+      final picked =
+          code ??
+          t
+              .widgetList(
+                find.byWidgetPredicate(
+                  (w) =>
+                      w.key is ValueKey<String> &&
+                      (w.key! as ValueKey<String>).value.startsWith('react-') &&
+                      (w.key! as ValueKey<String>).value != 'react-party',
+                ),
+              )
+              .map((w) => (w.key! as ValueKey<String>).value.substring(6))
+              .first;
+      await tapKey(t, 'react-$picked');
+      await settle(t);
+      return picked;
+    }
+
+    await react('party');
+    await pumpUntil(t, chip('party'));
+    final other = await react(null);
+    await pumpUntil(t, chip(other));
+    expect(chip('party'), findsNothing, reason: 'one reaction per person');
+    await t.tap(chip(other));
+    await settle(t);
+    expect(chip(other), findsNothing);
+    // Let the debounced send go out (one outbox slot at most).
+    await idle(t, const Duration(seconds: 4));
+
     // "Is typing" is opt-in per conversation: off until switched on here.
     // (A checked menu item ignores pointers on its text: tap the item.)
     Future<void> toggleTyping() async {
