@@ -187,14 +187,34 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     return p.copyWith(name: nick, avatar: avatar);
   }
 
-  /// A room picture from an outbox head; null when absent or malformed.
-  static MediaRef? _parseAvatar(Object? raw) {
+  static MediaRef? _parseAvatar(Object? raw) => parseRoomAvatar(raw);
+
+  /// A room picture from another member's outbox head. It is untrusted and
+  /// makes us download it, so only a plausible avatar is accepted: an image
+  /// type, at most the avatar size limit, chunked the way our blobs are,
+  /// with as many records as that size needs. Anything else (or malformed)
+  /// is null: the member's global picture is shown instead.
+  @visibleForTesting
+  static MediaRef? parseRoomAvatar(Object? raw) {
     if (raw is! Map) return null;
+    final MediaRef ref;
     try {
-      return MediaRef.fromJson(raw.cast<String, dynamic>());
+      ref = MediaRef.fromJson(raw.cast<String, dynamic>());
     } on Object {
       return null;
     }
+    const mimes = {'image/gif', 'image/webp', 'image/png', 'image/jpeg'};
+    if (!mimes.contains(ref.mime)) return null;
+    if (ref.size <= 0 || ref.size > ImageUse.avatar.maxAnimated) return null;
+    if (ref.chunkSize != BlobStore.chunkSize ||
+        ref.chunksPerRecord != BlobStore.chunksPerRecord) {
+      return null;
+    }
+    final records =
+        (ref.chunkCount + ref.chunksPerRecord - 1) ~/ ref.chunksPerRecord;
+    if (ref.records.length != records) return null;
+    if (ref.hash.isEmpty || ref.records.any((r) => r.isEmpty)) return null;
+    return ref;
   }
 
   String nameOf(String author) => profileOf(author).name;
