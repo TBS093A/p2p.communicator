@@ -169,6 +169,23 @@ void main() {
     expect(find.byKey(const ValueKey('msg-reply')), findsOneWidget);
   });
 
+  testWidgets('the menu opens again on a second long-press', (t) async {
+    await t.pumpWidget(app());
+    final bubble = find.byKey(const ValueKey('bubble-o1'));
+    for (var round = 1; round <= 3; round++) {
+      await t.longPress(bubble);
+      await t.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('msg-reply')),
+        findsOneWidget,
+        reason: 'round $round',
+      );
+      await t.tap(find.byKey(const ValueKey('msg-reply')));
+      await t.pumpAndSettle();
+    }
+    expect(replies.map((m) => m.id), ['o1', 'o1', 'o1']);
+  });
+
   testWidgets('time is hidden until the bubble is tapped', (t) async {
     await t.pumpWidget(app());
     final time = find.byKey(const ValueKey('time-o1'));
