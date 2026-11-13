@@ -10,4 +10,5 @@ pub mod ffi;
 pub mod member;
 pub mod provider;
 pub mod scenario;
+pub mod snapshot;
 pub mod wire;
