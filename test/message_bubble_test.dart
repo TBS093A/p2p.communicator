@@ -154,6 +154,21 @@ void main() {
     expect(find.byKey(const ValueKey('msg-reply')), findsOneWidget);
   });
 
+  testWidgets('after a jump from the quote, long-pressing the original '
+      'opens its menu', (t) async {
+    await t.pumpWidget(app());
+    await t.tap(
+      find.descendant(
+        of: find.byType(MessageBubble),
+        matching: find.byType(QuotedBubble),
+      ),
+    );
+    await t.pumpAndSettle();
+    await t.longPress(find.byKey(const ValueKey('bubble-o1')));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('msg-reply')), findsOneWidget);
+  });
+
   testWidgets('time is hidden until the bubble is tapped', (t) async {
     await t.pumpWidget(app());
     final time = find.byKey(const ValueKey('time-o1'));

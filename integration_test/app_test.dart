@@ -9,6 +9,7 @@
 import 'dart:io';
 
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
+import 'package:flutter/gestures.dart' show HitTestResult;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -522,18 +523,31 @@ void main() {
           k.value.startsWith('reaction-') &&
           k.value.endsWith('-$code');
     });
-    // The original's own bubble, by its key (the reply quotes the same
-    // text).
-    final originalId = t
-        .widgetList<MessageBubble>(find.byType(MessageBubble))
-        .firstWhere((b) => b.message.text == question)
-        .message
-        .id;
-    final original = find.byKey(ValueKey('bubble-$originalId'));
     // Let the highlight from the quote jump end first.
     await idle(t, const Duration(seconds: 3));
+    String bubbleId(String text) => t
+        .widgetList<MessageBubble>(find.byType(MessageBubble))
+        .firstWhere((b) => b.message.text == text)
+        .message
+        .id;
+    // Diagnostic only: what a finger on the original would hit (a
+    // long-press there did not open the menu on the emulator, while the
+    // same steps pass in a widget test).
+    {
+      final original = find.byKey(ValueKey('bubble-${bubbleId(question)}'));
+      final at = t.getCenter(original);
+      final hit = HitTestResult();
+      WidgetsBinding.instance.hitTestInView(hit, at, t.view.viewId);
+      debugPrint(
+        'DIAG original at $at hits: '
+        '${hit.path.take(14).map((e) => e.target.runtimeType).join(' > ')}',
+      );
+    }
+    // React to the newest message (the reply), at the bottom like the
+    // message the reply step long-pressed.
+    final target = find.byKey(ValueKey('bubble-${bubbleId(answer)}'));
     Future<String> react(String? code) async {
-      await t.longPress(original);
+      await t.longPress(target);
       await settle(t);
       await pumpUntil(
         t,
