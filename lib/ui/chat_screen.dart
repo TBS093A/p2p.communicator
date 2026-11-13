@@ -20,6 +20,7 @@ import 'my_profile_screen.dart';
 import 'profile_screen.dart';
 import 'room_settings_screen.dart';
 import 'widgets/avatar.dart';
+import 'widgets/cutout_icon.dart';
 import 'widgets/emoji_text.dart';
 import 'widgets/media_image.dart';
 import 'widgets/message_bubble.dart';
@@ -697,6 +698,22 @@ class _ChatScreenState extends State<ChatScreen> {
     return bg == null ? Theme.of(context).colorScheme.primary : Color(bg);
   }
 
+  /// The buttons' color: the room color, but over a plain background of
+  /// that very color (no picture) the same hue lightened or darkened, or the
+  /// buttons would vanish into it.
+  Color _buttonColor(BuildContext context) {
+    final accent = _barAccent(context);
+    final meta = _session.meta;
+    if (meta.background == null || meta.backgroundImage != null) return accent;
+    final hsl = HSLColor.fromColor(accent);
+    final light = accent.computeLuminance() > 0.45;
+    return hsl
+        .withLightness(
+          (light ? hsl.lightness - 0.35 : hsl.lightness + 0.35).clamp(0.0, 1.0),
+        )
+        .toColor();
+  }
+
   Widget _composerRow(BuildContext context, bool recording, bool hasText) {
     // Exactly the top bar's colors: the room color at the bars'
     // transparency (the room's slider), with the top bar's text and icon
@@ -704,10 +721,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final accent = _barAccent(context);
     final fill = accent.withAlpha(_session.meta.barAlpha);
     final onFill = onColor(accent);
-    final iconStyle = IconButton.styleFrom(
-      foregroundColor: onFill,
-      backgroundColor: fill,
-    );
+    // Plain icons in the room color, no circle behind them.
+    final buttons = _buttonColor(context);
+    final iconStyle = IconButton.styleFrom(foregroundColor: buttons);
     final border = OutlineInputBorder(
       borderRadius: const BorderRadius.all(Radius.circular(24)),
       borderSide: BorderSide(color: accent),
@@ -772,15 +788,18 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         ],
-        IconButton.filled(
+        // A circle in the room color with the icon cut out of it: the chat
+        // background shows through the arrow or the microphone.
+        IconButton(
+          key: const ValueKey('composer-send'),
           tooltip: hasText
               ? 'Wyślij'
               : (recording ? 'Wyślij głosówkę' : 'Nagraj głosówkę'),
-          style: IconButton.styleFrom(
-            backgroundColor: accent,
-            foregroundColor: onColor(accent),
+          padding: const EdgeInsets.all(2),
+          icon: CutoutIcon(
+            icon: hasText || recording ? Icons.send : Icons.mic,
+            color: buttons,
           ),
-          icon: Icon(hasText || recording ? Icons.send : Icons.mic),
           onPressed: hasText ? _sendText : _toggleRecording,
         ),
       ],
