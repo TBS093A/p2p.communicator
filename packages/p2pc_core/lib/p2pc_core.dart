@@ -1,6 +1,6 @@
-// The v2 protocol core (Rust) as seen from Dart. Phase 1b of
-// docs/V2_PLAN.md: the library is built into the app and reachable; the
-// protocol API (sans-IO rounds) follows in the next phase.
+// The v2 protocol core (Rust) as seen from Dart (docs/V2_PLAN.md):
+// CoreSession is one conversation member, CoreHost drives it over a DHT in
+// rounds; coreSelfTest checks the library works on this device.
 //
 // @DefaultAsset names the asset hook/build.dart declares as `_assetName`.
 @DefaultAsset('package:p2pc_core/p2pc_core.dart')
@@ -8,6 +8,9 @@ library;
 
 import 'dart:convert';
 import 'dart:ffi';
+
+export 'src/host.dart';
+export 'src/session.dart';
 
 @Native<Pointer<Uint8> Function()>(symbol: 'p2pc_mls_poc_run')
 external Pointer<Uint8> _run();
