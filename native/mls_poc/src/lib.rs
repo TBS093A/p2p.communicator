@@ -4,6 +4,7 @@
 //! admin through a control record, over an in-memory mock of the Veilid DHT
 //! with injectable failures. Nothing here is used by the app yet.
 
+pub mod api;
 pub mod bench;
 pub mod dht;
 pub mod ffi;
