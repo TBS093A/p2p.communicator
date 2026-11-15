@@ -37,7 +37,7 @@ dependencies:
   # scrolling (Telegram style). Pinned exactly to 0.8.0 (May 2025, reviewed:
   # pure Dart rendering, no I/O): 0.9-0.11 were all published within hours
   # on 2026-11-03 after 18 months of silence, so they wait for review.
-  flutter_sticky_header: 0.8.0
+  flutter_sticky_header: 0.11.0
 
   # Moving to a new phone: send the sealed file (Quick Share, Bluetooth,
   # cable…) and pick it on the other side.
