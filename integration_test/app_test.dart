@@ -708,6 +708,31 @@ void main() {
     await pumpUntil(t, find.text('Kasia z v2'));
     await settle(t);
     await shot(t, '11_v2_admin');
+
+    // Membership (phase 3): the admin makes Kasia its successor, then
+    // removes her; her copy of the group says so.
+    await openMenu(t, 'Osoby');
+    await pumpUntil(t, find.byKey(const ValueKey('v2-member-Kasia z v2')));
+    await settle(t);
+    await tapKey(t, 'v2-member-menu-Kasia z v2');
+    await settle(t);
+    await t.tap(find.text('Ustaw jako następcę'));
+    await pumpUntil(t, find.textContaining('następca admina'));
+    await shot(t, '12_v2_members');
+    await tapKey(t, 'v2-member-menu-Kasia z v2');
+    await settle(t);
+    await t.tap(find.text('Usuń z grupy'));
+    await tapKey(t, 'v2-remove-confirm');
+    await pumpUntil(t, find.text('Osoby (1)'));
+    await t.pageBack();
+    await settle(t);
+    await pumpUntil(t, find.text('osób: 1'));
+    await t.pageBack();
+    await settle(t);
+    // Kasia's group is the second "Test v2" on the list.
+    await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).last);
+    await pumpUntil(t, find.text('Usunięto cię z tej grupy.'));
+    await settle(t);
     t.state<NavigatorState>(find.byType(Navigator).first)
       ..pop()
       ..pop();

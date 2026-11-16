@@ -25,9 +25,13 @@ class TestRoom extends V2RoomSession {
   Future<void> close() async {}
 }
 
+/// Test time for every phone (ms), moved forward by the tests.
+var testClock = DateTime(2026, 11, 16).millisecondsSinceEpoch;
+
 V2Groups phone(MemoryDht dht) => V2Groups(
   dht,
   save: () async {},
+  clock: () => testClock,
   openRoom: (groups, group, secrets) async => TestRoom(
     groups,
     group,
@@ -169,5 +173,63 @@ void main() {
     expect(ga.openInvites, hasLength(1));
     await alice.close();
     await bob2.close();
+  });
+
+  test('membership: key updates, successor, removal, takeover', () async {
+    final dht = MemoryDht();
+    final alice = phone(dht);
+    final bob = phone(dht);
+    final carol = phone(dht);
+
+    Future<V2Group> joinAs(V2Groups p, V2Group admin, String me) async {
+      final code = await alice.createInvite(admin);
+      final g = await p.join(V2Invite.tryParse(code)!, 'Grupa', me);
+      await rounds([(p, g), (alice, admin)], times: 4);
+      expect(g.joining, isFalse);
+      return g;
+    }
+
+    final ga = await alice.create('Rada', 'Ala');
+    final gb = await joinAs(bob, ga, 'Bob');
+    final gc = await joinAs(carol, ga, 'Karola');
+    final all = [(alice, ga), (bob, gb), (carol, gc)];
+    await rounds(all, times: 3);
+    expect(alice.roomOf(ga).memberOutboxes, hasLength(3));
+
+    // A week later every member's keys are due: the members propose
+    // Updates, the admin commits them (and its own with an empty commit).
+    final epoch = alice.info(ga)['epoch'] as int;
+    testClock += const Duration(days: 8).inMilliseconds;
+    await rounds(all, times: 3);
+    expect(alice.info(ga)['epoch'] as int, greaterThan(epoch));
+    expect(alice.info(ga)['pending_proposals'], 0);
+    expect(bob.info(gb)['epoch'], alice.info(ga)['epoch']);
+    expect(carol.info(gc)['epoch'], alice.info(ga)['epoch']);
+    expect(gb.keysAt, testClock, reason: 'Bob refreshed his keys this week');
+
+    // Bob becomes the successor; everyone learns it.
+    final bobCik = bob.myCik(gb);
+    await alice.setSuccessor(ga, bobCik);
+    await rounds(all, times: 2);
+    expect(carol.successors(gc), [bobCik]);
+    expect(bob.successors(gb), [bobCik]);
+
+    // Karola is removed: she is told, cannot read on, the rest moves on.
+    await alice.removeMember(ga, carol.myCik(gc));
+    await rounds(all, times: 4);
+    expect(carol.info(gc)['removed'], isTrue);
+    expect(alice.roomOf(ga).memberOutboxes, hasLength(2));
+    await alice.roomOf(ga).sendText('już bez Karoli');
+    await rounds(all, times: 2);
+    expect(texts(bob.roomOf(gb)), contains('już bez Karoli'));
+    expect(texts(carol.roomOf(gc)), isNot(contains('już bez Karoli')));
+
+    // Alice's phone is gone: after 14 days of silence Bob takes over.
+    await alice.close();
+    dht.now += 15 * 24;
+    await rounds([(bob, gb)], times: 2);
+    expect(bob.isAdmin(gb), isTrue);
+    await bob.close();
+    await carol.close();
   });
 }

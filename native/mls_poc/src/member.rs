@@ -434,6 +434,14 @@ impl Member {
             .unwrap_or_default()
     }
 
+    /// Proposals (e.g. members' Updates) read and not committed yet.
+    pub fn pending_proposals(&self) -> usize {
+        self.group
+            .as_ref()
+            .map(|g| g.pending_proposals().count())
+            .unwrap_or(0)
+    }
+
     pub fn epoch_authenticator(&self) -> Vec<u8> {
         self.group
             .as_ref()
@@ -861,7 +869,10 @@ impl Member {
                             control: next_control.clone(),
                         })?]
                     }
-                    PendingKind::Proposals => vec![],
+                    // The directory again: this is how a changed successor
+                    // list reaches the members (an empty commit is enough),
+                    // through the same resumable publication (F9).
+                    PendingKind::Proposals => vec![self.directory_message()?],
                     // §B3.1: the same Move, in the current epoch (nobody is
                     // removed, so everyone may read where the group went).
                     PendingKind::Rotate { next_control, .. } => {

@@ -245,6 +245,8 @@ impl Session {
             "members": self.member.members(),
             "successors": st.successors,
             "has_pending": st.pending.is_some(),
+            "pending_proposals": self.member.pending_proposals(),
+            "move_stable": st.move_state == crate::member::MoveState::Stable,
             "removed": st.removed,
             "fork_suspected": st.fork_suspected,
             "history_diverged": st.history_diverged,

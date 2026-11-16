@@ -423,3 +423,159 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
     );
   }
 }
+
+/// Members of a v2 group as MLS has them, with the admin and its successor
+/// marked. The admin can remove someone or choose who takes over if its
+/// phone is lost.
+class V2MembersScreen extends StatefulWidget {
+  const V2MembersScreen({super.key, required this.groups, required this.group});
+
+  final V2Groups groups;
+  final V2Group group;
+
+  @override
+  State<V2MembersScreen> createState() => _V2MembersScreenState();
+}
+
+class _V2MembersScreenState extends State<V2MembersScreen> {
+  bool _busy = false;
+
+  V2Groups get groups => widget.groups;
+  V2Group get g => widget.group;
+
+  Future<void> _run(Future<void> Function() job, String done) async {
+    setState(() => _busy = true);
+    try {
+      await job();
+      if (mounted) _toast(context, done);
+    } on Object catch (e) {
+      if (mounted) _toast(context, 'Nie udało się: ${_plain(e)}');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _remove(String cik, String name) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Usunąć $name z grupy?'),
+        content: const Text(
+          'Grupa przeniesie się do nowych rekordów, których ta osoba nie '
+          'pozna, a nowe wiadomości będą dla niej nieczytelne. Pozostali '
+          'członkowie przejdą tam przy najbliższej synchronizacji.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Anuluj'),
+          ),
+          FilledButton(
+            key: const ValueKey('v2-remove-confirm'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Usuń'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true) return;
+    await _run(() => groups.removeMember(g, cik), 'Usunięto $name');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([groups, groups.roomOf(g)]),
+      builder: (context, _) {
+        final room = groups.roomOf(g);
+        final info = groups.info(g);
+        final me = groups.myCik(g);
+        final admin = info['admin'] as String? ?? '';
+        final iAmAdmin = groups.isAdmin(g);
+        final successor = groups.successors(g).firstOrNull;
+        final ciks = room.memberOutboxes.toList()
+          ..sort((a, b) {
+            if (a == me) return -1;
+            if (b == me) return 1;
+            return room
+                .nameOf(a)
+                .toLowerCase()
+                .compareTo(room.nameOf(b).toLowerCase());
+          });
+        return Scaffold(
+          appBar: AppBar(title: Text('Osoby (${ciks.length})')),
+          body: AbsorbPointer(
+            absorbing: _busy,
+            child: ListView(
+              children: [
+                if (_busy) const LinearProgressIndicator(),
+                for (final c in ciks)
+                  ListTile(
+                    key: ValueKey('v2-member-${room.nameOf(c)}'),
+                    leading: Avatar.member(room, c),
+                    title: Text(
+                      c == me ? '${room.nameOf(c)} (ty)' : room.nameOf(c),
+                    ),
+                    subtitle: Text(
+                      [
+                        if (c == admin) 'admin',
+                        if (c == successor) 'następca admina',
+                        'klucz ${v2Fingerprint(c).substring(0, 9)}',
+                      ].join(' · '),
+                    ),
+                    trailing: iAmAdmin && c != me
+                        ? PopupMenuButton<String>(
+                            key: ValueKey('v2-member-menu-${room.nameOf(c)}'),
+                            onSelected: (a) => switch (a) {
+                              'remove' => _remove(c, room.nameOf(c)),
+                              'successor' => _run(
+                                () => groups.setSuccessor(g, c),
+                                '${room.nameOf(c)} przejmie grupę, jeśli '
+                                'stracisz telefon',
+                              ),
+                              _ => _run(
+                                () => groups.setSuccessor(g, null),
+                                'Grupa nie ma już następcy admina',
+                              ),
+                            },
+                            itemBuilder: (_) => [
+                              if (c != successor)
+                                const PopupMenuItem(
+                                  value: 'successor',
+                                  child: Text('Ustaw jako następcę'),
+                                )
+                              else
+                                const PopupMenuItem(
+                                  value: 'no-successor',
+                                  child: Text('Usuń jako następcę'),
+                                ),
+                              const PopupMenuItem(
+                                value: 'remove',
+                                child: Text('Usuń z grupy'),
+                              ),
+                            ],
+                          )
+                        : null,
+                  ),
+                const Divider(),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    iAmAdmin
+                        ? 'Jesteś adminem: tylko ty wpuszczasz i usuwasz '
+                              'osoby. Ustaw następcę: jeśli przez 14 dni nie '
+                              'będzie od ciebie żadnej aktywności, przejmie '
+                              'grupę.'
+                        : 'Admin wpuszcza i usuwa osoby. Jeśli zniknie na 14 '
+                              'dni, grupę przejmie jego następca.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}

@@ -58,7 +58,14 @@ class V2Group {
     this.metaTs = 0,
     this.membersSeen = 0,
     this.legacy,
+    this.keysAt = 0,
+    this.sentSinceKeys = 0,
   }) : openInvites = openInvites ?? [];
+
+  /// When our leaf key was last refreshed (ms), and messages sent since:
+  /// PROTOCOL §B5.1 asks for an Update every 7 days or 500 messages.
+  int keysAt;
+  int sentSinceKeys;
 
   final String id;
 
@@ -101,6 +108,8 @@ class V2Group {
     'seen': inboxSeen,
     'metaTs': metaTs,
     'members': membersSeen,
+    'keysAt': keysAt,
+    'sentSinceKeys': sentSinceKeys,
   };
 
   static V2Group fromJson(Map<String, dynamic> j) => V2Group(
@@ -113,6 +122,8 @@ class V2Group {
     inboxSeen: j['seen'] as int? ?? 0,
     metaTs: j['metaTs'] as int? ?? 0,
     membersSeen: j['members'] as int? ?? 0,
+    keysAt: j['keysAt'] as int? ?? 0,
+    sentSinceKeys: j['sentSinceKeys'] as int? ?? 0,
     legacy: (j['msgs'] as List?)
         ?.map((m) => (m as Map).cast<String, dynamic>())
         .toList(),
@@ -133,9 +144,16 @@ class V2Groups extends ChangeNotifier {
     CoreDht dht, {
     required Future<void> Function() save,
     required V2RoomOpener openRoom,
+    int Function()? clock,
   }) : _save = save,
        _openRoom = openRoom,
+       clock = clock ?? _wallClock,
        _host = CoreHost(dht);
+
+  static int _wallClock() => DateTime.now().millisecondsSinceEpoch;
+
+  /// Milliseconds since the epoch (tests move it forward).
+  final int Function() clock;
 
   final CoreHost _host;
   final Future<void> Function() _save;
@@ -277,6 +295,7 @@ class V2Groups extends ChangeNotifier {
       me: me.trim(),
       state: s.save(),
       membersSeen: 1,
+      keysAt: clock(), // fresh keys
     );
     _sessions[g.id] = s;
     try {
@@ -333,7 +352,59 @@ class V2Groups extends ChangeNotifier {
   Future<void> sendPayload(V2Group g, String payload) => _serial(() async {
     if (g.joining) throw StateError('Admin jeszcze cię nie wpuścił');
     await _run(g, {'op': 'send_text', 'text': payload});
+    g.sentSinceKeys++;
   });
+
+  /// Admin: removes [cik] from [g]. The group moves to a new generation
+  /// (new records the removed member never learns, PROTOCOL §B5.3); the
+  /// publication resumes after a restart.
+  Future<void> removeMember(V2Group g, String cik) => _serial(() async {
+    await _rotateIfFull(g);
+    await _run(g, {'op': 'stage_remove', 'cik': cik});
+    await _run(g, {'op': 'publish_pending'});
+    await _save();
+    notifyListeners();
+  });
+
+  /// Admin: who takes over if this phone is lost ([cik] null: nobody).
+  /// The list reaches the members with an (empty) commit, which also
+  /// refreshes the admin's own keys.
+  Future<void> setSuccessor(V2Group g, String? cik) => _serial(() async {
+    await _rotateIfFull(g);
+    await _run(g, {
+      'op': 'set_successors',
+      'successors': [?cik],
+    });
+    await _run(g, {'op': 'stage_commit_proposals'});
+    await _run(g, {'op': 'publish_pending'});
+    g.keysAt = clock();
+    g.sentSinceKeys = 0;
+    await _save();
+    notifyListeners();
+  });
+
+  /// The successors (CIK hex, first one takes over), as the group knows them.
+  List<String> successors(V2Group g) =>
+      ((info(g)['successors'] as List?) ?? const []).cast<String>();
+
+  static const keysEvery = Duration(days: 7);
+  static const keysAfterMessages = 500;
+
+  bool _keysStale(V2Group g) =>
+      clock() - g.keysAt > keysEvery.inMilliseconds ||
+      g.sentSinceKeys >= keysAfterMessages;
+
+  /// Admin: a full control log moves the group to a new generation first
+  /// (PROTOCOL §B3.1); nothing else can be committed before that.
+  Future<void> _rotateIfFull(V2Group g) async {
+    if (info(g)['has_pending'] == true) {
+      await _run(g, {'op': 'publish_pending'});
+    }
+    if (info(g)['needs_rotation'] == true) {
+      await _run(g, {'op': 'stage_rotate'});
+      await _run(g, {'op': 'publish_pending'});
+    }
+  }
 
   Future<void> leave(V2Group g) => _serial(() async {
     groups.remove(g);
@@ -374,11 +445,18 @@ class V2Groups extends ChangeNotifier {
         });
         if (done != true) return;
         g.joinInvite = null;
+        g.keysAt = clock(); // the leaf key from the join is fresh
         await _save();
       }
       await _run(g, {'op': 'sync'});
-      if (isAdmin(g)) await _admit(g);
       _pull(g);
+      if (info(g)['removed'] != true) {
+        if (isAdmin(g)) {
+          await _adminDuties(g);
+        } else {
+          await _memberDuties(g);
+        }
+      }
       _greetNewcomers(g);
       g.problem = null;
     } on Object catch (e) {
@@ -389,6 +467,43 @@ class V2Groups extends ChangeNotifier {
       notifyListeners();
     }
   });
+
+  /// What the admin does on every sync: finish a publication, move to a new
+  /// generation when the log is full, let in whoever used an invite, and
+  /// commit the members' key Updates (or, when its own keys are due, an
+  /// empty commit, which refreshes them).
+  Future<void> _adminDuties(V2Group g) async {
+    await _rotateIfFull(g);
+    await _admit(g);
+    final proposals = info(g)['pending_proposals'] as int? ?? 0;
+    if (proposals > 0 || _keysStale(g)) {
+      await _run(g, {'op': 'stage_commit_proposals'});
+      await _run(g, {'op': 'publish_pending'});
+      g.keysAt = clock();
+      g.sentSinceKeys = 0;
+      await _save();
+    }
+  }
+
+  /// A member: a key Update when due (the admin commits it), and the first
+  /// successor's takeover once the admin has been silent for 14 days (the
+  /// core decides; PROTOCOL §B5.4).
+  Future<void> _memberDuties(V2Group g) async {
+    if (info(g)['move_stable'] == true && _keysStale(g)) {
+      await _run(g, {'op': 'propose_update'});
+      g.keysAt = clock();
+      g.sentSinceKeys = 0;
+      await _save();
+    }
+    final first = successors(g).firstOrNull;
+    if (first != null && first == myCik(g)) {
+      final took = await _run(g, {'op': 'try_takeover'});
+      if (took == true) {
+        debugPrint('[v2] took over as admin');
+        await _save();
+      }
+    }
+  }
 
   Future<void> _admit(V2Group g) async {
     for (final rv in g.openInvites.toList()) {
@@ -407,9 +522,6 @@ class V2Groups extends ChangeNotifier {
       }
       g.openInvites.remove(rv);
       await _save();
-      await _run(g, {'op': 'publish_pending'});
-    }
-    if (info(g)['has_pending'] == true) {
       await _run(g, {'op': 'publish_pending'});
     }
   }

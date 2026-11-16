@@ -365,6 +365,8 @@ class _ChatScreenState extends State<ChatScreen> {
             builder: (_) => InviteScreen(invite: _session.invite),
           ),
         );
+      case 'members' when v2 != null:
+        await _open(V2MembersScreen(groups: v2, group: group!));
       case 'members':
         await _open(MembersScreen(session: _session, app: widget.app));
       case 'profile':
