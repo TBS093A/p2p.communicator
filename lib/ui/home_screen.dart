@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../app_state/app_session.dart';
 import '../app_state/global_profile.dart';
+import '../core/ui_prefs.dart';
 import '../room/message.dart';
 import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
@@ -12,6 +13,7 @@ import 'my_profile_screen.dart';
 import '../update/update_service.dart';
 import 'new_room_screen.dart';
 import 'update_screen.dart';
+import 'v2_screens.dart';
 import 'widgets/avatar.dart';
 import 'widgets/network_dot.dart';
 
@@ -149,6 +151,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             title: const Text('Rozmowy'),
             actions: [
+              ValueListenableBuilder<bool>(
+                valueListenable: UiPrefs.instance.experimentalV2,
+                builder: (context, on, _) => on
+                    ? IconButton(
+                        key: const ValueKey('v2-home'),
+                        tooltip: 'Grupy v2 (eksperymentalne)',
+                        icon: const Icon(Icons.science_outlined),
+                        onPressed: () => _push(V2HomeScreen(groups: app.v2)),
+                      )
+                    : const SizedBox.shrink(),
+              ),
               IconButton(
                 key: const ValueKey('private-mode'),
                 tooltip: 'Tryb prywatny',
