@@ -67,6 +67,11 @@ pub enum Op {
     },
     /// First successor: take over after T_successor. Result: whether it did.
     TryTakeover,
+    /// Admin: stage handing the admin role to `to` (CIK hex, §B5.4), then
+    /// publish_pending.
+    StageHandover {
+        to: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -246,6 +251,9 @@ impl Session {
             "successors": st.successors,
             "has_pending": st.pending.is_some(),
             "pending_proposals": self.member.pending_proposals(),
+            "commit_due": st.commit_due,
+            "my_update_pending": self.member.my_update_pending(),
+            "last_admin_activity": st.last_admin_activity,
             "move_stable": st.move_state == crate::member::MoveState::Stable,
             "removed": st.removed,
             "fork_suspected": st.fork_suspected,
@@ -322,6 +330,10 @@ fn run(m: &mut Member, op: &Op, dht: &mut SnapshotDht) -> Result<Value, PocError
             Value::Null
         }
         Op::TryTakeover => json!(m.try_takeover(dht)?),
+        Op::StageHandover { to } => {
+            m.stage_handover(to)?;
+            Value::Null
+        }
     })
 }
 

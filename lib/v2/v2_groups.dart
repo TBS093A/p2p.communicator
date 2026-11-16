@@ -148,7 +148,10 @@ class V2Groups extends ChangeNotifier {
   }) : _save = save,
        _openRoom = openRoom,
        clock = clock ?? _wallClock,
+       _dht = dht,
        _host = CoreHost(dht);
+
+  final CoreDht _dht;
 
   static int _wallClock() => DateTime.now().millisecondsSinceEpoch;
 
@@ -383,12 +386,32 @@ class V2Groups extends ChangeNotifier {
     notifyListeners();
   });
 
+  /// Admin: hands the admin role to [cik] (PROTOCOL §B5.4). Waiting key
+  /// Updates are committed first; the new admin starts the next generation
+  /// when it is next online, until then membership stays as it is.
+  Future<void> handOver(V2Group g, String cik) => _serial(() async {
+    await _rotateIfFull(g);
+    if ((info(g)['pending_proposals'] as int? ?? 0) > 0) {
+      await _run(g, {'op': 'stage_commit_proposals'});
+      await _run(g, {'op': 'publish_pending'});
+    }
+    await _run(g, {'op': 'stage_handover', 'to': cik});
+    await _run(g, {'op': 'publish_pending'});
+    g.openInvites.clear(); // only the admin lets people in
+    await _save();
+    notifyListeners();
+  });
+
   /// The successors (CIK hex, first one takes over), as the group knows them.
   List<String> successors(V2Group g) =>
       ((info(g)['successors'] as List?) ?? const []).cast<String>();
 
   static const keysEvery = Duration(days: 7);
   static const keysAfterMessages = 500;
+
+  /// A member proposes its key Update only if the admin was active within
+  /// this many hours (the core's clock is in hours).
+  static const adminAroundHours = 48;
 
   bool _keysStale(V2Group g) =>
       clock() - g.keysAt > keysEvery.inMilliseconds ||
@@ -470,13 +493,14 @@ class V2Groups extends ChangeNotifier {
 
   /// What the admin does on every sync: finish a publication, move to a new
   /// generation when the log is full, let in whoever used an invite, and
-  /// commit the members' key Updates (or, when its own keys are due, an
-  /// empty commit, which refreshes them).
+  /// commit the members' key Updates (or, when its own keys are due or the
+  /// core asks for one after a handover, an empty commit).
   Future<void> _adminDuties(V2Group g) async {
     await _rotateIfFull(g);
     await _admit(g);
     final proposals = info(g)['pending_proposals'] as int? ?? 0;
-    if (proposals > 0 || _keysStale(g)) {
+    final due = info(g)['commit_due'] == true;
+    if (proposals > 0 || due || _keysStale(g)) {
       await _run(g, {'op': 'stage_commit_proposals'});
       await _run(g, {'op': 'publish_pending'});
       g.keysAt = clock();
@@ -489,7 +513,15 @@ class V2Groups extends ChangeNotifier {
   /// successor's takeover once the admin has been silent for 14 days (the
   /// core decides; PROTOCOL §B5.4).
   Future<void> _memberDuties(V2Group g) async {
-    if (info(g)['move_stable'] == true && _keysStale(g)) {
+    // MLS sends nothing while our own Update waits for the admin's commit,
+    // so only propose while the admin is around (seen in the last 2 days).
+    final i = info(g);
+    final adminSeen = i['last_admin_activity'] as int? ?? 0;
+    final adminAround = _dht.now - adminSeen <= adminAroundHours;
+    if (i['move_stable'] == true &&
+        i['my_update_pending'] != true &&
+        adminAround &&
+        _keysStale(g)) {
       await _run(g, {'op': 'propose_update'});
       g.keysAt = clock();
       g.sentSinceKeys = 0;

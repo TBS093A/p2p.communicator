@@ -194,8 +194,12 @@ pub enum AppMsg {
     Move { gen: u64, control: String },
     /// Member, as the last message in its old outbox: its new outbox.
     MyOutbox { gen: u64, outbox: String },
-    /// First successor, in its own outbox: it takes over as admin.
+    /// First successor, in its own outbox: it takes over as admin. Also the
+    /// new admin after a handover (§B5.4), without a commit.
     Takeover { gen: u64, control: String },
+    /// Admin, in `C_g`: from this log position on, `to` is the admin
+    /// (§B5.4 handover).
+    AdminTransfer { to: String },
 }
 
 impl AppMsg {
