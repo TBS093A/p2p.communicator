@@ -639,9 +639,31 @@ the E2EE message. A leaked blob record key reveals only the size.
   `GIK` signature over `(groupId, CIK)`. Without it nothing connects that
   conversation to anything else.
 * The global profile no longer carries `seen` or a status.
-* **DMs** are two-member groups using this protocol. A DM started from a
-  group uses a DM invite (as in A5) sealed to the peer's `CIK` **in that
-  group** and signed with my `CIK` there, so it reveals no global identity.
+* **DMs** are two-member groups using this protocol, each side with a fresh
+  `CIK` of its own for the DM. A DM started from a shared group `G`
+  reveals no global identity and needs no out-of-band check (decided
+  16 Nov 2026; replaces "sealed to the peer's `CIK`", see below):
+  1. Alice creates the DM group `D` and a one-time invite (§B4) whose
+     `adminCIK` is her new `CIK` in `D`.
+  2. She sends `dmInvite{invite, to}` in `G` as an MLS application message,
+     where `to` is Bob's `CIK` in `G`. MLS proves it comes from Alice's
+     `CIK` in `G` and only `G`'s members can read it. Members other than
+     `to` ignore it.
+  3. Bob accepts: the invite came from Alice in `G`, which replaces the
+     fingerprint check of §B4 step 2. His join request (§B4 step 3)
+     additionally carries `proof = {cik: Bob's CIK in G, sig}`, where `sig`
+     is that `CIK`'s signature over
+     `("p2pc2-dm-join", rendezvous record key, Bob's new CIK in D)`.
+  4. Alice's app admits the request only if `proof.cik` equals `to` and
+     the signature verifies (F25). It never shows or admits anything else
+     for that invite.
+
+  *Why not sealed to Bob's `CIK`:* the `CIK` is the MLS signature key
+  (Ed25519) and its secret lives only in the protocol core; sealing to it
+  would need an Ed25519-to-X25519 conversion and HPKE in the core. The
+  invite stays inside `G`'s E2EE messages anyway, and what keeps another
+  member of `G` from using it is the signature, not the invite's secrecy:
+  a member who reads it can request to join, but cannot sign as `to`.
 
 ## B11. Migration from v1
 
@@ -695,6 +717,7 @@ added after the first PoC round and is covered by
 | F22 | **Oversized message** (plaintext over 4096 bytes) | Refused before sending (the composer limits text; media goes as a blob) | Phase 2 |
 | F23 | **A member's `Update` proposal lost** or not yet propagated to someone | Never needed from the outbox: the admin copies it into the log before the commit that references it (§B5.1); a member far behind catches up from the log alone | Phase 3 |
 | F24 | **Admin hands over** to a member who is offline | Messages keep flowing; membership frozen until the new admin comes online and starts `g + 1` (§B5.4) | Phase 3 |
+| F25 | **Another member of `G` uses a DM invite** meant for someone else (§B10) | Its join request has no valid `proof` signed by `to`'s `CIK` in `G`: refused, the invite stays open for `to` | Phase 4 |
 
 ## B13. Proof of concept
 
