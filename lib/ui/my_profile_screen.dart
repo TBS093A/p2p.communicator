@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../app.dart';
 import '../app_state/app_session.dart';
 import '../app_state/global_profile.dart';
+import '../core/ui_prefs.dart';
 import '../room/room_session.dart';
 import '../update/update_service.dart';
 import '../vault/room_secrets.dart';
@@ -322,6 +323,21 @@ class _MyProfileScreenState extends State<MyProfileScreen> {
                       ),
                     ),
                   ),
+                ValueListenableBuilder<bool>(
+                  valueListenable: UiPrefs.instance.experimentalV2,
+                  builder: (context, on, _) => SwitchListTile(
+                    key: const ValueKey('experimental-v2'),
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.science_outlined),
+                    value: on,
+                    onChanged: UiPrefs.instance.setExperimentalV2,
+                    title: const Text('Eksperymentalne: grupy v2'),
+                    subtitle: const Text(
+                      'Nowy protokół z szyfrowaniem MLS. Wczesna wersja: '
+                      'tylko tekst, osobna lista grup.',
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 16),
                 Text(
                   'Ten profil widzą osoby z twoich rozmów i grup. Pokoje '

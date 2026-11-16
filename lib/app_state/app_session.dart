@@ -16,6 +16,8 @@ import '../room/room_protocol.dart';
 import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
+import '../v2/v2_groups.dart';
+import '../v2/veilid_core_dht.dart';
 import 'app_link.dart';
 import 'dm_invite.dart';
 import 'global_profile.dart';
@@ -56,6 +58,10 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
 
   @override
   late final ProfileDirectory directory = ProfileDirectory(myKey: _profileKey);
+
+  /// Experimental v2 groups (MLS), kept in this app's encrypted data.
+  late final V2Groups v2 = V2Groups(_v2Dht, save: _save);
+  final _v2Dht = VeilidCoreDht();
 
   late GlobalProfile _me;
   final List<PublicRoom> rooms = [];
@@ -139,6 +145,8 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
         peer: j['peer'] as String?,
       );
     }
+    v2.load(data['v2'] as List?);
+    v2.start();
     unawaited(_connectProfile());
     _heartbeat = Timer.periodic(GlobalProfile.heartbeat, (_) => _beat());
   }
@@ -175,6 +183,8 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     _closed = true;
     _heartbeat?.cancel();
     _saveTimer?.cancel();
+    await v2.close();
+    await _v2Dht.close();
     await _save();
     for (final r in rooms) {
       await r.session.close();
@@ -505,8 +515,19 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     return _unlocked;
   }
 
-  Future<void> _save() async {
+  /// Saves run one after another: two writers of the same data file would
+  /// race on its temporary file.
+  Future<void> _saving = Future.value();
+
+  Future<void> _save() {
+    final next = _saving.then((_) => _write());
+    _saving = next.then<void>((_) {}, onError: (_) {});
+    return next;
+  }
+
+  Future<void> _write() async {
     final json = jsonEncode({
+      'v2': v2.toJson(),
       'me': _me.toJson(),
       'rooms': [
         for (final r in rooms)

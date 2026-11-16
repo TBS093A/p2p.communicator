@@ -631,6 +631,72 @@ void main() {
     final v2 = await v2OverVeilid();
     debugPrint('[v2] ${v2.join(', ')}');
 
+    // The same through the app's screens, behind the "eksperymentalne"
+    // switch: create a v2 group, invite, join it (as a second member on this
+    // phone) with the admin's fingerprint checked, and talk.
+    await backToHome(t);
+    expect(find.byKey(const ValueKey('v2-home')), findsNothing);
+    await tapKey(t, 'my-profile');
+    await pumpUntil(t, find.byType(MyProfileScreen));
+    await settle(t);
+    await tapKey(t, 'experimental-v2');
+    await settle(t);
+    await t.pageBack();
+    await settle(t);
+    await tapKey(t, 'v2-home');
+    await settle(t);
+    await tapKey(t, 'v2-new');
+    await settle(t);
+    await t.enterText(find.byKey(const ValueKey('v2-name')), 'Test v2');
+    await idle(t, const Duration(milliseconds: 600));
+    await tapKey(t, 'v2-create');
+    await hideKeyboard(t);
+    await pumpUntil(t, find.text('1 członek · jesteś adminem'));
+    await tapKey(t, 'v2-invite');
+    await pumpUntil(t, find.byKey(const ValueKey('v2-invite-copy')));
+    await settle(t);
+    final adminPrint = t
+        .widget<Text>(find.byKey(const ValueKey('v2-fingerprint')))
+        .data!;
+    await shot(t, '09_v2_invite');
+    await tapKey(t, 'v2-invite-copy');
+    await settle(t);
+    final v2Code = (await Clipboard.getData('text/plain'))!.text!;
+    expect(v2Code, startsWith('p2pc2.'));
+    t.state<NavigatorState>(find.byType(Navigator).first)
+      ..pop()
+      ..pop();
+    await settle(t);
+    await tapKey(t, 'v2-join');
+    await settle(t);
+    await t.enterText(find.byKey(const ValueKey('v2-invite-code')), v2Code);
+    await idle(t, const Duration(milliseconds: 600));
+    await t.enterText(find.byKey(const ValueKey('v2-join-name')), 'Dołączona');
+    await idle(t, const Duration(milliseconds: 600));
+    await hideKeyboard(t);
+    // The joiner sees the same fingerprint as the admin's screen.
+    expect(
+      t.widget<Text>(find.byKey(const ValueKey('v2-fingerprint'))).data,
+      adminPrint,
+    );
+    await tapKey(t, 'v2-fingerprint-ok');
+    await tapKey(t, 'v2-join-go');
+    await pumpUntil(t, find.byKey(const ValueKey('v2-waiting')));
+    // The admin's group lets the request in on its next background sync.
+    await pumpUntil(t, find.text('2 członków'));
+    await send(t, 'cześć z grupy v2');
+    await hideKeyboard(t);
+    await shot(t, '10_v2_chat');
+    await t.pageBack();
+    await settle(t);
+    await tapKey(t, 'v2-group-Test v2');
+    await pumpUntil(t, find.text('cześć z grupy v2'));
+    await settle(t);
+    t.state<NavigatorState>(find.byType(Navigator).first)
+      ..pop()
+      ..pop();
+    await settle(t);
+
     // A DM started with a QR code, listed under "DM".
     await backToHome(t);
     await newRoom(t, mode: 'DM');
