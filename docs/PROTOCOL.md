@@ -232,13 +232,14 @@ are linkable through the global profile; private rooms are not.
 ## B3. Records and generations
 
 A group's DHT records belong to a **generation** `g`. Joins do not change
-the generation; every removal (and every admin change) starts a new one.
+the generation; every removal, every admin change and a **full control
+log** (§B3.1) start a new one.
 
 | Record | Schema / owner | Content |
 | --- | --- | --- |
-| **Control record** `C_g` | `DFLT`, owner = admin's random key for generation `g` | Subkey 0: header `{v: 2, gen, epoch, logCount, logHash}`. Subkeys 1..N: the log, in order: MLS commits and the admin's MLS messages that belong to them (`Directory`, `Move`). Only the admin writes it. |
-| **Member outbox** `O_g,i` | `DFLT`, owner = member's random key for generation `g` | Subkey 0: head `{count}` only, padded. Subkeys 1..ring: MLS `PrivateMessage`s. |
-| **Join rendezvous** | `SMPL`: owner = admin, 1 member subkey whose key pair is in the invite | The joiner writes one MLS `KeyPackage`, sealed to the admin's `CIK`. One-time. |
+| **Control record** `C_g` | `DFLT` with 1 + `L` subkeys (`L` = 28), owner = admin's random key for generation `g` | Subkey 0: header `{v: 2, gen, epoch, logCount, logHash}`. Subkeys 1..`L`: the log, in order: MLS commits and the admin's MLS messages that belong to them (`Directory`, `Move`). Append-only, never wraps (§B3.1). Only the admin writes it. |
+| **Member outbox** `O_g,i` | `DFLT` with 1 + `R` subkeys (`R` = 200), owner = member's random key for generation `g` | Subkey 0: head `{count}` only, padded. Subkeys 1..`R`: a ring of MLS `PrivateMessage`s; message `n` lives in subkey `1 + n mod R` (§B3.1). |
+| **Join rendezvous** | `SMPL`: subkeys 0..3 owned by the admin (the answer: Welcome, chunked); one member, subkeys 4..7, whose key pair is in the invite (the request) | The joiner writes one MLS `KeyPackage`, sealed to the admin's `CIK`. One-time. |
 | **Blob** | `DFLT`, random owner | Chunks of the **AEAD-encrypted** file. |
 | **Global profile** (optional) | `DFLT`, owner `GIK` | Name and avatar only; no `seen` (§B8). |
 
@@ -266,6 +267,48 @@ and Add commit 51 776 B for 151 members). Any MLS message larger than one
 subkey is split across consecutive subkeys, each with a chunk header
 (`kind`, index, total), and reassembled by the reader. A reader that does
 not have every chunk yet waits, exactly as for an unpropagated value.
+
+### B3.1 Record size limits: a log that never wraps, outboxes that do
+
+Veilid limits a subkey to **32 KiB** and a whole record to **1 MiB** of
+data. The PoC's records grew without bound; in the app they cannot.
+
+**Control log: full log → new generation.** The log has `L` = 28 subkeys
+(28 × 32 KiB + the header stays under 1 MiB). It is append-only and never
+wraps, because `logHash` chains every entry and a member must be able to
+read each one in order. When an entry would not fit (fewer free subkeys
+than it needs, counting its chunks and the `Move` that must follow), the
+admin moves the group to generation `g + 1` **exactly as for a removal
+(§B5.3), only without the `Remove` commit**: new control record, `Move` in
+`C_g`, every member creates a new outbox and announces it. The old records
+stay readable for the grace period, so a member who was offline follows
+the chain of `Move` pointers and catches up generation by generation.
+Commits are rare (membership changes, and Updates the admin batches into
+one commit per sync round, §B5.1), so `L` = 28 lasts weeks in a busy group.
+
+**Outboxes: a ring of `R` = 200 messages.** Message `n` (the sender's own
+count) goes to subkey `1 + n mod R`, as in v1. Messages are padded to
+256 / 1024 / 4096 bytes (§B8); 200 × the largest (about 4.4 KiB with MLS
+overhead) is under 1 MiB, so **a message's plaintext is limited to the
+4096-byte bucket**: longer text is refused by the composer, media always
+goes as an encrypted blob (§B9). A reader that falls more than `R` messages
+behind one sender loses the overwritten ones: they show as a gap ("starsze
+wiadomości od X są niedostępne"), detected by the count and the `prev`
+chain, never silently. An outbox also moves at every generation change,
+which starts a fresh ring.
+
+**Offline longer than what the records keep.** A member who returns after
+the grace period of the generation they were in (30 days, §B5.3) cannot
+follow the `Move` chain any more and has to be invited again (F10); one
+who missed more than `R` messages of a sender sees the gap above. Both
+are shown to the user, never hidden.
+
+**Rendezvous layout (Veilid SMPL).** SMPL puts the owner's subkeys first
+and then each member's. The admin owns subkeys 0..3 (the answer: a
+Welcome, chunked; four subkeys hold a Welcome for about 330 members); the
+joiner owns subkeys 4..7 (the request; one is enough today, the rest leave
+room for a larger KeyPackage). The invite carries the joiner's slot key
+pair as Veilid creates it, not raw bytes.
 
 ## B4. Joining
 
@@ -375,7 +418,9 @@ sender's accepted `{gen, logCount, logHash}`, and members compare them.
 ### B5.3 Removal and the move to a fresh generation
 
 A removal always moves the group to generation `g + 1`, so the removed
-member cannot even watch the group's records afterwards.
+member cannot even watch the group's records afterwards. A full control
+log (§B3.1) moves it the same way, minus the `Remove` commit (step 2 then
+publishes only the `Move`).
 
 Admin:
 
@@ -523,7 +568,8 @@ outbox it came from):
 
 * `prev` chains each sender's messages, so a withheld or swapped message is
   detected (THREAT_MODEL S9).
-* The plaintext is padded to the next of 256 / 1024 / 4096 bytes.
+* The plaintext is padded to the next of 256 / 1024 / 4096 bytes; a
+  message larger than 4096 bytes is refused (outbox ring size, §B3.1).
 * Profile changes (name, avatar, color) are `profile` messages, never fields
   in a head.
 * **Presence** is off by default. If enabled for one conversation, the app
@@ -613,6 +659,9 @@ added after the first PoC round and is covered by
 | F17 | **Oversized MLS message** (Welcome for a large group) | Split across subkeys and reassembled (§B3, chunking) | Yes |
 | F18 | **Malformed data** from a member or node: invites, heads, commits, messages, chunk headers | Rejected without crashing or changing state (fuzz tests of every parser) | Yes |
 | F19 | **Diverging histories**: the admin rewrites a log position after some members read it | Members compare `ctl` in messages (§B5.2 r6); a mismatch stops new commits and shows a warning | Yes |
+| F20 | **Control log full** (the next entry would not fit in `L` subkeys) | The admin moves the group to `g + 1` without a removal (§B3.1); members follow the `Move` like any other; nothing is lost | Phase 2 |
+| F21 | **A sender's outbox ring wrapped** while a member was offline (more than `R` messages behind) | The overwritten messages show as a gap ("niedostępne"), never silently; the rest is read normally | Phase 2 |
+| F22 | **Oversized message** (plaintext over 4096 bytes) | Refused before sending (the composer limits text; media goes as a blob) | Phase 2 |
 
 ## B13. Proof of concept
 
@@ -657,7 +706,10 @@ Acceptance: every item above passes, and nothing in the app's `lib/` changes.
 3. ✅ Review the PoC; adjust this document where it proved wrong (this
    revision). Proposals go into commits by value (§B5.1). Open: crypto
    provider (§B7), blocked on upstream releases.
-4. Group control record, join flow, removal with generation move.
+4. Group control record, join flow, removal with generation move; record
+   size limits (§B3.1: log moves to a new generation when full, outbox
+   ring, rendezvous layout). The core is in the app (docs/V2_PLAN.md
+   phase 1, done); this is phase 2.
 5. E2EE messages, encrypted media, padding.
 6. Per-conversation identities by default; global profile and presence
    opt-in.
