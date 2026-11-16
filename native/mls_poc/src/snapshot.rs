@@ -161,7 +161,7 @@ pub fn drive<T>(
             pool.push(Dht::create(host)?);
         }
         while rv_pool.len() < RENDEZVOUS_POOL {
-            rv_pool.push(host.create_rendezvous(1..=4)?);
+            rv_pool.push(host.create_rendezvous(crate::member::REQUEST_FIRST..=7)?);
         }
         Ok(())
     };

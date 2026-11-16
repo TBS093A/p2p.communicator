@@ -22,7 +22,7 @@ impl Host {
                 json!({"record": r, "owner": wire::hex(&o)})
             })
             .collect();
-        let (rv, owner, slot) = self.dht.create_rendezvous(1..=4).unwrap();
+        let (rv, owner, slot) = self.dht.create_rendezvous(4..=7).unwrap();
         let rendezvous = vec![json!({
             "record": rv, "owner": wire::hex(&owner), "slot": wire::hex(&slot),
         })];

@@ -25,6 +25,25 @@ pub const CIPHERSUITE: Ciphersuite =
 
 /// Out-of-order tolerance per sender (B12 F6: 100 skipped keys).
 pub const OUT_OF_ORDER: u32 = 100;
+
+// Record size limits (PROTOCOL §B3.1): Veilid allows 32 KiB per subkey and
+// 1 MiB per record.
+
+/// Control log subkeys (1..=LOG_SUBKEYS); the log never wraps.
+pub const LOG_SUBKEYS: u32 = 28;
+/// Free log subkeys an admin keeps for the next commit, what follows it and
+/// a `Move`; with fewer left the group moves to a new generation first.
+pub const LOG_RESERVE: u32 = 6;
+/// Outbox ring: position `p` (1-based) lives in subkey `1 + (p-1) % R`.
+pub const OUTBOX_RING: u32 = 200;
+/// Largest application message plaintext (the 4096-byte padding bucket).
+pub const MAX_PLAINTEXT: usize = 4096;
+/// Rendezvous (Veilid SMPL: owner subkeys first): the admin's answer.
+pub const ANSWER_FIRST: u32 = 0;
+pub const ANSWER_SUBKEYS: u32 = 4;
+/// Rendezvous: the joiner's request slot.
+pub const REQUEST_FIRST: u32 = 4;
+pub const REQUEST_SUBKEYS: u32 = 4;
 /// Epochs whose secrets are kept for late messages (B12 F7: the previous
 /// one). Time-based deletion (24 h) is done by [`Member::expire_past_epochs`].
 pub const PAST_EPOCHS: usize = 1;
@@ -82,11 +101,40 @@ struct JoinRequest {
 
 /// Welcome plus what the joiner needs to find the group, written by the
 /// admin to the rendezvous record (subkeys 10..).
-#[derive(Serialize, Deserialize)]
 struct JoinAnswer {
     welcome: Vec<u8>,
     control: RecordId,
     gen: u64,
+}
+
+impl JoinAnswer {
+    /// Binary, so a large Welcome stays its own size (JSON would write each
+    /// byte as a number): `gen` (u64 BE), control id length (u16 BE), the
+    /// id, then the Welcome.
+    fn encode(&self) -> Vec<u8> {
+        let id = self.control.as_bytes();
+        let mut out = Vec::with_capacity(10 + id.len() + self.welcome.len());
+        out.extend_from_slice(&self.gen.to_be_bytes());
+        out.extend_from_slice(&(id.len() as u16).to_be_bytes());
+        out.extend_from_slice(id);
+        out.extend_from_slice(&self.welcome);
+        out
+    }
+
+    fn decode(b: &[u8]) -> Option<Self> {
+        let gen = u64::from_be_bytes(b.get(..8)?.try_into().ok()?);
+        let n = u16::from_be_bytes(b.get(8..10)?.try_into().ok()?) as usize;
+        let control = String::from_utf8(b.get(10..10 + n)?.to_vec()).ok()?;
+        let welcome = b.get(10 + n..)?.to_vec();
+        if welcome.is_empty() {
+            return None;
+        }
+        Some(Self {
+            welcome,
+            control,
+            gen,
+        })
+    }
 }
 
 /// A reader's position in one outbox: next subkey, and earlier subkeys that
@@ -119,6 +167,12 @@ pub enum PendingKind {
     },
     /// Commit of pending proposals (Updates, F13).
     Proposals,
+    /// Full control log: the group moves to `next_control` without a
+    /// commit; only the `Move` is published (§B3.1, F20).
+    Rotate {
+        next_control: RecordId,
+        next_owner: Vec<u8>,
+    },
 }
 
 /// A commit created and persisted, then published in phases that can each
@@ -215,6 +269,56 @@ pub struct State {
     /// What was ignored or rejected, for the tests and the report.
     pub events: Vec<String>,
     pub undecryptable: u32,
+    /// Messages a sender's outbox ring overwrote before we read them
+    /// (§B3.1, F21): shown as a gap, never silently.
+    #[serde(default)]
+    pub lost_messages: u32,
+}
+
+/// The outbox ring subkey of position `p` (1-based).
+fn ring_slot(p: u32) -> u32 {
+    1 + (p - 1) % OUTBOX_RING
+}
+
+/// An outbox value carries its position, so a reader can tell a slot that
+/// holds an older lap (not propagated yet) from one already overwritten.
+fn with_position(p: u32, chunk: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(4 + chunk.len());
+    v.extend_from_slice(&p.to_be_bytes());
+    v.extend_from_slice(chunk);
+    v
+}
+
+/// The chunk inside an outbox value, without its position.
+pub fn outbox_payload(value: &[u8]) -> Option<&[u8]> {
+    value.get(4..)
+}
+
+enum Slot {
+    Value(Vec<u8>),
+    /// Empty, or still an older lap: not propagated yet (F1).
+    NotYet,
+    /// A newer lap already: the ring overwrote it (F21).
+    Overwritten,
+    Malformed,
+}
+
+fn read_slot(dht: &mut dyn Dht, outbox: &RecordId, p: u32) -> Result<Slot, PocError> {
+    let Some(v) = dht.get(outbox, ring_slot(p))? else {
+        return Ok(Slot::NotYet);
+    };
+    let Some(pos) = v
+        .get(..4)
+        .and_then(|b| b.try_into().ok())
+        .map(u32::from_be_bytes)
+    else {
+        return Ok(Slot::Malformed);
+    };
+    Ok(match pos.cmp(&p) {
+        std::cmp::Ordering::Equal => Slot::Value(v[4..].to_vec()),
+        std::cmp::Ordering::Less => Slot::NotYet,
+        std::cmp::Ordering::Greater => Slot::Overwritten,
+    })
 }
 
 pub struct Member {
@@ -288,6 +392,7 @@ impl Member {
                 awaiting: BTreeMap::new(),
                 events: vec![],
                 undecryptable: 0,
+                lost_messages: 0,
             },
             provider,
             signer,
@@ -399,7 +504,8 @@ impl Member {
 
     /// Admin: a one-time invite with its own rendezvous record.
     pub fn create_invite(&mut self, dht: &mut dyn Dht) -> Result<Invite, PocError> {
-        let (rendezvous, owner, slot) = dht.create_rendezvous(1..=4)?;
+        let (rendezvous, owner, slot) =
+            dht.create_rendezvous(REQUEST_FIRST..=REQUEST_FIRST + REQUEST_SUBKEYS - 1)?;
         self.st.invites.insert(rendezvous.clone(), owner);
         Ok(Invite {
             rendezvous,
@@ -436,11 +542,16 @@ impl Member {
         })
         .expect("request serializes");
         let chunks = wire::chunk(Kind::KeyPackage, &req);
-        if chunks.len() > 4 {
+        if chunks.len() > REQUEST_SUBKEYS as usize {
             return Err(PocError::Rejected("join request too large".into()));
         }
         for (i, c) in chunks.iter().enumerate() {
-            dht.set(&invite.rendezvous, 1 + i as u32, c, &invite.slot)?;
+            dht.set(
+                &invite.rendezvous,
+                REQUEST_FIRST + i as u32,
+                c,
+                &invite.slot,
+            )?;
         }
         Ok(kp_bytes.len())
     }
@@ -472,11 +583,24 @@ impl Member {
         let (commit, welcome, _) = group
             .add_members(&self.provider, &self.signer, &kps)
             .map_err(mls)?;
+        let welcome = welcome.to_bytes().map_err(mls)?;
+        // The answer must fit the rendezvous' answer subkeys (§B3.1): too
+        // many joiners at once are refused before anything is published.
+        let answer = JoinAnswer {
+            welcome: welcome.clone(),
+            control: self.st.control.clone().unwrap_or_default(),
+            gen: self.st.gen,
+        }
+        .encode();
+        let answer_len = wire::chunk(Kind::Welcome, &answer).len();
+        if answer_len > ANSWER_SUBKEYS as usize {
+            group
+                .clear_pending_commit(self.provider.storage())
+                .map_err(mls)?;
+            return Err(PocError::Rejected("too many joiners at once".into()));
+        }
         self.st.pending = Some(Pending {
-            kind: PendingKind::Add {
-                welcome: welcome.to_bytes().map_err(mls)?,
-                joiners,
-            },
+            kind: PendingKind::Add { welcome, joiners },
             commit: commit.to_bytes().map_err(mls)?,
             at: self.st.log_count,
             hash_at: self.st.log_hash.clone(),
@@ -499,13 +623,16 @@ impl Member {
             .ok_or_else(|| PocError::Rejected("unknown or used invite".into()))?;
         let mut values = vec![];
         let first = dht
-            .get(rendezvous, 1)?
+            .get(rendezvous, REQUEST_FIRST)?
             .ok_or_else(|| PocError::Rejected("no join request yet".into()))?;
         let total = wire::parse_chunk(&first)
             .map_err(|e| PocError::Rejected(e.to_string()))?
-            .total;
+            .total as u32;
+        if total == 0 || total > REQUEST_SUBKEYS {
+            return Err(PocError::Rejected("malformed join request".into()));
+        }
         values.push(first);
-        for k in 2..=total as u32 {
+        for k in REQUEST_FIRST + 1..REQUEST_FIRST + total {
             values.push(
                 dht.get(rendezvous, k)?
                     .ok_or_else(|| PocError::Rejected("join request incomplete".into()))?,
@@ -548,6 +675,13 @@ impl Member {
         }
         if !self.is_admin() {
             return Err(PocError::Rejected("only the admin commits".into()));
+        }
+        // §B3.1, F20: with too little log left, the group moves to a new
+        // generation first (stage_rotate), so a commit never half-fits.
+        if self.needs_rotation() {
+            return Err(PocError::Rejected(
+                "control log full: rotate to a new generation first".into(),
+            ));
         }
         Ok(())
     }
@@ -595,6 +729,64 @@ impl Member {
     }
 
     /// Admin: commits the queued proposals (e.g. members' Updates, F13).
+    /// Admin: whether the control log has too little room left for the next
+    /// commit, what follows it and a `Move` (§B3.1).
+    pub fn needs_rotation(&self) -> bool {
+        self.is_admin()
+            && self.st.move_state == MoveState::Stable
+            && self.st.log_count + LOG_RESERVE > LOG_SUBKEYS
+    }
+
+    /// Admin: stage moving the group to a new generation without removing
+    /// anyone, because the control log is (nearly) full (§B3.1, F20). Then
+    /// `publish_pending`, exactly like a removal minus the `Remove` commit.
+    pub fn stage_rotate(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
+        if self.st.pending.is_some() {
+            return Err(PocError::Rejected(
+                "a commit is pending: publish it first".into(),
+            ));
+        }
+        if !self.is_admin() {
+            return Err(PocError::Rejected("only the admin rotates".into()));
+        }
+        let (next_control, next_owner) = dht.create()?;
+        let header = ControlHeader {
+            v: 2,
+            gen: self.st.gen + 1,
+            epoch: self.st.epoch,
+            log_count: 0,
+            prev: String::new(),
+        };
+        dht.set(&next_control, 0, &header.encode(), &next_owner)?;
+        // Proposals waiting (e.g. Updates) go into this one commit: MLS
+        // sends nothing while proposals are pending, and the log's reserve
+        // has room for one commit and the Move. Otherwise no commit at all.
+        let group = self
+            .group
+            .as_mut()
+            .ok_or_else(|| PocError::Rejected("no group".into()))?;
+        let commit = if group.pending_proposals().next().is_some() {
+            let (commit, _, _) = group
+                .commit_to_pending_proposals(&self.provider, &self.signer)
+                .map_err(mls)?;
+            commit.to_bytes().map_err(mls)?
+        } else {
+            vec![]
+        };
+        self.st.pending = Some(Pending {
+            kind: PendingKind::Rotate {
+                next_control,
+                next_owner,
+            },
+            commit,
+            at: self.st.log_count,
+            hash_at: self.st.log_hash.clone(),
+            phase: 0,
+            followups: vec![],
+        });
+        Ok(())
+    }
+
     pub fn stage_commit_proposals(&mut self) -> Result<(), PocError> {
         self.require_no_pending()?;
         let group = self
@@ -636,7 +828,9 @@ impl Member {
             0 => {
                 self.st.log_count = p.at;
                 self.st.log_hash = p.hash_at.clone();
-                self.append_log(dht, Kind::Mls, &p.commit)?;
+                if !p.commit.is_empty() {
+                    self.append_log(dht, Kind::Mls, &p.commit)?;
+                }
                 p.phase = 1;
             }
             1 => {
@@ -661,6 +855,14 @@ impl Member {
                         })?]
                     }
                     PendingKind::Proposals => vec![],
+                    // §B3.1: the same Move, in the current epoch (nobody is
+                    // removed, so everyone may read where the group went).
+                    PendingKind::Rotate { next_control, .. } => {
+                        vec![self.encrypt(&AppMsg::Move {
+                            gen: self.st.gen + 1,
+                            control: next_control.clone(),
+                        })?]
+                    }
                 };
                 p.phase = 2;
             }
@@ -668,7 +870,9 @@ impl Member {
                 // Positions right after the commit, same bytes every time.
                 self.st.log_count = p.at;
                 self.st.log_hash = p.hash_at.clone();
-                self.append_log(dht, Kind::Mls, &p.commit)?;
+                if !p.commit.is_empty() {
+                    self.append_log(dht, Kind::Mls, &p.commit)?;
+                }
                 for f in &p.followups {
                     self.append_log(dht, Kind::Mls, f)?;
                 }
@@ -676,15 +880,20 @@ impl Member {
                 match &p.kind {
                     PendingKind::Add { welcome, joiners } => {
                         let control = self.st.control.clone().expect("admin has control");
-                        let answer = serde_json::to_vec(&JoinAnswer {
+                        let answer = JoinAnswer {
                             welcome: welcome.clone(),
                             control,
                             gen: self.st.gen,
-                        })
-                        .expect("answer serializes");
+                        }
+                        .encode();
                         for j in joiners {
                             for (i, c) in wire::chunk(Kind::Welcome, &answer).iter().enumerate() {
-                                dht.set(&j.rendezvous, 10 + i as u32, c, &j.rendezvous_owner)?;
+                                dht.set(
+                                    &j.rendezvous,
+                                    ANSWER_FIRST + i as u32,
+                                    c,
+                                    &j.rendezvous_owner,
+                                )?;
                             }
                             // One-time invite.
                             self.st.invites.remove(&j.rendezvous);
@@ -710,6 +919,23 @@ impl Member {
                         };
                     }
                     PendingKind::Proposals => {}
+                    PendingKind::Rotate {
+                        next_control,
+                        next_owner,
+                    } => {
+                        // The new log starts empty (its header was written
+                        // when staging); the admin moves like every member.
+                        let gen = self.st.gen + 1;
+                        self.st.control_owner = Some(next_owner.clone());
+                        self.st.control = Some(next_control.clone());
+                        self.st.gen = gen;
+                        self.st.log_count = 0;
+                        self.st.log_hash = String::new();
+                        self.st.move_state = MoveState::Moving {
+                            gen,
+                            control: next_control.clone(),
+                        };
+                    }
                 }
                 self.st.pending = None;
                 return Ok(());
@@ -746,7 +972,13 @@ impl Member {
     fn append_log(&mut self, dht: &mut dyn Dht, kind: Kind, msg: &[u8]) -> Result<(), PocError> {
         let control = self.st.control.clone().expect("admin has control");
         let owner = self.st.control_owner.clone().expect("admin owns control");
-        for c in wire::chunk(kind, msg) {
+        let chunks = wire::chunk(kind, msg);
+        // §B3.1: never past the log's subkeys (the reserve normally keeps
+        // a rotation's Move well inside).
+        if self.st.log_count + chunks.len() as u32 > LOG_SUBKEYS {
+            return Err(PocError::Rejected("control log full".into()));
+        }
+        for c in chunks {
             self.st.log_count += 1;
             dht.set(&control, self.st.log_count, &c, &owner)?;
             self.st.log_hash = chain(&self.st.log_hash, &c);
@@ -836,14 +1068,17 @@ impl Member {
 
     /// Joiner: picks up the Welcome once the admin answered.
     pub fn complete_join(&mut self, dht: &mut dyn Dht, invite: &Invite) -> Result<bool, PocError> {
-        let Some(first) = dht.get(&invite.rendezvous, 10)? else {
+        let Some(first) = dht.get(&invite.rendezvous, ANSWER_FIRST)? else {
             return Ok(false);
         };
         let total = wire::parse_chunk(&first)
             .map_err(|e| PocError::Rejected(e.to_string()))?
-            .total;
+            .total as u32;
+        if total == 0 || total > ANSWER_SUBKEYS {
+            return Err(PocError::Rejected("malformed answer".into()));
+        }
         let mut values = vec![first];
-        for k in 11..10 + total as u32 {
+        for k in ANSWER_FIRST + 1..ANSWER_FIRST + total {
             match dht.get(&invite.rendezvous, k)? {
                 Some(v) => values.push(v),
                 None => return Ok(false), // still propagating (F1)
@@ -854,8 +1089,8 @@ impl Member {
         if kind != Kind::Welcome {
             return Err(PocError::Rejected("not a welcome".into()));
         }
-        let answer: JoinAnswer = serde_json::from_slice(&body)
-            .map_err(|_| PocError::Rejected("malformed welcome".into()))?;
+        let answer = JoinAnswer::decode(&body)
+            .ok_or_else(|| PocError::Rejected("malformed welcome".into()))?;
         let welcome = match MlsMessageIn::tls_deserialize_exact(answer.welcome.as_slice())
             .map_err(mls)?
             .extract()
@@ -917,9 +1152,14 @@ impl Member {
             .ok_or_else(|| PocError::Rejected("no outbox".into()))?;
         for c in wire::chunk(kind, msg) {
             self.st.my_count += 1;
-            dht.set(&outbox, self.st.my_count, &c, &secret)?;
-            self.st.sent.insert(self.st.my_count, c);
+            let p = self.st.my_count;
+            let v = with_position(p, &c);
+            dht.set(&outbox, ring_slot(p), &v, &secret)?;
+            self.st.sent.insert(p, v);
         }
+        // Only what the ring still holds can be re-sent (F16).
+        let floor = self.st.my_count.saturating_sub(OUTBOX_RING);
+        self.st.sent.retain(|p, _| *p > floor);
         dht.set(
             &outbox,
             0,
@@ -934,14 +1174,19 @@ impl Member {
 
     /// Sends a text message; returns the MLS ciphertext size.
     pub fn send_text(&mut self, dht: &mut dyn Dht, text: &str) -> Result<usize, PocError> {
-        self.st.my_seq += 1;
         let msg = AppMsg::Text {
             id: wire::hex(&self.random(16)),
-            seq: self.st.my_seq,
+            seq: self.st.my_seq + 1,
             text: text.into(),
             prev: self.st.my_prev.clone(),
             ctl: self.ctl(),
         };
+        // §B3.1, F22: the outbox ring only fits messages up to the
+        // 4096-byte padding bucket. Refused before anything changes.
+        if msg.encode().len() > MAX_PLAINTEXT {
+            return Err(PocError::Rejected("message too long".into()));
+        }
+        self.st.my_seq += 1;
         self.st.my_prev = wire::sha256_hex(&msg.encode());
         let bytes = self.encrypt(&msg)?;
         self.write_outbox(dht, Kind::Mls, &bytes)?;
@@ -967,9 +1212,9 @@ impl Member {
             return Ok(());
         };
         let mut repaired = false;
-        for (k, v) in self.st.sent.clone() {
-            if dht.get(&outbox, k)?.is_none() {
-                dht.set(&outbox, k, &v, &secret)?;
+        for (p, v) in self.st.sent.clone() {
+            if matches!(read_slot(dht, &outbox, p)?, Slot::NotYet) {
+                dht.set(&outbox, ring_slot(p), &v, &secret)?;
                 repaired = true;
             }
         }
@@ -1281,9 +1526,16 @@ impl Member {
             next: 1,
             missing: BTreeSet::new(),
         });
-        // Retry earlier gaps first, then new subkeys.
-        let mut starts: Vec<u32> = cur.missing.iter().copied().collect();
-        let mut p = cur.next.max(1);
+        // Positions at or below `floor` are already overwritten by the ring
+        // (§B3.1): whatever we had not read there is a gap (F21).
+        let floor = count.saturating_sub(OUTBOX_RING);
+        let mut lost = cur.missing.iter().filter(|p| **p <= floor).count() as u32;
+        if cur.next <= floor {
+            lost += floor + 1 - cur.next.max(1);
+        }
+        // Retry earlier gaps first, then new positions.
+        let mut starts: Vec<u32> = cur.missing.iter().copied().filter(|p| *p > floor).collect();
+        let mut p = cur.next.max(floor + 1).max(1);
         let mut new_missing = BTreeSet::new();
         while p <= count {
             starts.push(p);
@@ -1295,9 +1547,20 @@ impl Member {
             if done.contains(&s) {
                 continue;
             }
-            let Some(first) = dht.get(outbox, s)? else {
-                new_missing.insert(s);
-                continue;
+            let first = match read_slot(dht, outbox, s)? {
+                Slot::Value(v) => v,
+                Slot::NotYet => {
+                    new_missing.insert(s);
+                    continue;
+                }
+                Slot::Overwritten => {
+                    lost += 1;
+                    continue;
+                }
+                Slot::Malformed => {
+                    self.st.events.push("malformed outbox value ignored".into());
+                    continue;
+                }
             };
             let Ok(chunk) = wire::parse_chunk(&first) else {
                 self.st.events.push("malformed outbox value ignored".into());
@@ -1310,9 +1573,13 @@ impl Member {
             let mut complete = true;
             for k in s + 1..s + chunk.total as u32 {
                 done.insert(k);
-                match dht.get(outbox, k)? {
-                    Some(v) => values.push(v),
-                    None => complete = false,
+                match read_slot(dht, outbox, k)? {
+                    Slot::Value(v) => values.push(v),
+                    Slot::Overwritten => {
+                        lost += 1;
+                        complete = false;
+                    }
+                    _ => complete = false,
                 }
             }
             if !complete {
@@ -1334,6 +1601,12 @@ impl Member {
         cur.next = count + 1;
         cur.missing = new_missing;
         self.st.cursors.insert(outbox.clone(), cur);
+        if lost > 0 {
+            self.st.lost_messages += lost;
+            self.st.events.push(format!(
+                "{lost} older message(s) from {owner} no longer available (outbox ring)"
+            ));
+        }
         Ok(())
     }
 

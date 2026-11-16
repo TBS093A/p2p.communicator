@@ -4,7 +4,10 @@ mod common;
 
 use common::*;
 use mls_poc::dht::MAX_SUBKEY_BYTES;
-use mls_poc::member::{Invite, Member, MoveState, GRACE, OUT_OF_ORDER, T_SUCCESSOR};
+use mls_poc::member::{
+    Invite, Member, MoveState, GRACE, LOG_SUBKEYS, OUTBOX_RING, OUT_OF_ORDER, REQUEST_FIRST,
+    T_SUCCESSOR,
+};
 use mls_poc::wire;
 
 // F1: values not propagated yet are waited for, not lost.
@@ -694,7 +697,7 @@ fn f18_garbage_join_request() {
     for _ in 0..200 {
         let invite = g[0].create_invite(&mut dht).unwrap();
         let junk = rng.bytes(2000);
-        let _ = dht.set(&invite.rendezvous, 1, &junk, &invite.slot);
+        let _ = dht.set(&invite.rendezvous, REQUEST_FIRST, &junk, &invite.slot);
         assert!(g[0].stage_add(&mut dht, &invite.rendezvous).is_err());
         assert!(g[0].st.pending.is_none());
     }
@@ -704,7 +707,10 @@ fn f18_garbage_join_request() {
     assert!(eve
         .request_join(&mut dht, &invite, "00".repeat(32).as_str())
         .is_err());
-    assert!(dht.get(&invite.rendezvous, 1).unwrap().is_none());
+    assert!(dht
+        .get(&invite.rendezvous, REQUEST_FIRST)
+        .unwrap()
+        .is_none());
 }
 
 // F19: the admin rewrites a log position after some members read it. Each
@@ -765,4 +771,121 @@ fn f19_diverging_histories() {
         g[2].sync(&mut dht).unwrap();
     }
     assert_eq!(g[2].st.epoch, epoch, "commit accepted after divergence");
+}
+
+// F20: the control log fills up; the group moves to a new generation
+// without removing anyone, and a member offline meanwhile catches up.
+#[test]
+fn f20_full_log_moves_to_a_new_generation() {
+    let (mut dht, mut g) = group(&["alice", "bob", "carol"]);
+    let gen = g[0].st.gen;
+    // Carol goes offline; Updates fill the log until the admin must rotate.
+    let mut commits = 0;
+    while !g[0].needs_rotation() {
+        g[1].propose_update(&mut dht).unwrap();
+        g[0].sync(&mut dht).unwrap();
+        g[0].stage_commit_proposals().unwrap();
+        g[0].publish_pending(&mut dht).unwrap();
+        g[1].sync(&mut dht).unwrap();
+        commits += 1;
+        assert!(commits < 40, "never asked to rotate");
+    }
+    assert!(g[0].st.log_count <= LOG_SUBKEYS);
+    // Nothing more fits: committing is refused until the group rotates.
+    g[1].propose_update(&mut dht).unwrap();
+    g[0].sync(&mut dht).unwrap();
+    assert!(g[0].stage_commit_proposals().is_err());
+
+    g[0].stage_rotate(&mut dht).unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    for _ in 0..4 {
+        g[0].sync(&mut dht).unwrap();
+        g[1].sync(&mut dht).unwrap();
+    }
+    // Bob is in the new generation; he stays "announced" (still reading the
+    // old outboxes too) until Carol announces or the grace period ends.
+    assert_eq!(g[1].st.gen, gen + 1);
+    assert!(matches!(g[1].st.move_state, MoveState::Announced { .. }));
+    assert!(g[0].st.log_count <= 1, "a fresh log");
+    // The new generation works: messages.
+    g[0].send_text(&mut dht, "nowa generacja").unwrap();
+    for _ in 0..3 {
+        g[1].sync(&mut dht).unwrap();
+    }
+    assert!(texts(&g[1]).contains(&"nowa generacja".to_string()));
+
+    // Carol comes back: catches up commit by commit (with proposals by
+    // reference one epoch per round; by value, phase 3, is faster), follows
+    // the Move, announces, everyone settles.
+    for _ in 0..60 {
+        for m in g.iter_mut() {
+            m.sync(&mut dht).unwrap();
+        }
+        if g.iter().all(|m| m.st.move_state == MoveState::Stable) {
+            break;
+        }
+    }
+    assert_eq!(
+        g[2].st.gen,
+        gen + 1,
+        "carol: epoch {} log {} events {:?}",
+        g[2].st.epoch,
+        g[2].st.log_count,
+        g[2].st.events
+    );
+    for m in &g {
+        assert_eq!(m.st.move_state, MoveState::Stable, "{}", m.st.name);
+    }
+    assert_same_epoch(&[&g[0], &g[1], &g[2]]);
+    assert!(texts(&g[2]).contains(&"nowa generacja".to_string()));
+    // And commits work again in the fresh log.
+    g[1].propose_update(&mut dht).unwrap();
+    sync_all(&mut dht, &mut g);
+    g[0].stage_commit_proposals().unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    sync_all(&mut dht, &mut g);
+    assert_same_epoch(&[&g[0], &g[1], &g[2]]);
+}
+
+// F21: a sender's outbox ring wrapped while a member was offline: the
+// overwritten messages are a visible gap, the rest is read normally.
+#[test]
+fn f21_outbox_ring_wrapped_is_a_visible_gap() {
+    let (mut dht, mut g) = group(&["alice", "bob"]);
+    let extra = 10;
+    for i in 0..OUTBOX_RING + extra {
+        g[0].send_text(&mut dht, &format!("m{i}")).unwrap();
+    }
+    g[1].sync(&mut dht).unwrap();
+    let got = texts(&g[1]);
+    assert_eq!(g[1].st.lost_messages, extra);
+    assert!(has_event(&g[1], "no longer available"));
+    assert_eq!(got.len(), OUTBOX_RING as usize);
+    assert_eq!(got.first().unwrap(), &format!("m{extra}"));
+    assert_eq!(
+        got.last().unwrap(),
+        &format!("m{}", OUTBOX_RING + extra - 1)
+    );
+    // Within the ring nothing is lost, and it keeps working past the wrap.
+    g[0].send_text(&mut dht, "dalej").unwrap();
+    g[1].sync(&mut dht).unwrap();
+    assert!(texts(&g[1]).contains(&"dalej".to_string()));
+    assert_eq!(g[1].st.lost_messages, extra);
+}
+
+// F22: a message over the 4096-byte bucket is refused before anything
+// changes or is written.
+#[test]
+fn f22_oversized_message_is_refused() {
+    let (mut dht, mut g) = group(&["alice", "bob"]);
+    let before = g[0].snapshot();
+    let writes = dht.writes;
+    let long = "ż".repeat(3000); // 6000 bytes of UTF-8
+    assert!(g[0].send_text(&mut dht, &long).is_err());
+    assert_eq!(dht.writes, writes, "nothing written");
+    assert_eq!(g[0].snapshot(), before, "nothing changed");
+    // Just under the limit still goes.
+    g[0].send_text(&mut dht, &"a".repeat(3500)).unwrap();
+    g[1].sync(&mut dht).unwrap();
+    assert_eq!(texts(&g[1]).len(), 1);
 }
