@@ -1,13 +1,18 @@
 // Experimental v2 groups (docs/V2_PLAN.md phase 2): each group is one
 // CoreSession (its own MLS identity, unlinkable to the global profile),
-// driven over the DHT by CoreHost. The state lives in the app's encrypted
-// data under the app PIN, so moving to a new phone carries it along.
+// driven over the DHT by CoreHost, and shown through a V2RoomSession in the
+// regular chat screen. The core state lives in the app's encrypted data and
+// the conversation in an encrypted room cache, both under the app PIN.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:p2pc_core/p2pc_core.dart';
+
+import '../room/message.dart';
+import '../vault/room_secrets.dart';
+import 'v2_room_session.dart';
 
 /// The public part of a `p2pc2.` invite.
 class V2Invite {
@@ -41,47 +46,28 @@ String v2Fingerprint(String cik) {
   ].join(' ');
 }
 
-class V2Message {
-  V2Message({
-    required this.from,
-    required this.text,
-    required this.ts,
-    this.mine = false,
-  });
-  final String from; // sender's CIK hex
-  final String text;
-  final int ts; // ms since epoch: when sent (mine) or received
-  final bool mine;
-
-  Map<String, dynamic> toJson() => {
-    'f': from,
-    't': text,
-    'ts': ts,
-    if (mine) 'm': true,
-  };
-
-  static V2Message fromJson(Map<String, dynamic> j) => V2Message(
-    from: j['f'] as String,
-    text: j['t'] as String,
-    ts: j['ts'] as int,
-    mine: j['m'] == true,
-  );
-}
-
 class V2Group {
   V2Group({
     required this.id,
     required this.name,
+    required this.me,
     required this.state,
     this.joinInvite,
     List<String>? openInvites,
     this.inboxSeen = 0,
-    List<V2Message>? messages,
-  }) : openInvites = openInvites ?? [],
-       messages = messages ?? [];
+    this.metaTs = 0,
+    this.membersSeen = 0,
+    this.legacy,
+  }) : openInvites = openInvites ?? [];
 
   final String id;
-  String name;
+
+  /// The name we gave the group when creating or joining it (the room look
+  /// shared later may rename it).
+  final String name;
+
+  /// Our name in this group.
+  final String me;
   Uint8List state;
 
   /// Set while our join request waits for the admin to let us in.
@@ -90,49 +76,74 @@ class V2Group {
   /// Admin: rendezvous records of invites handed out and not used yet.
   final List<String> openInvites;
   int inboxSeen;
-  final List<V2Message> messages;
+
+  /// Time of the room look we show (the newest one wins).
+  int metaTs;
+
+  /// Members when we last told them who we are.
+  int membersSeen;
+
+  /// Messages kept by the first v2 screens, moved into the room once.
+  List<Map<String, dynamic>>? legacy;
 
   /// Last problem seen while syncing (not stored).
   String? problem;
 
   bool get joining => joinInvite != null;
 
-  static const maxMessages = 1000;
-
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
+    'me': me,
     'state': base64.encode(state),
     'join': ?joinInvite,
     'invites': openInvites,
     'seen': inboxSeen,
-    'msgs': [for (final m in messages) m.toJson()],
+    'metaTs': metaTs,
+    'members': membersSeen,
   };
 
   static V2Group fromJson(Map<String, dynamic> j) => V2Group(
     id: j['id'] as String,
     name: j['name'] as String,
+    me: j['me'] as String? ?? 'Ja',
     state: base64.decode(j['state'] as String),
     joinInvite: j['join'] as String?,
     openInvites: ((j['invites'] as List?) ?? const []).cast<String>().toList(),
     inboxSeen: j['seen'] as int? ?? 0,
-    messages: [
-      for (final m in (j['msgs'] as List?) ?? const [])
-        V2Message.fromJson((m as Map).cast()),
-    ],
+    metaTs: j['metaTs'] as int? ?? 0,
+    membersSeen: j['members'] as int? ?? 0,
+    legacy: (j['msgs'] as List?)
+        ?.map((m) => (m as Map).cast<String, dynamic>())
+        .toList(),
   );
 }
 
+/// Opens the chat session of [group]: its encrypted cache and media live in
+/// an area of the app vault named after [secrets].rosterKey.
+typedef V2RoomOpener =
+    Future<V2RoomSession> Function(
+      V2Groups groups,
+      V2Group group,
+      RoomSecrets secrets,
+    );
+
 class V2Groups extends ChangeNotifier {
-  V2Groups(CoreDht dht, {required Future<void> Function() save})
-    : _save = save,
-      _host = CoreHost(dht);
+  V2Groups(
+    CoreDht dht, {
+    required Future<void> Function() save,
+    required V2RoomOpener openRoom,
+  }) : _save = save,
+       _openRoom = openRoom,
+       _host = CoreHost(dht);
 
   final CoreHost _host;
   final Future<void> Function() _save;
+  final V2RoomOpener _openRoom;
 
   final List<V2Group> groups = [];
   final _sessions = <String, CoreSession>{};
+  final _rooms = <String, V2RoomSession>{};
   Timer? _timer;
   Future<void> _queue = Future.value();
   bool _closed = false;
@@ -140,7 +151,7 @@ class V2Groups extends ChangeNotifier {
 
   // ------------------------------------------------------------- lifecycle
 
-  void load(List<dynamic>? json) {
+  Future<void> load(List<dynamic>? json) async {
     for (final raw in json ?? const []) {
       try {
         final g = V2Group.fromJson((raw as Map).cast());
@@ -149,15 +160,43 @@ class V2Groups extends ChangeNotifier {
           debugPrint('[v2] group state could not be restored');
           continue;
         }
-        groups.add(g);
         _sessions[g.id] = s;
+        await _attach(g);
       } on Object catch (e) {
         debugPrint('[v2] bad group entry (${e.runtimeType})');
       }
     }
   }
 
+  /// The conversation's room session, opened and listed.
+  Future<void> _attach(V2Group g) async {
+    final room = await _openRoom(this, g, secretsOf(g));
+    _rooms[g.id] = room;
+    room.addListener(notifyListeners);
+    groups.add(g);
+    final legacy = g.legacy;
+    if (legacy != null) {
+      room.importLegacy(legacy);
+      g.legacy = null;
+    }
+  }
+
+  /// What the chat session needs to know about [g]. The roster key is only
+  /// a name for the vault area (v2 has no roster record).
+  RoomSecrets secretsOf(V2Group g) => RoomSecrets(
+    roomName: g.name,
+    rosterKey: 'v2:${g.id}',
+    rosterWriter: '',
+    myName: g.me,
+    outboxKey: myCik(g),
+    outboxWriter: '',
+    rosterSlot: 0,
+    kind: RoomKind.private, // its own identity, no global profile
+  );
+
   List<Map<String, dynamic>> toJson() => [for (final g in groups) g.toJson()];
+
+  Future<void> saveState() => _save();
 
   /// Background sync of every group at [every].
   void start({Duration every = const Duration(seconds: 15)}) {
@@ -170,6 +209,11 @@ class V2Groups extends ChangeNotifier {
     _closed = true;
     _timer?.cancel();
     await _queue;
+    for (final r in _rooms.values) {
+      r.removeListener(notifyListeners);
+      await r.close();
+    }
+    _rooms.clear();
     for (final s in _sessions.values) {
       s.close();
     }
@@ -180,16 +224,17 @@ class V2Groups extends ChangeNotifier {
 
   V2Group? byId(String id) => groups.where((g) => g.id == id).firstOrNull;
 
+  V2RoomSession roomOf(V2Group g) => _rooms[g.id]!;
+
+  /// Every open conversation (for moving to a new phone).
+  Iterable<V2RoomSession> get rooms => _rooms.values;
+
   Map<String, dynamic> info(V2Group g) =>
       _sessions[g.id]?.info(since: 1 << 30) ?? const {};
 
   String myCik(V2Group g) => info(g)['cik'] as String? ?? '';
 
   bool isAdmin(V2Group g) => info(g)['is_admin'] == true;
-
-  /// Who wrote [m], as people see it.
-  String senderLabel(V2Group g, V2Message m) =>
-      m.mine ? 'Ty' : 'Członek ${m.from.substring(0, min(6, m.from.length))}';
 
   // ---------------------------------------------------------- operations
 
@@ -223,15 +268,21 @@ class V2Groups extends ChangeNotifier {
     ].join();
   }
 
-  Future<V2Group> create(String name) => _serial(() async {
+  /// A new group with us as its admin; [me] is our name in it.
+  Future<V2Group> create(String name, String me) => _serial(() async {
     final s = CoreSession.create('me');
-    final g = V2Group(id: _newId(), name: name.trim(), state: s.save());
+    final g = V2Group(
+      id: _newId(),
+      name: name.trim(),
+      me: me.trim(),
+      state: s.save(),
+      membersSeen: 1,
+    );
     _sessions[g.id] = s;
-    groups.add(g);
     try {
       await _run(g, {'op': 'create_group'});
+      await _attach(g);
     } on Object {
-      groups.remove(g);
       _sessions.remove(g.id)?.close();
       rethrow;
     }
@@ -251,60 +302,50 @@ class V2Groups extends ChangeNotifier {
 
   /// Asks to join with [invite]; the admin's key must have been checked
   /// against the admin's screen ([V2Invite.adminCik]).
-  Future<V2Group> join(V2Invite invite, String name) => _serial(() async {
-    final s = CoreSession.create('me');
-    final g = V2Group(
-      id: _newId(),
-      name: name.trim(),
-      state: s.save(),
-      joinInvite: invite.code,
-    );
-    _sessions[g.id] = s;
-    groups.add(g);
-    try {
-      await _run(g, {
-        'op': 'request_join',
-        'invite': invite.code,
-        'verified_admin': invite.adminCik,
+  Future<V2Group> join(V2Invite invite, String name, String me) =>
+      _serial(() async {
+        final s = CoreSession.create('me');
+        final g = V2Group(
+          id: _newId(),
+          name: name.trim(),
+          me: me.trim(),
+          state: s.save(),
+          joinInvite: invite.code,
+        );
+        _sessions[g.id] = s;
+        try {
+          await _run(g, {
+            'op': 'request_join',
+            'invite': invite.code,
+            'verified_admin': invite.adminCik,
+          });
+          await _attach(g);
+        } on Object {
+          _sessions.remove(g.id)?.close();
+          rethrow;
+        }
+        await _save();
+        notifyListeners();
+        return g;
       });
-    } on Object {
-      groups.remove(g);
-      _sessions.remove(g.id)?.close();
-      rethrow;
-    }
-    await _save();
-    notifyListeners();
-    return g;
-  });
 
-  Future<void> send(V2Group g, String text) => _serial(() async {
-    await _run(g, {'op': 'send_text', 'text': text});
-    _add(
-      g,
-      V2Message(
-        from: myCik(g),
-        text: text,
-        ts: DateTime.now().millisecondsSinceEpoch,
-        mine: true,
-      ),
-    );
-    await _save();
-    notifyListeners();
+  /// Sends one application payload (a v1 wire message as JSON) to [g].
+  Future<void> sendPayload(V2Group g, String payload) => _serial(() async {
+    if (g.joining) throw StateError('Admin jeszcze cię nie wpuścił');
+    await _run(g, {'op': 'send_text', 'text': payload});
   });
 
   Future<void> leave(V2Group g) => _serial(() async {
     groups.remove(g);
+    final room = _rooms.remove(g.id);
+    if (room != null) {
+      room.removeListener(notifyListeners);
+      await room.close();
+    }
     _sessions.remove(g.id)?.close();
     await _save();
     notifyListeners();
   });
-
-  void _add(V2Group g, V2Message m) {
-    g.messages.add(m);
-    if (g.messages.length > V2Group.maxMessages) {
-      g.messages.removeRange(0, g.messages.length - V2Group.maxMessages);
-    }
-  }
 
   // ---------------------------------------------------------------- sync
 
@@ -337,14 +378,14 @@ class V2Groups extends ChangeNotifier {
       }
       await _run(g, {'op': 'sync'});
       if (isAdmin(g)) await _admit(g);
-      final before = g.messages.length;
       _pull(g);
-      if (g.messages.length != before) await _save();
+      _greetNewcomers(g);
       g.problem = null;
     } on Object catch (e) {
       g.problem = '$e';
       debugPrint('[v2] sync failed (${e.runtimeType})');
     } finally {
+      _rooms[g.id]?.refresh();
       notifyListeners();
     }
   });
@@ -358,7 +399,6 @@ class V2Groups extends ChangeNotifier {
             e.message.contains('no join request yet') ||
             e.message.contains('join request incomplete');
         if (waiting) continue;
-        // Used, unknown or a bad request: that invite is spent.
         // Never the error text: it may quote what the joiner sent.
         debugPrint('[v2] a join request was refused or already used');
         g.openInvites.remove(rv);
@@ -376,19 +416,42 @@ class V2Groups extends ChangeNotifier {
 
   void _pull(V2Group g) {
     final s = _sessions[g.id];
-    if (s == null) return;
+    final room = _rooms[g.id];
+    if (s == null || room == null) return;
     final i = s.info(since: g.inboxSeen);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    for (final m in (i['inbox'] as List).cast<Map<String, dynamic>>()) {
-      _add(
-        g,
-        V2Message(
-          from: m['from'] as String,
-          text: m['text'] as String,
-          ts: now,
-        ),
+    final inbox = (i['inbox'] as List).cast<Map<String, dynamic>>();
+    final messages = <ChatMessage>[];
+    for (final (k, m) in inbox.indexed) {
+      final msg = V2RoomSession.parse(
+        m['from'] as String,
+        m['text'] as String,
+        g.inboxSeen + k,
       );
+      if (msg != null) messages.add(msg);
     }
-    g.inboxSeen = i['inbox_len'] as int;
+    final seen = i['inbox_len'] as int;
+    if (seen == g.inboxSeen) return;
+    g.inboxSeen = seen;
+    room.deliver(messages);
+    unawaited(_save());
+  }
+
+  /// Someone new cannot read what was sent before they joined: everyone
+  /// tells them their name again (and the admin the room look). Queued
+  /// after this sync, never awaited inside it.
+  void _greetNewcomers(V2Group g) {
+    final members = (info(g)['members'] as List?)?.length ?? 0;
+    final room = _rooms[g.id];
+    if (room == null || members <= g.membersSeen) {
+      if (members < g.membersSeen) g.membersSeen = members;
+      return;
+    }
+    g.membersSeen = members;
+    unawaited(_save());
+    unawaited(
+      room
+          .announce(withMeta: isAdmin(g))
+          .catchError((Object e) => debugPrint('[v2] announce failed')),
+    );
   }
 }

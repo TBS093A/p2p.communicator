@@ -13,9 +13,21 @@ enum MsgType {
   /// Hidden: the author's reaction to a message, `x: {to: <id>, e: <code>}`
   /// with one of the room's custom emoji codes, or `e: null` to take it back.
   /// Shown under the target message, never as a message of its own.
-  reaction;
+  reaction,
 
-  bool get hidden => this == MsgType.dmInvite || this == MsgType.reaction;
+  /// Hidden, v2 groups only: how the author presents themselves in this
+  /// group, `x: {p: MemberProfile}` (v1 keeps this in the outbox head).
+  profile,
+
+  /// Hidden, v2 groups only: the shared room look, `x: {m: RoomMeta}`; the
+  /// newest one wins (v1 keeps it in the roster record).
+  meta;
+
+  bool get hidden =>
+      this == MsgType.dmInvite ||
+      this == MsgType.reaction ||
+      this == MsgType.profile ||
+      this == MsgType.meta;
 }
 
 enum MsgStatus { sending, sent, failed }

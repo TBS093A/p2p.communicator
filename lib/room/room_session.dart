@@ -248,20 +248,80 @@ class RoomSession extends ChangeNotifier implements MediaSource {
 
   Future<void> open() async {
     final s = room.secrets;
-    _rosterKey = RecordKey.fromString(s.rosterKey);
-    _rosterWriter = KeyPair.fromString(s.rosterWriter);
-    _outboxKey = RecordKey.fromString(s.outboxKey);
-    _outboxWriter = KeyPair.fromString(s.outboxWriter);
     _media = await MediaCache.open(room);
     app?.directory.addListener(notifyListeners);
 
     await _loadCache();
     _profileFromCache = profiles.containsKey(myOutbox);
     profiles.putIfAbsent(myOutbox, () => MemberProfile(name: s.myName));
-    unawaited(_connect());
+    unawaited(connectTransport());
   }
 
+  // ------------------------------------------------------------ transport
+  //
+  // v1 talks through DHT records (roster + outboxes); a v2 group overrides
+  // these to carry the same messages inside MLS (lib/v2/v2_room_session).
+
+  /// Starts receiving. v1: opens the records, watches and polls them.
+  @protected
+  Future<void> connectTransport() => _connect();
+
+  /// Delivers [msg] to the other members (throws if it could not).
+  @protected
+  Future<void> appendMessage(ChatMessage msg) => _append(msg);
+
+  /// Tells the others how we present ourselves (private-room profile).
+  @protected
+  Future<void> publishProfile() =>
+      Dht.setJsonSoon(_outboxKey, 0, _head(_myCount));
+
+  /// Read-modify-write of the shared room look.
+  @protected
+  Future<void> editMeta(RoomMeta Function(RoomMeta) change) =>
+      _editMeta(change);
+
+  /// The encrypted local cache.
+  @protected
+  Future<void> writeCache(Uint8List data) =>
+      PinVault.instance.writeData(room, data);
+
+  @protected
+  Future<Uint8List?> readCache() => PinVault.instance.readData(room);
+
+  /// Whether "is typing" can be shared in this room.
+  bool get typingSupported => true;
+
+  /// A message read from another member: reactions are applied, hidden
+  /// messages go to [onHidden], the rest is listed. Returns whether a
+  /// message was added to [messages] (the caller then saves and redraws).
+  @protected
+  bool receive(ChatMessage msg) {
+    if (msg.type == MsgType.reaction) {
+      if (_ids.add(msg.id) && reactions.apply(msg)) {
+        notifyListeners();
+        _scheduleSave();
+      }
+      return false;
+    }
+    if (msg.type.hidden) {
+      if (_ids.add(msg.id)) onHidden(msg);
+      return false;
+    }
+    return _insert(msg);
+  }
+
+  @protected
+  void onHidden(ChatMessage msg) => app?.onHiddenMessage(this, msg);
+
+  @protected
+  void scheduleSave() => _scheduleSave();
+
   Future<void> _connect() async {
+    final s = room.secrets;
+    _rosterKey = RecordKey.fromString(s.rosterKey);
+    _rosterWriter = KeyPair.fromString(s.rosterWriter);
+    _outboxKey = RecordKey.fromString(s.outboxKey);
+    _outboxWriter = KeyPair.fromString(s.outboxWriter);
     while (!_closed) {
       try {
         await VeilidNode.instance.waitUntilOnline(
@@ -616,18 +676,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         continue;
       }
       if (seq > i) continue; // slot already reused by a newer message
-      if (msg.type == MsgType.reaction) {
-        if (_ids.add(msg.id) && reactions.apply(msg)) {
-          notifyListeners();
-          _scheduleSave();
-        }
-        continue;
-      }
-      if (msg.type.hidden) {
-        if (_ids.add(msg.id)) app?.onHiddenMessage(this, msg);
-        continue;
-      }
-      added |= _insert(msg);
+      added |= receive(msg);
     }
     final hadMissing = cursor.missing.isNotEmpty;
     cursor.settle(count, due, missed);
@@ -804,7 +853,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       var m = msg;
       try {
         m = await prepare() ?? msg;
-        await _append(m);
+        await appendMessage(m);
         m.status = MsgStatus.sent;
       } on Object catch (e) {
         debugPrint('send failed: $e');
@@ -962,7 +1011,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     );
     _ids.add(msg.id);
     final job = _sendChain.then((_) async {
-      await _append(msg); // assigns msg.seq
+      await appendMessage(msg); // v1: assigns msg.seq
       reactions.apply(msg);
       if (_pendingReactions[target] == code) _pendingReactions.remove(target);
       if (!_disposed) notifyListeners();
@@ -985,7 +1034,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       status: MsgStatus.sending,
     );
     _ids.add(msg.id);
-    final job = _sendChain.then((_) => _append(msg));
+    final job = _sendChain.then((_) => appendMessage(msg));
     _sendChain = job.catchError((Object e) => debugPrint('hidden send: $e'));
     return job;
   }
@@ -1025,9 +1074,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     notifyListeners();
     _scheduleSave();
     // Serialized with sends so the head never goes backwards.
-    final job = _sendChain.then(
-      (_) => Dht.setJsonSoon(_outboxKey, 0, _head(_myCount)),
-    );
+    final job = _sendChain.then((_) => publishProfile());
     _sendChain = job.catchError((Object e) => debugPrint('profile: $e'));
     await job;
   }
@@ -1053,7 +1100,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     final bgRef = backgroundImage == null
         ? null
         : await _uploadImage(backgroundImage, ImageUse.background);
-    await _editMeta(
+    await editMeta(
       (m) => m.copyWith(
         name: name?.trim().isEmpty == true ? null : name?.trim(),
         avatar: ref,
@@ -1084,7 +1131,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     }
     // Shrunk automatically to fit (see ImagePrep); GIFs stay animated.
     final ref = await _uploadImage(image, ImageUse.emoji);
-    await _editMeta((m) => m.copyWith(emoji: {...m.emoji, code: ref}));
+    await editMeta((m) => m.copyWith(emoji: {...m.emoji, code: ref}));
   }
 
   /// Adds many emoji at once: every image is uploaded (GIFs stay animated),
@@ -1115,13 +1162,13 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       onProgress?.call(++done, images.length);
     }
     if (uploaded.isNotEmpty) {
-      await _editMeta((m) => m.copyWith(emoji: {...m.emoji, ...uploaded}));
+      await editMeta((m) => m.copyWith(emoji: {...m.emoji, ...uploaded}));
     }
     return skipped;
   }
 
   Future<void> removeEmoji(String code) =>
-      _editMeta((m) => m.copyWith(emoji: {...m.emoji}..remove(code)));
+      editMeta((m) => m.copyWith(emoji: {...m.emoji}..remove(code)));
 
   /// Read-modify-write of the shared room meta. Everyone shares the roster
   /// writer key, so start from the network's latest value and retry once if
@@ -1207,6 +1254,8 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       case MsgType.text:
       case MsgType.dmInvite:
       case MsgType.reaction:
+      case MsgType.profile:
+      case MsgType.meta:
         return 'text/plain';
     }
   }
@@ -1241,11 +1290,11 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       'messages': [for (final m in keep) m.toCache()],
       'reactions': (reactions..prune({for (final m in keep) m.id})).toJson(),
     });
-    await PinVault.instance.writeData(room, utf8.encode(json));
+    await writeCache(utf8.encode(json));
   }
 
   Future<void> _loadCache() async {
-    final data = await PinVault.instance.readData(room);
+    final data = await readCache();
     if (data == null) return;
     try {
       final j = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;

@@ -1,19 +1,15 @@
-// Screens of the experimental v2 groups (MLS): list, join with the admin's
-// fingerprint checked, invite as a QR code, and a plain text chat.
-import 'dart:async';
-
+// Screens of the experimental v2 groups (MLS): the list, a new group, the
+// invite as a QR code with the admin's fingerprint, and joining with that
+// fingerprint checked. The conversation itself is the regular ChatScreen.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../room/message.dart';
 import '../v2/v2_groups.dart';
+import 'chat_screen.dart';
 import 'scan_screen.dart';
-
-String _time(int ts) {
-  final t = DateTime.fromMillisecondsSinceEpoch(ts);
-  return '${t.hour.toString().padLeft(2, '0')}:'
-      '${t.minute.toString().padLeft(2, '0')}';
-}
+import 'widgets/avatar.dart';
 
 void _toast(BuildContext context, String msg) =>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -21,31 +17,35 @@ void _toast(BuildContext context, String msg) =>
 String _plain(Object e) =>
     '$e'.replaceFirst('Bad state: ', '').replaceFirst('core: ', '');
 
+Future<void> openV2Chat(BuildContext context, V2Groups groups, V2Group g) =>
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatScreen.v2(session: groups.roomOf(g), v2: groups),
+      ),
+    );
+
 class V2HomeScreen extends StatelessWidget {
-  const V2HomeScreen({super.key, required this.groups});
+  const V2HomeScreen({super.key, required this.groups, required this.myName});
 
   final V2Groups groups;
 
+  /// Suggested name in a new group (it can be changed; v2 groups do not
+  /// show the global profile).
+  final String myName;
+
   Future<void> _create(BuildContext context) async {
-    final name = await showDialog<String>(
+    final names = await showDialog<(String, String)>(
       context: context,
-      builder: (_) => const _NameDialog(),
+      builder: (_) => _NewGroupDialog(myName: myName),
     );
-    if (name == null || name.trim().isEmpty || !context.mounted) return;
+    if (names == null || !context.mounted) return;
     try {
-      final g = await groups.create(name);
-      if (context.mounted) await _open(context, g);
+      final g = await groups.create(names.$1, names.$2);
+      if (context.mounted) await openV2Chat(context, groups, g);
     } on Object catch (e) {
       if (context.mounted) _toast(context, 'Nie udało się: ${_plain(e)}');
     }
   }
-
-  Future<void> _open(BuildContext context, V2Group g) =>
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => V2ChatScreen(groups: groups, group: g),
-        ),
-      );
 
   @override
   Widget build(BuildContext context) {
@@ -68,7 +68,7 @@ class V2HomeScreen extends StatelessWidget {
               title: const Text('Dołącz z zaproszenia'),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => V2JoinScreen(groups: groups),
+                  builder: (_) => V2JoinScreen(groups: groups, myName: myName),
                 ),
               ),
             ),
@@ -83,23 +83,7 @@ class V2HomeScreen extends StatelessWidget {
                   textAlign: TextAlign.center,
                 ),
               ),
-            for (final g in groups.groups)
-              ListTile(
-                key: ValueKey('v2-group-${g.name}'),
-                leading: const CircleAvatar(child: Icon(Icons.lock_outline)),
-                title: Text(g.name),
-                subtitle: Text(
-                  g.joining
-                      ? 'Czeka, aż admin cię wpuści'
-                      : g.messages.isEmpty
-                      ? 'Brak wiadomości'
-                      : '${groups.senderLabel(g, g.messages.last)}: '
-                            '${g.messages.last.text}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                onTap: () => _open(context, g),
-              ),
+            for (final g in groups.groups) _GroupTile(groups: groups, group: g),
           ],
         ),
       ),
@@ -107,40 +91,99 @@ class V2HomeScreen extends StatelessWidget {
   }
 }
 
-class _NameDialog extends StatefulWidget {
-  const _NameDialog();
+class _GroupTile extends StatelessWidget {
+  const _GroupTile({required this.groups, required this.group});
+
+  final V2Groups groups;
+  final V2Group group;
 
   @override
-  State<_NameDialog> createState() => _NameDialogState();
+  Widget build(BuildContext context) {
+    final room = groups.roomOf(group);
+    final last = room.messages.isEmpty ? null : room.messages.last;
+    final String subtitle;
+    if (group.joining) {
+      subtitle = 'Czeka, aż admin cię wpuści';
+    } else if (last == null) {
+      subtitle = 'Brak wiadomości';
+    } else {
+      final what = switch (last.type) {
+        MsgType.text => last.text ?? '',
+        MsgType.image => '📷 Zdjęcie',
+        MsgType.video => '🎥 Wideo',
+        MsgType.voice => '🎤 Głosówka',
+        _ => '',
+      };
+      final who = last.author == room.myOutbox
+          ? 'Ty'
+          : room.nameOf(last.author);
+      subtitle = '$who: $what';
+    }
+    return ListTile(
+      key: ValueKey('v2-group-${room.roomName}'),
+      leading: Avatar.room(room, radius: 24),
+      title: Text(room.roomName, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      onTap: () => openV2Chat(context, groups, group),
+    );
+  }
 }
 
-class _NameDialogState extends State<_NameDialog> {
+/// Group name and our name in it.
+class _NewGroupDialog extends StatefulWidget {
+  const _NewGroupDialog({required this.myName});
+
+  final String myName;
+
+  @override
+  State<_NewGroupDialog> createState() => _NewGroupDialogState();
+}
+
+class _NewGroupDialogState extends State<_NewGroupDialog> {
   final _name = TextEditingController();
+  late final _me = TextEditingController(text: widget.myName);
 
   @override
   void dispose() {
     _name.dispose();
+    _me.dispose();
     super.dispose();
+  }
+
+  void _done() {
+    if (_name.text.trim().isEmpty || _me.text.trim().isEmpty) return;
+    Navigator.pop(context, (_name.text, _me.text));
   }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: const Text('Nowa grupa v2'),
-    content: TextField(
-      key: const ValueKey('v2-name'),
-      controller: _name,
-      autofocus: true,
-      maxLength: 40,
-      decoration: const InputDecoration(
-        labelText: 'Nazwa grupy',
-        helperText: 'Widzisz ją tylko ty',
-      ),
-      onSubmitted: (v) => Navigator.pop(context, v),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextField(
+          key: const ValueKey('v2-name'),
+          controller: _name,
+          autofocus: true,
+          maxLength: 40,
+          decoration: const InputDecoration(labelText: 'Nazwa grupy'),
+        ),
+        TextField(
+          key: const ValueKey('v2-my-name'),
+          controller: _me,
+          maxLength: 40,
+          decoration: const InputDecoration(
+            labelText: 'Twoja nazwa w tej grupie',
+            helperText: 'Grupa nie widzi twojego profilu globalnego',
+          ),
+          onSubmitted: (_) => _done(),
+        ),
+      ],
     ),
     actions: [
       FilledButton(
         key: const ValueKey('v2-create'),
-        onPressed: () => Navigator.pop(context, _name.text),
+        onPressed: _done,
         child: const Text('Utwórz'),
       ),
     ],
@@ -239,9 +282,10 @@ class V2InviteScreen extends StatelessWidget {
 }
 
 class V2JoinScreen extends StatefulWidget {
-  const V2JoinScreen({super.key, required this.groups});
+  const V2JoinScreen({super.key, required this.groups, required this.myName});
 
   final V2Groups groups;
+  final String myName;
 
   @override
   State<V2JoinScreen> createState() => _V2JoinScreenState();
@@ -250,6 +294,7 @@ class V2JoinScreen extends StatefulWidget {
 class _V2JoinScreenState extends State<V2JoinScreen> {
   final _code = TextEditingController();
   final _name = TextEditingController(text: 'Grupa v2');
+  late final _me = TextEditingController(text: widget.myName);
   bool _checked = false;
   bool _busy = false;
 
@@ -263,6 +308,7 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
   void dispose() {
     _code.dispose();
     _name.dispose();
+    _me.dispose();
     super.dispose();
   }
 
@@ -281,11 +327,12 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
   Future<void> _join(V2Invite invite) async {
     setState(() => _busy = true);
     try {
-      final g = await widget.groups.join(invite, _name.text);
+      final groups = widget.groups;
+      final g = await groups.join(invite, _name.text, _me.text);
       if (!mounted) return;
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
-          builder: (_) => V2ChatScreen(groups: widget.groups, group: g),
+          builder: (_) => ChatScreen.v2(session: groups.roomOf(g), v2: groups),
         ),
       );
     } on Object catch (e) {
@@ -330,7 +377,16 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
               maxLength: 40,
               decoration: const InputDecoration(
                 labelText: 'Nazwa grupy',
-                helperText: 'Widzisz ją tylko ty',
+                helperText: 'Do czasu, aż admin pokaże jej nazwę',
+              ),
+            ),
+            TextField(
+              key: const ValueKey('v2-join-me'),
+              controller: _me,
+              maxLength: 40,
+              decoration: const InputDecoration(
+                labelText: 'Twoja nazwa w tej grupie',
+                helperText: 'Grupa nie widzi twojego profilu globalnego',
               ),
             ),
             if (invite != null) ...[
@@ -352,272 +408,16 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
             const SizedBox(height: 12),
             FilledButton(
               key: const ValueKey('v2-join-go'),
-              onPressed: invite != null && _checked && !_busy
+              onPressed:
+                  invite != null &&
+                      _checked &&
+                      !_busy &&
+                      _me.text.trim().isNotEmpty
                   ? () => _join(invite)
                   : null,
               child: const Text('Poproś o dołączenie'),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class V2ChatScreen extends StatefulWidget {
-  const V2ChatScreen({super.key, required this.groups, required this.group});
-
-  final V2Groups groups;
-  final V2Group group;
-
-  @override
-  State<V2ChatScreen> createState() => _V2ChatScreenState();
-}
-
-class _V2ChatScreenState extends State<V2ChatScreen> {
-  final _text = TextEditingController();
-  Timer? _timer;
-  bool _sending = false;
-
-  V2Groups get groups => widget.groups;
-  V2Group get g => widget.group;
-
-  @override
-  void initState() {
-    super.initState();
-    // Faster while the conversation is open.
-    unawaited(groups.sync(g));
-    _timer = Timer.periodic(
-      const Duration(seconds: 4),
-      (_) => unawaited(groups.sync(g)),
-    );
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _text.dispose();
-    super.dispose();
-  }
-
-  Future<void> _send() async {
-    final text = _text.text.trim();
-    if (text.isEmpty || _sending) return;
-    setState(() => _sending = true);
-    try {
-      await groups.send(g, text);
-      _text.clear();
-    } on Object catch (e) {
-      if (mounted) _toast(context, 'Nie wysłano: ${_plain(e)}');
-    } finally {
-      if (mounted) setState(() => _sending = false);
-    }
-  }
-
-  Future<void> _invite() async {
-    try {
-      final code = await groups.createInvite(g);
-      if (!mounted) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => V2InviteScreen(code: code, adminCik: groups.myCik(g)),
-        ),
-      );
-    } on Object catch (e) {
-      if (mounted) _toast(context, 'Nie udało się: ${_plain(e)}');
-    }
-  }
-
-  Future<void> _leave() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Usunąć grupę z tego telefonu?'),
-        content: const Text(
-          'Tracisz jej klucze i historię na tym telefonie. Pozostali '
-          'członkowie nadal widzą cię w grupie.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Anuluj'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Usuń'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    await groups.leave(g);
-    if (mounted) Navigator.of(context).pop();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: groups,
-      builder: (context, _) {
-        final info = groups.info(g);
-        final admin = info['is_admin'] == true;
-        final members = (info['members'] as List?)?.length ?? 0;
-        final theme = Theme.of(context);
-        final warnings = [
-          if (info['fork_suspected'] == true)
-            'Uwaga: log grupy rozgałęził się. Możliwa próba ataku.',
-          if (info['history_diverged'] == true)
-            'Twoja historia różni się od historii grupy.',
-          if ((info['lost_messages'] as int? ?? 0) > 0)
-            'Część wiadomości nie dotarła (${info['lost_messages']}).',
-          if (info['removed'] == true) 'Usunięto cię z tej grupy.',
-        ];
-        final msgs = g.messages.reversed.toList();
-        return Scaffold(
-          appBar: AppBar(
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(g.name),
-                Text(
-                  g.joining
-                      ? 'oczekuje na wpuszczenie'
-                      : '$members ${members == 1 ? 'członek' : 'członków'}'
-                            '${admin ? ' · jesteś adminem' : ''}',
-                  key: const ValueKey('v2-members'),
-                  style: theme.textTheme.labelSmall,
-                ),
-              ],
-            ),
-            actions: [
-              if (admin)
-                IconButton(
-                  key: const ValueKey('v2-invite'),
-                  tooltip: 'Zaproś',
-                  icon: const Icon(Icons.person_add_alt),
-                  onPressed: _invite,
-                ),
-              PopupMenuButton<String>(
-                onSelected: (_) => _leave(),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'leave', child: Text('Usuń z telefonu')),
-                ],
-              ),
-            ],
-          ),
-          body: Column(
-            children: [
-              if (g.joining)
-                const MaterialBanner(
-                  key: ValueKey('v2-waiting'),
-                  content: Text(
-                    'Prośba wysłana. Admin wpuści cię przy najbliższej '
-                    'synchronizacji (musi mieć włączoną aplikację).',
-                  ),
-                  actions: [SizedBox.shrink()],
-                ),
-              for (final w in warnings)
-                MaterialBanner(
-                  backgroundColor: theme.colorScheme.errorContainer,
-                  content: Text(w),
-                  actions: const [SizedBox.shrink()],
-                ),
-              Expanded(
-                child: ListView.builder(
-                  reverse: true,
-                  padding: const EdgeInsets.all(12),
-                  itemCount: msgs.length,
-                  itemBuilder: (context, i) => _Bubble(
-                    message: msgs[i],
-                    label: groups.senderLabel(g, msgs[i]),
-                  ),
-                ),
-              ),
-              SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 4, 8, 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          key: const ValueKey('v2-composer'),
-                          controller: _text,
-                          enabled: !g.joining,
-                          minLines: 1,
-                          maxLines: 5,
-                          maxLength: 2000,
-                          decoration: const InputDecoration(
-                            hintText: 'Wiadomość',
-                            counterText: '',
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        key: const ValueKey('v2-send'),
-                        tooltip: 'Wyślij',
-                        onPressed: g.joining || _sending ? null : _send,
-                        icon: _sending
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.send),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message, required this.label});
-
-  final V2Message message;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final mine = message.mine;
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.sizeOf(context).width * 0.78,
-        ),
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 3),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: mine
-                ? theme.colorScheme.primaryContainer
-                : theme.colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!mine)
-                Text(
-                  label,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.primary,
-                  ),
-                ),
-              Text(message.text),
-              Text(_time(message.ts), style: theme.textTheme.labelSmall),
-            ],
-          ),
         ),
       ),
     );

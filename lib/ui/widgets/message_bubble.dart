@@ -19,7 +19,7 @@ String replyPreviewText(ReplyRef r) => switch (r.type) {
   MsgType.image => r.preview.isEmpty ? '📷 Zdjęcie' : '📷 ${r.preview}',
   MsgType.video => r.preview.isEmpty ? '🎬 Film' : '🎬 ${r.preview}',
   MsgType.voice => '🎤 Wiadomość głosowa',
-  MsgType.dmInvite || MsgType.reaction => '',
+  MsgType.dmInvite || MsgType.reaction || MsgType.profile || MsgType.meta => '',
 };
 
 /// A quote: a bar, the original's author and one line of its content. Used
@@ -433,6 +433,8 @@ class _MessageBubbleState extends State<MessageBubble>
     switch (message.type) {
       case MsgType.dmInvite:
       case MsgType.reaction:
+      case MsgType.profile:
+      case MsgType.meta:
         return const SizedBox.shrink(); // never listed; see RoomSession
       case MsgType.text:
         return EmojiText(
