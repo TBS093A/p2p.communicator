@@ -659,9 +659,11 @@ void main() {
         .widget<Text>(find.byKey(const ValueKey('v2-fingerprint')))
         .data!;
     await shot(t, '09_v2_invite');
-    await tapKey(t, 'v2-invite-copy');
-    await settle(t);
-    final v2Code = (await Clipboard.getData('text/plain'))!.text!;
+    // The emulator's clipboard is not readable by the test: take the code
+    // from its text form under the QR code.
+    final v2Code = t
+        .widget<SelectableText>(find.byKey(const ValueKey('v2-invite-text')))
+        .data!;
     expect(v2Code, startsWith('p2pc2.'));
     t.state<NavigatorState>(find.byType(Navigator).first)
       ..pop()

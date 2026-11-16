@@ -195,6 +195,16 @@ class V2InviteScreen extends StatelessWidget {
             child: QrImageView(data: code, size: 260),
           ),
         ),
+        const SizedBox(height: 8),
+        // The same code as text, for sending it some other way.
+        SelectableText(
+          code,
+          key: const ValueKey('v2-invite-text'),
+          maxLines: 2,
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+        ),
         const SizedBox(height: 16),
         const Text(
           'Twój odcisk (osoba dołączająca porównuje go ze swoim ekranem):',

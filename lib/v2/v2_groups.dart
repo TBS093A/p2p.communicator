@@ -152,7 +152,7 @@ class V2Groups extends ChangeNotifier {
         groups.add(g);
         _sessions[g.id] = s;
       } on Object catch (e) {
-        debugPrint('[v2] bad group entry: $e');
+        debugPrint('[v2] bad group entry (${e.runtimeType})');
       }
     }
   }
@@ -343,7 +343,7 @@ class V2Groups extends ChangeNotifier {
       g.problem = null;
     } on Object catch (e) {
       g.problem = '$e';
-      debugPrint('[v2] sync: $e');
+      debugPrint('[v2] sync failed (${e.runtimeType})');
     } finally {
       notifyListeners();
     }
@@ -359,7 +359,8 @@ class V2Groups extends ChangeNotifier {
             e.message.contains('join request incomplete');
         if (waiting) continue;
         // Used, unknown or a bad request: that invite is spent.
-        debugPrint('[v2] invite dropped: ${e.message}');
+        // Never the error text: it may quote what the joiner sent.
+        debugPrint('[v2] a join request was refused or already used');
         g.openInvites.remove(rv);
         await _save();
         continue;
