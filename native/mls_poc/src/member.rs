@@ -66,7 +66,10 @@ fn mls<E: std::fmt::Debug>(e: E) -> PocError {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Invite {
     pub rendezvous: RecordId,
-    /// Writer secret of the request slot (subkeys 1..=4).
+    /// Writer secret of the request slot (subkeys 4..=7): opaque bytes (in
+    /// the app, a Veilid key pair). Hex in the invite, so it stays short
+    /// enough for a QR code.
+    #[serde(with = "crate::wire::hex_bytes")]
     pub slot: Vec<u8>,
     /// Hex of the admin's conversation identity key.
     pub admin_cik: String,
@@ -85,7 +88,11 @@ impl Invite {
             .ok_or_else(|| PocError::Rejected("not a v2 invite".into()))?;
         let inv: Invite = serde_json::from_str(body)
             .map_err(|_| PocError::Rejected("malformed invite".into()))?;
-        if inv.slot.len() != 32 || inv.admin_cik.len() != 64 {
+        if inv.slot.is_empty()
+            || inv.slot.len() > 256
+            || inv.admin_cik.len() != 64
+            || inv.rendezvous.is_empty()
+        {
             return Err(PocError::Rejected("malformed invite".into()));
         }
         Ok(inv)

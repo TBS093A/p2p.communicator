@@ -35,6 +35,7 @@ import 'package:p2p_communicator/ui/widgets/message_bubble.dart';
 
 import 'test_images.dart';
 import 'test_platforms.dart';
+import 'v2_scenario.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -624,6 +625,11 @@ void main() {
     await shot(t, '07_members');
     await t.pageBack();
     await settle(t);
+
+    // v2 on the real network: two core members on this device's Veilid
+    // node, join with a checked fingerprint, messages both ways.
+    final v2 = await v2OverVeilid();
+    debugPrint('[v2] ${v2.join(', ')}');
 
     // A DM started with a QR code, listed under "DM".
     await backToHome(t);
