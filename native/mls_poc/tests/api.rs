@@ -146,6 +146,94 @@ fn a_conversation_through_json_rounds_only() {
     assert_eq!(bob.info(n - 1)["inbox"].as_array().unwrap().len(), 1);
 }
 
+/// `joiner` joins `admin`'s group through the API, as the app does it.
+fn join(host: &mut Host, admin: &mut Session, joiner: &mut Session) {
+    let invite = host.ok(admin, json!({"op": "create_invite"}));
+    let invite = invite.as_str().unwrap().to_string();
+    let cik = admin.info(0)["cik"].as_str().unwrap().to_string();
+    host.ok(
+        joiner,
+        json!({"op": "request_join", "invite": invite, "verified_admin": cik}),
+    );
+    let rv: Value = serde_json::from_str(invite.strip_prefix("p2pc2.").unwrap()).unwrap();
+    host.ok(
+        admin,
+        json!({"op": "stage_add", "rendezvous": rv["rendezvous"]}),
+    );
+    host.ok(admin, json!({"op": "publish_pending"}));
+    assert_eq!(
+        host.ok(joiner, json!({"op": "complete_join", "invite": invite})),
+        true
+    );
+}
+
+fn sync_all(host: &mut Host, all: &mut [&mut Session], times: usize) {
+    for _ in 0..times {
+        for s in all.iter_mut() {
+            host.ok(s, json!({"op": "sync"}));
+        }
+    }
+}
+
+/// Phase 3 as the app drives it (docs/V2_PLAN.md): a member's Update is
+/// committed by the admin, a successor list reaches everyone through an
+/// (empty) proposals commit, and a removal moves the group on without the
+/// removed member.
+#[test]
+fn membership_changes_through_the_api() {
+    let mut host = Host {
+        dht: MockDht::new(),
+    };
+    let mut alice = Session::new("alice");
+    let mut bob = Session::new("bob");
+    let mut carol = Session::new("carol");
+    host.ok(&mut alice, json!({"op": "create_group"}));
+    join(&mut host, &mut alice, &mut bob);
+    join(&mut host, &mut alice, &mut carol);
+    sync_all(&mut host, &mut [&mut alice, &mut bob, &mut carol], 4);
+    assert_eq!(alice.info(0)["members"].as_array().unwrap().len(), 3);
+
+    // Update: Bob proposes, the admin sees it pending and commits it.
+    let epoch = alice.info(0)["epoch"].as_u64().unwrap();
+    host.ok(&mut bob, json!({"op": "propose_update"}));
+    host.ok(&mut alice, json!({"op": "sync"}));
+    assert_eq!(alice.info(0)["pending_proposals"], 1);
+    host.ok(&mut alice, json!({"op": "stage_commit_proposals"}));
+    host.ok(&mut alice, json!({"op": "publish_pending"}));
+    assert_eq!(alice.info(0)["pending_proposals"], 0);
+    sync_all(&mut host, &mut [&mut bob, &mut carol], 2);
+    assert_eq!(bob.info(0)["epoch"].as_u64().unwrap(), epoch + 1);
+    assert_eq!(carol.info(0)["epoch"].as_u64().unwrap(), epoch + 1);
+
+    // Successors: set, then an empty commit carries the directory.
+    let bob_cik = bob.info(0)["cik"].as_str().unwrap().to_string();
+    host.ok(
+        &mut alice,
+        json!({"op": "set_successors", "successors": [bob_cik]}),
+    );
+    host.ok(&mut alice, json!({"op": "stage_commit_proposals"}));
+    host.ok(&mut alice, json!({"op": "publish_pending"}));
+    sync_all(&mut host, &mut [&mut bob, &mut carol], 2);
+    assert_eq!(bob.info(0)["successors"], json!([bob_cik]));
+    assert_eq!(carol.info(0)["successors"], json!([bob_cik]));
+
+    // Removal: Carol is out, the group moves on and keeps talking.
+    let carol_cik = carol.info(0)["cik"].as_str().unwrap().to_string();
+    host.ok(&mut alice, json!({"op": "stage_remove", "cik": carol_cik}));
+    host.ok(&mut alice, json!({"op": "publish_pending"}));
+    sync_all(&mut host, &mut [&mut alice, &mut bob, &mut carol], 4);
+    assert_eq!(carol.info(0)["removed"], true);
+    assert_eq!(alice.info(0)["members"].as_array().unwrap().len(), 2);
+    assert_eq!(bob.info(0)["move_stable"], true);
+    host.ok(
+        &mut bob,
+        json!({"op": "send_text", "text": "już bez Karoli"}),
+    );
+    sync_all(&mut host, &mut [&mut alice, &mut carol], 2);
+    assert!(texts(&alice).contains(&"już bez Karoli".to_string()));
+    assert!(!texts(&carol).contains(&"już bez Karoli".to_string()));
+}
+
 #[test]
 fn bad_requests_are_errors_not_panics() {
     let mut s = Session::new("x");
