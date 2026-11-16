@@ -740,6 +740,10 @@ void main() {
     await settle(t);
     await t.tap(find.text('Ustaw jako następcę'));
     await pumpUntil(t, find.textContaining('następca admina'));
+    // The label shows as soon as the list is set; the screen stays blocked
+    // until the commit carrying it is published, which the toast confirms.
+    await pumpUntil(t, find.textContaining('przejmie grupę, jeśli'));
+    await settle(t);
     await shot(t, '12_v2_members');
     await tapKey(t, 'v2-member-menu-Kasia z v2');
     await settle(t);
