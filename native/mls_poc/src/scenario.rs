@@ -198,7 +198,10 @@ fn run_inner(r: &mut Report) -> Result<(), String> {
     let mut leaked = false;
     for k in 1..=4 {
         if let Ok(Some(v)) = dht.get(&new_outbox, k) {
-            if let Ok((_, body)) = crate::wire::reassemble(&[v]) {
+            let chunk = crate::member::outbox_payload(&v)
+                .unwrap_or_default()
+                .to_vec();
+            if let Ok((_, body)) = crate::wire::reassemble(&[chunk]) {
                 if bob.try_decrypt(&body).is_some() {
                     leaked = true;
                 }

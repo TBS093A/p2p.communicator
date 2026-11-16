@@ -84,6 +84,16 @@ messages, Update, restart, removal with the generation move) through it.
 | F17 | `f17_oversized_welcome` | ✅ Welcome and commit split across subkeys and joined |
 | F18 | `f18_fuzz_parsers`, `f18_garbage_in_records`, `f18_garbage_join_request` | ✅ 20 000 random inputs to every parser, garbage in every record, garbage join requests: no crash and no state change |
 | F19 | `f19_diverging_histories` | ✅ the admin rewrites a published log position; each member's log is self-consistent, but `ctl` in the next messages reveals it on both sides; no further commit is accepted |
+| F20 | `f20_full_log_moves_to_a_new_generation` | ✅ Updates fill the 28-subkey log; commits are refused until the admin rotates; the group moves to a new generation without a removal (pending proposals go into that commit); a member offline throughout catches up through the Move |
+| F21 | `f21_outbox_ring_wrapped_is_a_visible_gap` | ✅ 210 messages into a 200-slot ring: the reader gets the last 200 and `lost_messages` = 10 with an event; reading continues past the wrap |
+| F22 | `f22_oversized_message_is_refused` | ✅ a text over the 4096-byte bucket is refused with no write and no state change |
+
+Record limits (PROTOCOL §B3.1): control log `LOG_SUBKEYS` = 28 with
+`LOG_RESERVE` = 6; outbox ring `OUTBOX_RING` = 200, each value prefixed
+with its position; rendezvous answer in subkeys 0..3 and request in 4..7
+(Veilid SMPL order); the Welcome answer is binary (JSON wrote each byte as
+a number) and an Add that would not fit four subkeys is refused before
+anything is published.
 
 ## Measurements
 
@@ -190,7 +200,6 @@ No phone run yet.
 
 * The join request is not HPKE-sealed to the admin's CIK.
 * The KeyPackage is public data; sealing it only hides metadata.
-* Outboxes don't wrap around (no 200-message ring).
 * Message padding is OpenMLS `padding_size(256)`, not the 256/1024/4096
   buckets.
 * A logical clock: 1 tick = 1 hour for `T_successor` (14 days) and the

@@ -50,6 +50,9 @@ pub enum Op {
     },
     /// Admin: publish whatever is staged (resumable, §B5.1).
     PublishPending,
+    /// Admin: the control log is (nearly) full (`info.needs_rotation`):
+    /// stage the move to a new generation (§B3.1), then publish_pending.
+    StageRotate,
     /// Joiner: pick up the Welcome. Result: whether it was there.
     CompleteJoin {
         invite: String,
@@ -250,6 +253,8 @@ impl Session {
                 "from": r.from, "text": r.text, "epoch": r.epoch,
             })).collect::<Vec<_>>(),
             "gaps": self.member.real_gaps(),
+            "lost_messages": st.lost_messages,
+            "needs_rotation": self.member.needs_rotation(),
         })
     }
 }
@@ -295,6 +300,10 @@ fn run(m: &mut Member, op: &Op, dht: &mut SnapshotDht) -> Result<Value, PocError
         }
         Op::PublishPending => {
             m.publish_pending(dht)?;
+            Value::Null
+        }
+        Op::StageRotate => {
+            m.stage_rotate(dht)?;
             Value::Null
         }
         Op::CompleteJoin { invite } => {
