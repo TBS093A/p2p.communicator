@@ -232,6 +232,23 @@ fn membership_changes_through_the_api() {
     sync_all(&mut host, &mut [&mut alice, &mut carol], 2);
     assert!(texts(&alice).contains(&"już bez Karoli".to_string()));
     assert!(!texts(&carol).contains(&"już bez Karoli".to_string()));
+
+    // Handover (§B5.4): Bob becomes the admin, starts the next generation,
+    // and owes a commit (`commit_due`).
+    let gen = alice.info(0)["gen"].as_u64().unwrap();
+    host.ok(&mut alice, json!({"op": "stage_handover", "to": bob_cik}));
+    host.ok(&mut alice, json!({"op": "publish_pending"}));
+    assert_eq!(alice.info(0)["is_admin"], false);
+    sync_all(&mut host, &mut [&mut bob, &mut alice], 4);
+    assert_eq!(bob.info(0)["is_admin"], true);
+    assert_eq!(bob.info(0)["commit_due"], true);
+    assert_eq!(alice.info(0)["admin"], json!(bob_cik));
+    assert_eq!(alice.info(0)["gen"].as_u64().unwrap(), gen + 1);
+    host.ok(&mut bob, json!({"op": "stage_commit_proposals"}));
+    host.ok(&mut bob, json!({"op": "publish_pending"}));
+    assert_eq!(bob.info(0)["commit_due"], false);
+    sync_all(&mut host, &mut [&mut alice], 2);
+    assert_eq!(alice.info(0)["epoch"], bob.info(0)["epoch"]);
 }
 
 #[test]

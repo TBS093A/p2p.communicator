@@ -787,10 +787,15 @@ fn f20_full_log_moves_to_a_new_generation() {
     let (mut dht, mut g) = group(&["alice", "bob", "carol"]);
     let gen = g[0].st.gen;
     // Carol goes offline; Updates fill the log until the admin must rotate.
+    // Each commit takes three log entries: the copied Update, the commit
+    // and the Directory (§B5.1).
     let mut commits = 0;
     while !g[0].needs_rotation() {
         g[1].propose_update(&mut dht).unwrap();
         g[0].sync(&mut dht).unwrap();
+        if g[0].needs_rotation() {
+            break; // the copy no longer fits with the reserve
+        }
         g[0].stage_commit_proposals().unwrap();
         g[0].publish_pending(&mut dht).unwrap();
         g[1].sync(&mut dht).unwrap();
@@ -799,8 +804,10 @@ fn f20_full_log_moves_to_a_new_generation() {
     }
     assert!(g[0].st.log_count <= LOG_SUBKEYS);
     // Nothing more fits: committing is refused until the group rotates.
-    g[1].propose_update(&mut dht).unwrap();
-    g[0].sync(&mut dht).unwrap();
+    if !g[1].my_update_pending() {
+        g[1].propose_update(&mut dht).unwrap();
+        g[0].sync(&mut dht).unwrap();
+    }
     assert!(g[0].stage_commit_proposals().is_err());
 
     g[0].stage_rotate(&mut dht).unwrap();
@@ -895,4 +902,153 @@ fn f22_oversized_message_is_refused() {
     g[0].send_text(&mut dht, &"a".repeat(3500)).unwrap();
     g[1].sync(&mut dht).unwrap();
     assert_eq!(texts(&g[1]).len(), 1);
+}
+
+// F23: members never take Update proposals from outboxes; the admin copies
+// each into the log before its commit, so a member that never saw the
+// proposal (offline, or the outbox lost it) applies the commit from the log
+// alone, and nobody but the proposer waits for the commit to send again.
+#[test]
+fn f23_update_proposals_reach_members_through_the_log() {
+    let (mut dht, mut g) = group(&["alice", "bob", "carol"]);
+    let epoch = g[0].st.epoch;
+    g[1].propose_update(&mut dht).unwrap();
+    assert!(g[1].my_update_pending());
+    sync_all(&mut dht, &mut g);
+    // Carol did not take Bob's proposal, so she can still send.
+    assert_eq!(g[2].pending_proposals(), 0);
+    g[2].send_text(&mut dht, "nadal piszę").unwrap();
+    assert_eq!(g[0].pending_proposals(), 1, "the admin took it");
+
+    // Carol goes offline; Bob's outbox loses the proposal for everyone
+    // after the admin read it (simulated: the admin commits right away).
+    let before = g[0].st.log_count;
+    g[0].stage_commit_proposals().unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    assert_eq!(
+        g[0].st.log_count,
+        before + 3,
+        "copy, commit and directory in the log"
+    );
+    g[1].sync(&mut dht).unwrap();
+    assert!(
+        !g[1].my_update_pending(),
+        "own copy skipped, commit applied"
+    );
+    assert_eq!(g[1].st.epoch, epoch + 1);
+    g[1].send_text(&mut dht, "znowu mogę").unwrap();
+
+    // More rounds while Carol is away; she catches up from the log alone.
+    for _ in 0..2 {
+        g[1].propose_update(&mut dht).unwrap();
+        g[0].sync(&mut dht).unwrap();
+        g[0].stage_commit_proposals().unwrap();
+        g[0].publish_pending(&mut dht).unwrap();
+        g[1].sync(&mut dht).unwrap();
+    }
+    g[2].sync(&mut dht).unwrap();
+    assert_eq!(g[2].st.epoch, epoch + 3, "{:?}", g[2].st.events);
+    assert_same_epoch(&[&g[0], &g[1], &g[2]]);
+    assert!(!has_event(&g[2], "not applicable"), "{:?}", g[2].st.events);
+    g[1].send_text(&mut dht, "po wszystkim").unwrap();
+    sync_all(&mut dht, &mut g);
+    // ("znowu mogę" is two epochs back for Carol: unreadable, as in F7.)
+    assert!(texts(&g[2]).contains(&"po wszystkim".to_string()));
+    assert!(texts(&g[0]).contains(&"znowu mogę".to_string()));
+    assert!(texts(&g[1]).contains(&"nadal piszę".to_string()));
+}
+
+// F24: the admin hands over to a member who is offline: messages keep
+// flowing and membership is frozen; when the new admin comes online it
+// starts g + 1 and everyone follows, including a member that reads the
+// new admin's Takeover before the AdminTransfer in the log.
+#[test]
+fn f24_handover_to_an_offline_member() {
+    let (mut dht, mut g) = group(&["alice", "bob", "carol", "dave"]);
+    let (gen, epoch) = (g[0].st.gen, g[0].st.epoch);
+    let bob = g[1].st.cik.clone();
+    // A handover only goes to another current member.
+    assert!(g[0].stage_handover("00".repeat(32).as_str()).is_err());
+    let alice = g[0].st.cik.clone();
+    assert!(g[0].stage_handover(&alice).is_err());
+    g[0].stage_handover(&bob).unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    assert!(!g[0].is_admin());
+    // Carol reads it; Bob and Dave are offline.
+    g[2].sync(&mut dht).unwrap();
+    assert_eq!(g[2].st.admin_cik, bob);
+    // Messages flow, membership is frozen: the old admin commits nothing.
+    g[0].send_text(&mut dht, "już nie admin").unwrap();
+    g[2].send_text(&mut dht, "ok").unwrap();
+    g[0].sync(&mut dht).unwrap();
+    g[2].sync(&mut dht).unwrap();
+    assert!(texts(&g[2]).contains(&"już nie admin".to_string()));
+    assert!(texts(&g[0]).contains(&"ok".to_string()));
+    assert!(g[0].stage_commit_proposals().is_err());
+    assert_eq!(g[2].st.epoch, epoch);
+
+    // Bob comes online: he becomes the admin and starts g + 1.
+    g[1].sync(&mut dht).unwrap();
+    assert!(g[1].is_admin());
+    assert_eq!(g[1].st.gen, gen + 1);
+    assert!(g[1].st.commit_due);
+    // Dave reads Bob's Takeover (outboxes first) before the AdminTransfer.
+    g[3].sync(&mut dht).unwrap();
+    assert_eq!(g[3].st.admin_cik, bob);
+    assert_ne!(
+        g[3].st.move_state,
+        MoveState::Stable,
+        "{:?}",
+        g[3].st.events
+    );
+    for _ in 0..4 {
+        sync_all(&mut dht, &mut g);
+    }
+    for m in &g {
+        assert_eq!(m.st.gen, gen + 1, "{}: {:?}", m.st.name, m.st.events);
+        assert_eq!(m.st.admin_cik, bob, "{}", m.st.name);
+        assert_eq!(m.st.move_state, MoveState::Stable, "{}", m.st.name);
+    }
+    // The new admin commits (commit_due) and everyone applies it.
+    g[1].stage_commit_proposals().unwrap();
+    g[1].publish_pending(&mut dht).unwrap();
+    assert!(!g[1].st.commit_due);
+    sync_all(&mut dht, &mut g);
+    assert_eq!(g[0].st.epoch, epoch + 1);
+    assert_same_epoch(&[&g[0], &g[1], &g[2], &g[3]]);
+    g[3].send_text(&mut dht, "nowy admin").unwrap();
+    sync_all(&mut dht, &mut g);
+    assert!(texts(&g[0]).contains(&"nowy admin".to_string()));
+}
+
+// F24, the member's view: an Update proposed before the handover is never
+// committed (the old admin no longer commits, the new one never took it);
+// the proposer drops it when it moves, so it is not blocked from sending,
+// and proposes again in the new generation.
+#[test]
+fn f24_update_pending_across_a_handover() {
+    let (mut dht, mut g) = group(&["alice", "bob", "carol"]);
+    let bob = g[1].st.cik.clone();
+    g[2].propose_update(&mut dht).unwrap();
+    assert!(g[2].send_text(&mut dht, "zablokowana").is_err(), "MLS rule");
+    // The admin hands over before reading Carol's proposal.
+    g[0].stage_handover(&bob).unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    for _ in 0..4 {
+        sync_all(&mut dht, &mut g);
+    }
+    assert!(g[1].is_admin());
+    assert!(!g[2].my_update_pending());
+    assert!(has_event(&g[2], "own update not committed"));
+    g[2].send_text(&mut dht, "odblokowana").unwrap();
+    // Proposed again, committed by the new admin through the new log.
+    g[2].propose_update(&mut dht).unwrap();
+    sync_all(&mut dht, &mut g);
+    assert_eq!(g[1].pending_proposals(), 1);
+    g[1].stage_commit_proposals().unwrap();
+    g[1].publish_pending(&mut dht).unwrap();
+    sync_all(&mut dht, &mut g);
+    assert!(!g[2].my_update_pending());
+    assert!(texts(&g[0]).contains(&"odblokowana".to_string()));
+    assert_same_epoch(&[&g[0], &g[1], &g[2]]);
 }

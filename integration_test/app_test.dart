@@ -731,8 +731,9 @@ void main() {
     await settle(t);
     await shot(t, '11_v2_admin');
 
-    // Membership (phase 3): the admin makes Kasia its successor, then
-    // removes her; her copy of the group says so.
+    // Membership (phase 3): the admin makes Kasia its successor, hands the
+    // admin role over to her, and Kasia, now the admin, removes it; the old
+    // admin's copy of the group says so.
     await openMenu(t, 'Osoby');
     await pumpUntil(t, find.byKey(const ValueKey('v2-member-Kasia z v2')));
     await settle(t);
@@ -747,16 +748,45 @@ void main() {
     await shot(t, '12_v2_members');
     await tapKey(t, 'v2-member-menu-Kasia z v2');
     await settle(t);
+    await t.tap(find.text('Przekaż rolę admina'));
+    await tapKey(t, 'v2-handover-confirm');
+    await pumpUntil(t, find.textContaining('jest teraz adminem grupy'));
+    await settle(t);
+    // No admin menu any more on the old admin's side.
+    expect(
+      find.byKey(const ValueKey('v2-member-menu-Kasia z v2')),
+      findsNothing,
+    );
+    await t.pageBack();
+    await settle(t);
+    await t.pageBack();
+    await settle(t);
+    // Kasia's group is the second "Test v2" on the list. Once her phone
+    // reads the handover she is the admin: the menu appears next to the
+    // other member, and she removes it.
+    await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).last);
+    await settle(t);
+    await openMenu(t, 'Osoby');
+    final adminMenu = find.byWidgetPredicate(
+      (w) =>
+          w.key is ValueKey<String> &&
+          (w.key! as ValueKey<String>).value.startsWith('v2-member-menu-'),
+    );
+    await pumpUntil(t, adminMenu);
+    await settle(t);
+    await t.tap(adminMenu.first);
+    await settle(t);
     await t.tap(find.text('Usuń z grupy'));
     await tapKey(t, 'v2-remove-confirm');
     await pumpUntil(t, find.text('Osoby (1)'));
+    await settle(t);
+    await shot(t, '13_v2_new_admin');
     await t.pageBack();
     await settle(t);
-    await pumpUntil(t, find.text('osób: 1'));
     await t.pageBack();
     await settle(t);
-    // Kasia's group is the second "Test v2" on the list.
-    await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).last);
+    // The old admin's group (the first "Test v2") was removed by Kasia.
+    await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).first);
     await pumpUntil(t, find.text('Usunięto cię z tej grupy.'));
     await settle(t);
     t.state<NavigatorState>(find.byType(Navigator).first)

@@ -482,6 +482,34 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
     await _run(() => groups.removeMember(g, cik), 'Usunięto $name');
   }
 
+  Future<void> _handOver(String cik, String name) async {
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Przekazać rolę admina: $name?'),
+        content: Text(
+          'Od teraz $name będzie wpuszczać i usuwać osoby, a ty zostaniesz '
+          'zwykłym członkiem. Twoje otwarte zaproszenia przestaną działać. '
+          'Dopóki $name nie włączy aplikacji, rozmowa działa, ale skład '
+          'grupy się nie zmienia.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Anuluj'),
+          ),
+          FilledButton(
+            key: const ValueKey('v2-handover-confirm'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Przekaż'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true) return;
+    await _run(() => groups.handOver(g, cik), '$name jest teraz adminem grupy');
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -528,6 +556,7 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
                             key: ValueKey('v2-member-menu-${room.nameOf(c)}'),
                             onSelected: (a) => switch (a) {
                               'remove' => _remove(c, room.nameOf(c)),
+                              'handover' => _handOver(c, room.nameOf(c)),
                               'successor' => _run(
                                 () => groups.setSuccessor(g, c),
                                 '${room.nameOf(c)} przejmie grupę, jeśli '
@@ -550,6 +579,10 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
                                   child: Text('Usuń jako następcę'),
                                 ),
                               const PopupMenuItem(
+                                value: 'handover',
+                                child: Text('Przekaż rolę admina'),
+                              ),
+                              const PopupMenuItem(
                                 value: 'remove',
                                 child: Text('Usuń z grupy'),
                               ),
@@ -565,7 +598,8 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
                         ? 'Jesteś adminem: tylko ty wpuszczasz i usuwasz '
                               'osoby. Ustaw następcę: jeśli przez 14 dni nie '
                               'będzie od ciebie żadnej aktywności, przejmie '
-                              'grupę.'
+                              'grupę. Rolę możesz też przekazać od razu '
+                              '(menu przy osobie).'
                         : 'Admin wpuszcza i usuwa osoby. Jeśli zniknie na 14 '
                               'dni, grupę przejmie jego następca.',
                     style: Theme.of(context).textTheme.bodySmall,

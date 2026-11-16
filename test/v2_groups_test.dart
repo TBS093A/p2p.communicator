@@ -232,4 +232,62 @@ void main() {
     await bob.close();
     await carol.close();
   });
+
+  test(
+    'handover: the new admin moves the group on and lets people in',
+    () async {
+      final dht = MemoryDht();
+      final alice = phone(dht);
+      final bob = phone(dht);
+      final carol = phone(dht);
+      final dave = phone(dht);
+
+      Future<V2Group> joinAs(
+        V2Groups admin,
+        V2Group ga,
+        V2Groups p,
+        String me,
+      ) async {
+        final code = await admin.createInvite(ga);
+        final g = await p.join(V2Invite.tryParse(code)!, 'Grupa', me);
+        await rounds([(p, g), (admin, ga)], times: 4);
+        expect(g.joining, isFalse);
+        return g;
+      }
+
+      final ga = await alice.create('Rada', 'Ala');
+      final gb = await joinAs(alice, ga, bob, 'Bob');
+      final gc = await joinAs(alice, ga, carol, 'Karola');
+      final all = [(alice, ga), (bob, gb), (carol, gc)];
+      await rounds(all, times: 3);
+      final gen = alice.info(ga)['gen'] as int;
+      final epoch = alice.info(ga)['epoch'] as int;
+
+      final bobCik = bob.myCik(gb);
+      await alice.handOver(ga, bobCik);
+      expect(alice.isAdmin(ga), isFalse);
+      await rounds(all, times: 4);
+      expect(bob.isAdmin(gb), isTrue);
+      for (final (p, g) in all) {
+        expect(p.info(g)['admin'], bobCik);
+        expect(p.info(g)['gen'], gen + 1);
+        expect(p.info(g)['move_stable'], isTrue);
+      }
+      // Bob's first commit as admin reached everyone.
+      expect(bob.info(gb)['commit_due'], isFalse);
+      expect(carol.info(gc)['epoch'] as int, greaterThan(epoch));
+      expect(carol.info(gc)['epoch'], bob.info(gb)['epoch']);
+
+      // The conversation goes on, and Bob lets Dawid in.
+      await carol.roomOf(gc).sendText('po zmianie admina');
+      await rounds(all, times: 2);
+      expect(texts(alice.roomOf(ga)), contains('po zmianie admina'));
+      final gd = await joinAs(bob, gb, dave, 'Dawid');
+      await rounds([...all, (dave, gd)], times: 3);
+      expect(alice.roomOf(ga).memberOutboxes, hasLength(4));
+      for (final p in [alice, bob, carol, dave]) {
+        await p.close();
+      }
+    },
+  );
 }

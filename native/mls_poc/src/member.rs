@@ -34,6 +34,10 @@ pub const LOG_SUBKEYS: u32 = 28;
 /// Free log subkeys an admin keeps for the next commit, what follows it and
 /// a `Move`; with fewer left the group moves to a new generation first.
 pub const LOG_RESERVE: u32 = 6;
+/// Members' proposals the admin takes for one commit; each is copied into
+/// the log before it (§B5.1). Further ones are not taken: their senders
+/// propose again after the next commit.
+pub const MAX_COPIED: usize = 8;
 /// Outbox ring: position `p` (1-based) lives in subkey `1 + (p-1) % R`.
 pub const OUTBOX_RING: u32 = 200;
 /// Largest application message plaintext (the 4096-byte padding bucket).
@@ -180,6 +184,8 @@ pub enum PendingKind {
         next_control: RecordId,
         next_owner: Vec<u8>,
     },
+    /// Handover: no commit, only an `AdminTransfer` in the log (§B5.4).
+    Handover { to: String },
 }
 
 /// A commit created and persisted, then published in phases that can each
@@ -196,6 +202,10 @@ pub struct Pending {
     pub phase: u8,
     /// Encrypted once in phase 1, then only ever rewritten identically.
     followups: Vec<Vec<u8>>,
+    /// Members' proposals the commit references, copied into the log right
+    /// before it (§B5.1), as the senders' original MLS messages.
+    #[serde(default)]
+    pub proposals: Vec<Vec<u8>>,
 }
 
 /// Per-member move to a new generation (B5.3 table).
@@ -280,6 +290,28 @@ pub struct State {
     /// (§B3.1, F21): shown as a gap, never silently.
     #[serde(default)]
     pub lost_messages: u32,
+    /// Admin: members' proposals taken from outboxes and stored, as
+    /// (proposal reference, original MLS message), to copy into the log
+    /// before the commit that references them (§B5.1, F23).
+    #[serde(default)]
+    proposal_copies: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Hashes of own proposals sent in this epoch: their copies in the log
+    /// are skipped (MLS cannot decrypt a member's own message).
+    #[serde(default)]
+    my_proposals: BTreeSet<String>,
+    /// Admin: a commit should follow soon even without proposals (after a
+    /// handover or after proposals were dropped), so members holding their
+    /// own unanswered proposals can send again.
+    #[serde(default)]
+    pub commit_due: bool,
+    /// This member was handed the admin role and still has to start the
+    /// next generation (§B5.4).
+    #[serde(default)]
+    pub handover_due: bool,
+    /// `Takeover`s read from a member's outbox before the log's
+    /// `AdminTransfer` that makes it the admin (outboxes are read first).
+    #[serde(default)]
+    early_takeovers: BTreeMap<String, (u64, RecordId)>,
 }
 
 /// The outbox ring subkey of position `p` (1-based).
@@ -400,6 +432,11 @@ impl Member {
                 events: vec![],
                 undecryptable: 0,
                 lost_messages: 0,
+                proposal_copies: vec![],
+                my_proposals: BTreeSet::new(),
+                commit_due: false,
+                handover_due: false,
+                early_takeovers: BTreeMap::new(),
             },
             provider,
             signer,
@@ -440,6 +477,46 @@ impl Member {
             .as_ref()
             .map(|g| g.pending_proposals().count())
             .unwrap_or(0)
+    }
+
+    /// Whether this member's own proposal (an Update) waits for a commit:
+    /// MLS sends no application message until then.
+    pub fn my_update_pending(&self) -> bool {
+        self.group.as_ref().is_some_and(|g| {
+            let me = g.own_leaf_index();
+            g.pending_proposals()
+                .any(|q| matches!(q.sender(), Sender::Member(i) if *i == me))
+        })
+    }
+
+    /// Admin: copies of the stored proposals, for the next commit.
+    fn copies_for_commit(&self) -> Vec<Vec<u8>> {
+        let Some(group) = self.group.as_ref() else {
+            return vec![];
+        };
+        self.st
+            .proposal_copies
+            .iter()
+            .filter(|(r, _)| {
+                group
+                    .pending_proposals()
+                    .any(|q| q.proposal_reference_ref().as_slice() == r.as_slice())
+            })
+            .map(|(_, m)| m.clone())
+            .collect()
+    }
+
+    fn chunks_of(msgs: &[Vec<u8>]) -> u32 {
+        msgs.iter()
+            .map(|m| wire::chunk(Kind::Mls, m).len() as u32)
+            .sum()
+    }
+
+    /// After any merged commit: the proposals of the old epoch are gone.
+    fn epoch_changed(&mut self) {
+        self.st.proposal_copies.clear();
+        self.st.my_proposals.clear();
+        self.st.commit_due = false;
     }
 
     pub fn epoch_authenticator(&self) -> Vec<u8> {
@@ -584,6 +661,7 @@ impl Member {
         rendezvous: &[RecordId],
     ) -> Result<(), PocError> {
         self.require_no_pending()?;
+        let proposals = self.copies_for_commit();
         let mut kps = vec![];
         let mut joiners = vec![];
         for r in rendezvous {
@@ -621,6 +699,7 @@ impl Member {
             hash_at: self.st.log_hash.clone(),
             phase: 0,
             followups: vec![],
+            proposals,
         });
         Ok(())
     }
@@ -725,6 +804,7 @@ impl Member {
         };
         dht.set(&next_control, 0, &header.encode(), &next_owner)?;
         // 2. Commit created and persisted before publishing.
+        let proposals = self.copies_for_commit();
         let group = self.group.as_mut().expect("checked above");
         let (commit, _, _) = group
             .remove_members(&self.provider, &self.signer, &[leaf])
@@ -739,17 +819,19 @@ impl Member {
             hash_at: self.st.log_hash.clone(),
             phase: 0,
             followups: vec![],
+            proposals,
         });
         Ok(())
     }
 
-    /// Admin: commits the queued proposals (e.g. members' Updates, F13).
-    /// Admin: whether the control log has too little room left for the next
-    /// commit, what follows it and a `Move` (§B3.1).
+    /// Admin: whether the control log has too little room left for the
+    /// proposals to copy, the next commit, what follows it and a `Move`
+    /// (§B3.1, §B5.1).
     pub fn needs_rotation(&self) -> bool {
         self.is_admin()
             && self.st.move_state == MoveState::Stable
-            && self.st.log_count + LOG_RESERVE > LOG_SUBKEYS
+            && self.st.log_count + LOG_RESERVE + Self::chunks_of(&self.copies_for_commit())
+                > LOG_SUBKEYS
     }
 
     /// Admin: stage moving the group to a new generation without removing
@@ -774,19 +856,37 @@ impl Member {
         };
         dht.set(&next_control, 0, &header.encode(), &next_owner)?;
         // Proposals waiting (e.g. Updates) go into this one commit: MLS
-        // sends nothing while proposals are pending, and the log's reserve
-        // has room for one commit and the Move. Otherwise no commit at all.
+        // sends nothing while proposals are pending. What is left of the
+        // log has to hold their copies, the commit (two subkeys at most)
+        // and the Move; proposals that do not fit are dropped (their
+        // senders propose again), and with none left, no commit at all.
+        let room = LOG_SUBKEYS.saturating_sub(self.st.log_count + 3);
+        while !self.st.proposal_copies.is_empty()
+            && Self::chunks_of(&self.copies_for_commit()) > room
+        {
+            let (r, _) = self.st.proposal_copies.pop().expect("not empty");
+            self.drop_proposal(&r)?;
+        }
+        let proposals = self.copies_for_commit();
         let group = self
             .group
             .as_mut()
             .ok_or_else(|| PocError::Rejected("no group".into()))?;
-        let commit = if group.pending_proposals().next().is_some() {
+        let commit = if proposals.is_empty() {
+            if group.pending_proposals().next().is_some() {
+                // Only the admin's own proposals: not needed (its commits
+                // refresh its leaf anyway); members get a commit soon.
+                group
+                    .clear_pending_proposals(self.provider.storage())
+                    .map_err(mls)?;
+                self.st.commit_due = true;
+            }
+            vec![]
+        } else {
             let (commit, _, _) = group
                 .commit_to_pending_proposals(&self.provider, &self.signer)
                 .map_err(mls)?;
             commit.to_bytes().map_err(mls)?
-        } else {
-            vec![]
         };
         self.st.pending = Some(Pending {
             kind: PendingKind::Rotate {
@@ -798,12 +898,39 @@ impl Member {
             hash_at: self.st.log_hash.clone(),
             phase: 0,
             followups: vec![],
+            proposals,
         });
         Ok(())
     }
 
+    /// Admin: drops one stored proposal (it did not fit, §B5.1).
+    fn drop_proposal(&mut self, r: &[u8]) -> Result<(), PocError> {
+        let group = self
+            .group
+            .as_mut()
+            .ok_or_else(|| PocError::Rejected("no group".into()))?;
+        let found = group
+            .pending_proposals()
+            .find(|q| q.proposal_reference_ref().as_slice() == r)
+            .map(|q| q.proposal_reference_ref().clone());
+        if let Some(found) = found {
+            group
+                .remove_pending_proposal(self.provider.storage(), &found)
+                .map_err(mls)?;
+            self.st.commit_due = true;
+            self.st
+                .events
+                .push("a proposal did not fit the log: dropped".into());
+        }
+        Ok(())
+    }
+
+    /// Admin: commits the queued proposals (e.g. members' Updates, F13),
+    /// copied into the log before the commit (§B5.1). With none, an empty
+    /// commit that refreshes the admin's own leaf.
     pub fn stage_commit_proposals(&mut self) -> Result<(), PocError> {
         self.require_no_pending()?;
+        let proposals = self.copies_for_commit();
         let group = self
             .group
             .as_mut()
@@ -818,6 +945,39 @@ impl Member {
             hash_at: self.st.log_hash.clone(),
             phase: 0,
             followups: vec![],
+            proposals,
+        });
+        Ok(())
+    }
+
+    /// Admin: stages handing the admin role to `to` (§B5.4): an
+    /// `AdminTransfer` in the log, published like a commit (resumable).
+    /// Waiting proposals are committed first.
+    pub fn stage_handover(&mut self, to: &str) -> Result<(), PocError> {
+        self.require_no_pending()?;
+        if to == self.st.cik || !self.members().iter().any(|m| m == to) {
+            return Err(PocError::Rejected(
+                "hand over only to another current member".into(),
+            ));
+        }
+        if self.pending_proposals() > 0 {
+            return Err(PocError::Rejected(
+                "proposals are waiting: commit them first".into(),
+            ));
+        }
+        if self.st.move_state != MoveState::Stable {
+            return Err(PocError::Rejected(
+                "the group is moving: hand over afterwards".into(),
+            ));
+        }
+        self.st.pending = Some(Pending {
+            kind: PendingKind::Handover { to: to.into() },
+            commit: vec![],
+            at: self.st.log_count,
+            hash_at: self.st.log_hash.clone(),
+            phase: 0,
+            followups: vec![],
+            proposals: vec![],
         });
         Ok(())
     }
@@ -843,9 +1003,7 @@ impl Member {
             0 => {
                 self.st.log_count = p.at;
                 self.st.log_hash = p.hash_at.clone();
-                if !p.commit.is_empty() {
-                    self.append_log(dht, Kind::Mls, &p.commit)?;
-                }
+                self.append_commit(dht, &p)?;
                 p.phase = 1;
             }
             1 => {
@@ -853,7 +1011,11 @@ impl Member {
                 if group.pending_commit().is_some() {
                     group.merge_pending_commit(&self.provider).map_err(mls)?;
                 }
-                self.st.epoch = group.epoch().as_u64();
+                let epoch = group.epoch().as_u64();
+                if epoch != self.st.epoch {
+                    self.epoch_changed();
+                }
+                self.st.epoch = epoch;
                 p.followups = match &p.kind {
                     PendingKind::Add { joiners, .. } => {
                         for j in joiners {
@@ -881,6 +1043,9 @@ impl Member {
                             control: next_control.clone(),
                         })?]
                     }
+                    PendingKind::Handover { to } => {
+                        vec![self.encrypt(&AppMsg::AdminTransfer { to: to.clone() })?]
+                    }
                 };
                 p.phase = 2;
             }
@@ -888,9 +1053,7 @@ impl Member {
                 // Positions right after the commit, same bytes every time.
                 self.st.log_count = p.at;
                 self.st.log_hash = p.hash_at.clone();
-                if !p.commit.is_empty() {
-                    self.append_log(dht, Kind::Mls, &p.commit)?;
-                }
+                self.append_commit(dht, &p)?;
                 for f in &p.followups {
                     self.append_log(dht, Kind::Mls, f)?;
                 }
@@ -929,7 +1092,7 @@ impl Member {
                         self.st.gen = gen;
                         self.st.log_count = 0;
                         self.st.log_hash = String::new();
-                        self.append_log(dht, Kind::Mls, &p.commit)?;
+                        self.append_commit(dht, &p)?;
                         self.write_header(dht)?;
                         self.st.move_state = MoveState::Moving {
                             gen,
@@ -953,6 +1116,14 @@ impl Member {
                             gen,
                             control: next_control.clone(),
                         };
+                    }
+                    PendingKind::Handover { to } => {
+                        // From here on `to` is the admin; it starts g + 1.
+                        self.st.admin_cik = to.clone();
+                        self.st.successors.retain(|s| s != to);
+                        self.st.proposal_copies.clear();
+                        self.st.invites.clear();
+                        self.st.events.push("admin role handed over".into());
                     }
                 }
                 self.st.pending = None;
@@ -985,6 +1156,17 @@ impl Member {
     pub fn append_raw_for_test(&mut self, dht: &mut dyn Dht, msg: &[u8]) -> Result<(), PocError> {
         self.append_log(dht, Kind::Mls, msg)?;
         self.write_header(dht)
+    }
+
+    /// The copied proposals, then the commit (§B5.1).
+    fn append_commit(&mut self, dht: &mut dyn Dht, p: &Pending) -> Result<(), PocError> {
+        if p.commit.is_empty() {
+            return Ok(());
+        }
+        for m in &p.proposals {
+            self.append_log(dht, Kind::Mls, m)?;
+        }
+        self.append_log(dht, Kind::Mls, &p.commit)
     }
 
     fn append_log(&mut self, dht: &mut dyn Dht, kind: Kind, msg: &[u8]) -> Result<(), PocError> {
@@ -1221,6 +1403,8 @@ impl Member {
             .propose_self_update(&self.provider, &self.signer, LeafNodeParameters::default())
             .map_err(mls)?;
         let bytes = msg.to_bytes().map_err(mls)?;
+        // Its copy in the log is skipped (§B5.1): we cannot decrypt it.
+        self.st.my_proposals.insert(wire::sha256_hex(&bytes));
         self.write_outbox(dht, Kind::Mls, &bytes)
     }
 
@@ -1267,6 +1451,7 @@ impl Member {
         self.sync_outboxes(dht)?;
         self.sync_control(dht)?;
         self.sync_outboxes(dht)?;
+        self.start_after_handover(dht)?;
         for _ in 0..move_steps {
             self.step_move(dht)?;
         }
@@ -1391,6 +1576,11 @@ impl Member {
         let current = group.epoch().as_u64();
         let msg_epoch = proto.epoch().as_u64();
         let handshake = proto.content_type() != ContentType::Application;
+        let proposal = proto.content_type() == ContentType::Proposal;
+        if proposal && self.st.my_proposals.contains(&wire::sha256_hex(body)) {
+            // Our own Update, copied by the admin: already in our store.
+            return Ok(true);
+        }
         // B5.2 r1/r2: commits only for exactly the current epoch (which they
         // advance); older ones are duplicates or replays.
         if handshake && msg_epoch < current {
@@ -1409,6 +1599,14 @@ impl Member {
             Ok(p) => p,
             Err(e) => {
                 let e = format!("{e:?}");
+                if proposal {
+                    // A copy we cannot use; if its commit needs it, the
+                    // commit waits and says so.
+                    self.st
+                        .events
+                        .push(format!("proposal copy in the log not usable: {e}"));
+                    return Ok(true);
+                }
                 if handshake {
                     // Typically a proposal it references is not here yet.
                     self.st
@@ -1439,6 +1637,7 @@ impl Member {
                     .merge_staged_commit(&self.provider, *staged)
                     .map_err(mls)?;
                 self.st.epoch = group.epoch().as_u64();
+                self.epoch_changed();
                 self.st.last_admin_activity = dht.now();
                 if removed_me {
                     self.st.removed = true;
@@ -1484,6 +1683,30 @@ impl Member {
                                     .push(format!("move to gen {gen} during an unfinished move"));
                             }
                             self.st.move_state = MoveState::Moving { gen, control };
+                        }
+                    }
+                    // §B5.4: from this log position on, `to` is the admin;
+                    // later entries signed by the old admin are rejected.
+                    Ok(AppMsg::AdminTransfer { to }) => {
+                        let current = self.members().contains(&to);
+                        if current && to != self.st.admin_cik {
+                            self.st.admin_cik = to.clone();
+                            self.st.successors.retain(|s| *s != to);
+                            self.st.events.push("admin role handed over".into());
+                            if to == self.st.cik {
+                                self.st.handover_due = true;
+                            }
+                            let early = self.st.early_takeovers.remove(&to);
+                            if let Some((gen, control)) = early {
+                                if gen == self.st.gen + 1 && self.st.move_state == MoveState::Stable
+                                {
+                                    self.st.move_state = MoveState::Moving { gen, control };
+                                }
+                            }
+                        } else {
+                            self.st
+                                .events
+                                .push("handover to a non-member ignored".into());
                         }
                     }
                     Ok(other) => self
@@ -1643,10 +1866,21 @@ impl Member {
         let Ok(proto) = msg.try_into_protocol_message() else {
             return Ok(true);
         };
+        let content_type = proto.content_type();
+        if content_type == ContentType::Proposal
+            && (!self.is_admin() || self.st.proposal_copies.len() >= MAX_COPIED)
+        {
+            // §B5.1: only the admin takes proposals from outboxes; members
+            // get them from the log, and must not decrypt them here (that
+            // would use up the key the log copy needs).
+            if self.is_admin() {
+                self.st.commit_due = true; // over MAX_COPIED: commit soon
+            }
+            return Ok(true);
+        }
         let group = self.group.as_mut().expect("synced only with a group");
         let msg_epoch = proto.epoch().as_u64();
         let current = group.epoch().as_u64();
-        let content_type = proto.content_type();
         if msg_epoch > current {
             return Ok(false);
         }
@@ -1723,6 +1957,12 @@ impl Member {
                             && self.st.move_state == MoveState::Stable
                         {
                             self.st.move_state = MoveState::Moving { gen, control };
+                        } else if gen == self.st.gen + 1 {
+                            // Outboxes are read before the log: the
+                            // AdminTransfer naming this sender may follow
+                            // (§B5.4). Kept until then, applied only if it
+                            // does.
+                            self.st.early_takeovers.insert(sender_cik, (gen, control));
                         }
                     }
                     Ok(other) => self
@@ -1733,9 +1973,13 @@ impl Member {
                 }
             }
             ProcessedMessageContent::ProposalMessage(p) => {
+                // Admin (checked above): stored, and kept as sent, to be
+                // copied into the log before the commit (§B5.1).
+                let r = p.proposal_reference_ref().as_slice().to_vec();
                 group
                     .store_pending_proposal(self.provider.storage(), *p)
                     .map_err(mls)?;
+                self.st.proposal_copies.push((r, body.to_vec()));
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
                 // Only a successor's takeover commit may come from an outbox
@@ -1748,6 +1992,7 @@ impl Member {
                         .merge_staged_commit(&self.provider, *staged)
                         .map_err(mls)?;
                     self.st.epoch = group.epoch().as_u64();
+                    self.epoch_changed();
                     self.st.admin_cik = sender_cik;
                     self.st.last_admin_activity = dht.now();
                     self.st
@@ -1783,6 +2028,21 @@ impl Member {
                 outbox,
                 secret,
             } => {
+                // An own Update still waiting is never committed now: the
+                // old log ends with the Move or the new admin's Takeover,
+                // and every commit before it was already applied. MLS sends
+                // nothing while it waits, so it goes; the next one is
+                // proposed in the new generation.
+                if self.my_update_pending() {
+                    let group = self.group.as_mut().expect("member has a group");
+                    group
+                        .clear_pending_proposals(self.provider.storage())
+                        .map_err(mls)?;
+                    self.st.my_proposals.clear();
+                    self.st
+                        .events
+                        .push("own update not committed before the move: dropped".into());
+                }
                 // Last message in the old outbox, in the new epoch.
                 let note = self.encrypt(&AppMsg::MyOutbox {
                     gen,
@@ -1884,6 +2144,7 @@ impl Member {
         let group = self.group.as_mut().expect("member has a group");
         group.merge_pending_commit(&self.provider).map_err(mls)?;
         self.st.epoch = group.epoch().as_u64();
+        self.epoch_changed();
         // New generation owned by the new admin.
         let gen = self.st.gen + 1;
         let takeover = self.encrypt(&AppMsg::Takeover {
@@ -1901,6 +2162,50 @@ impl Member {
         self.write_header(dht)?;
         self.st.move_state = MoveState::Moving { gen, control };
         Ok(true)
+    }
+
+    /// New admin after a handover (§B5.4): starts generation g + 1 (the old
+    /// admin still owns `C_g`) and announces it with a `Takeover` in its
+    /// own outbox, without a commit. Then a commit soon (`commit_due`), so
+    /// members whose Updates the old admin never committed can send again.
+    fn start_after_handover(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
+        if !self.st.handover_due
+            || self.st.removed
+            || self.st.move_state != MoveState::Stable
+            || !self.is_admin()
+        {
+            return Ok(());
+        }
+        // The record first: if the host has none ready, nothing changed.
+        let (control, owner) = dht.create()?;
+        let gen = self.st.gen + 1;
+        // Our own Update, if one waits, will never be committed by the old
+        // admin; our next commit refreshes our leaf anyway.
+        if self.my_update_pending() {
+            let group = self.group.as_mut().expect("member has a group");
+            group
+                .clear_pending_proposals(self.provider.storage())
+                .map_err(mls)?;
+            self.st.my_proposals.clear();
+        }
+        let takeover = self.encrypt(&AppMsg::Takeover {
+            gen,
+            control: control.clone(),
+        })?;
+        self.write_outbox(dht, Kind::Mls, &takeover)?;
+        self.st.control_owner = Some(owner);
+        self.st.control = Some(control.clone());
+        self.st.gen = gen;
+        self.st.log_count = 0;
+        self.st.log_hash = String::new();
+        self.write_header(dht)?;
+        self.st.move_state = MoveState::Moving { gen, control };
+        self.st.handover_due = false;
+        self.st.commit_due = true;
+        self.st
+            .events
+            .push("now the admin: new generation started".into());
+        Ok(())
     }
 
     // ----------------------------------------------------- retention (F7)
