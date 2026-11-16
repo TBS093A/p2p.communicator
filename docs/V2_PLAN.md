@@ -70,7 +70,10 @@ key in the next round.
 * Regular `Update`s for post-compromise security (§B5.1).
 * Admin handover, designated successors, takeover after `T_successor`
   (§B5.4), fork warning (F14), diverging history check (F19).
-* Proposals carried by value (decided after the PoC).
+* Everything a commit needs in the log: the admin's proposals by value,
+  members' `Update`s copied in before the commit (§B5.1, revised).
+* Voluntary handover (`AdminTransfer`, §B5.4); the takeover commit removes
+  the lost admin's leaf.
 
 ### Phase 4: media, identities, metadata
 
