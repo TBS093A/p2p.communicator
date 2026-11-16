@@ -79,7 +79,8 @@ key in the next round.
 
 * Encrypted media before chunking (§B9).
 * One identity per conversation by default; global profile as an opt-in
-  link (§B10); DMs as two-member groups.
+  link (§B10); DMs as two-member groups, started from a shared group with a
+  join request signed by the recipient's `CIK` there (§B10, F25).
 * Presence opt-in, coarse (§B8).
 
 ### Phase 5: v1 read-only and the move
