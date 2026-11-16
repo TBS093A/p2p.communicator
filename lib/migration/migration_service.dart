@@ -54,6 +54,15 @@ class MigrationService {
         await _media(w, 'pub/$i', area);
       }
 
+      // v2 groups: their core state is in app/data above; here the
+      // conversation cache and media, in an area named like a public room's.
+      for (final (i, r) in app.v2.rooms.indexed) {
+        onProgress?.call('Grupa v2 ${i + 1}/${app.v2.rooms.length}');
+        await w.addJson('v2/$i/secrets', r.room.secrets.toJson());
+        await w.add('v2/$i/cache', await vault.readData(r.room) ?? const []);
+        await _media(w, 'v2/$i', r.room);
+      }
+
       for (final (i, p) in privateRooms.indexed) {
         onProgress?.call('Pokój prywatny ${i + 1}/${privateRooms.length}');
         await w.addJson('priv/$i/secrets', {
@@ -122,7 +131,7 @@ class MigrationService {
         } else if (parts.length == 3 && parts[2] == 'secrets') {
           final prefix = '${parts[0]}/${parts[1]}';
           final j = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
-          if (parts[0] == 'pub') {
+          if (parts[0] == 'pub' || parts[0] == 'v2') {
             areas[prefix] = await vault.publicRoomArea(
               app,
               RoomSecrets.fromJson(j),

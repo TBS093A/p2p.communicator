@@ -17,6 +17,7 @@ import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
 import '../v2/v2_groups.dart';
+import '../v2/v2_room_session.dart';
 import '../v2/veilid_core_dht.dart';
 import 'app_link.dart';
 import 'dm_invite.dart';
@@ -60,7 +61,16 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
   late final ProfileDirectory directory = ProfileDirectory(myKey: _profileKey);
 
   /// Experimental v2 groups (MLS), kept in this app's encrypted data.
-  late final V2Groups v2 = V2Groups(_v2Dht, save: _save);
+  late final V2Groups v2 = V2Groups(
+    _v2Dht,
+    save: _save,
+    openRoom: (groups, group, secrets) async {
+      final area = await PinVault.instance.publicRoomArea(_unlocked, secrets);
+      final room = V2RoomSession(groups, group, area);
+      await room.open();
+      return room;
+    },
+  );
   final _v2Dht = VeilidCoreDht();
 
   late GlobalProfile _me;
@@ -145,7 +155,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
         peer: j['peer'] as String?,
       );
     }
-    v2.load(data['v2'] as List?);
+    await v2.load(data['v2'] as List?);
     v2.start();
     unawaited(_connectProfile());
     _heartbeat = Timer.periodic(GlobalProfile.heartbeat, (_) => _beat());
@@ -511,6 +521,9 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     await _save();
     for (final r in rooms) {
       await r.session.flush();
+    }
+    for (final r in v2.rooms) {
+      await r.flush();
     }
     return _unlocked;
   }

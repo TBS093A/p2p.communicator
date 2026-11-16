@@ -651,8 +651,10 @@ void main() {
     await idle(t, const Duration(milliseconds: 600));
     await tapKey(t, 'v2-create');
     await hideKeyboard(t);
-    await pumpUntil(t, find.text('1 członek · jesteś adminem'));
-    await tapKey(t, 'v2-invite');
+    // The v2 group opens in the regular chat screen.
+    await pumpUntil(t, find.byType(ChatScreen));
+    await pumpUntil(t, find.text('osób: 1'));
+    await openMenu(t, 'Zaproś');
     await pumpUntil(t, find.byKey(const ValueKey('v2-invite-copy')));
     await settle(t);
     final adminPrint = t
@@ -675,6 +677,9 @@ void main() {
     await idle(t, const Duration(milliseconds: 600));
     await t.enterText(find.byKey(const ValueKey('v2-join-name')), 'Dołączona');
     await idle(t, const Duration(milliseconds: 600));
+    // Its own name in this group, not the global profile.
+    await t.enterText(find.byKey(const ValueKey('v2-join-me')), 'Kasia z v2');
+    await idle(t, const Duration(milliseconds: 600));
     await hideKeyboard(t);
     // The joiner sees the same fingerprint as the admin's screen.
     expect(
@@ -685,15 +690,24 @@ void main() {
     await tapKey(t, 'v2-join-go');
     await pumpUntil(t, find.byKey(const ValueKey('v2-waiting')));
     // The admin's group lets the request in on its next background sync.
-    await pumpUntil(t, find.text('2 członków'));
+    await pumpUntil(t, find.text('osób: 2'));
+    // The admin's greeting carries the room look: the shared name replaces
+    // the one typed when joining.
+    await pumpUntil(t, find.text('Test v2'));
     await send(t, 'cześć z grupy v2');
     await hideKeyboard(t);
     await shot(t, '10_v2_chat');
     await t.pageBack();
     await settle(t);
-    await tapKey(t, 'v2-group-Test v2');
+    // Both groups are now called "Test v2"; the admin's was created first.
+    final tiles = find.byKey(const ValueKey('v2-group-Test v2'));
+    await pumpUntil(t, tiles);
+    await t.tap(tiles.first);
     await pumpUntil(t, find.text('cześć z grupy v2'));
+    // Shown with the name the sender chose for this group.
+    await pumpUntil(t, find.text('Kasia z v2'));
     await settle(t);
+    await shot(t, '11_v2_admin');
     t.state<NavigatorState>(find.byType(Navigator).first)
       ..pop()
       ..pop();

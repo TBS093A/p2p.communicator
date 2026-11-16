@@ -158,7 +158,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         key: const ValueKey('v2-home'),
                         tooltip: 'Grupy v2 (eksperymentalne)',
                         icon: const Icon(Icons.science_outlined),
-                        onPressed: () => _push(V2HomeScreen(groups: app.v2)),
+                        onPressed: () => _push(
+                          V2HomeScreen(
+                            groups: app.v2,
+                            myName: app.myGlobal.name,
+                          ),
+                        ),
                       )
                     : const SizedBox.shrink(),
               ),
@@ -399,7 +404,10 @@ class _RoomTile extends StatelessWidget {
       MsgType.voice => '🎤 Głosówka',
       // Hidden types never reach the message list (reactions are shown
       // under their message), so never the preview either.
-      MsgType.dmInvite || MsgType.reaction => '',
+      MsgType.dmInvite ||
+      MsgType.reaction ||
+      MsgType.profile ||
+      MsgType.meta => '',
     };
     final who = m.author == s.myOutbox
         ? 'Ty'

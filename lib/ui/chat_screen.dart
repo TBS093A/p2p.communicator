@@ -12,6 +12,8 @@ import '../core/media_cache.dart';
 import '../room/message.dart';
 import '../room/room_session.dart';
 import '../room/room_style.dart';
+import '../v2/v2_groups.dart';
+import '../v2/v2_room_session.dart';
 import '../vault/pin_vault.dart';
 import 'invite_screen.dart';
 import 'member_profile_screen.dart';
@@ -19,6 +21,7 @@ import 'members_screen.dart';
 import 'my_profile_screen.dart';
 import 'profile_screen.dart';
 import 'room_settings_screen.dart';
+import 'v2_screens.dart';
 import 'widgets/avatar.dart';
 import 'widgets/cutout_icon.dart';
 import 'widgets/emoji_text.dart';
@@ -31,17 +34,28 @@ import 'widgets/typing_indicator.dart';
 class ChatScreen extends StatefulWidget {
   /// A public room: [session] stays open in [app] after the screen closes.
   const ChatScreen({super.key, required this.session, required this.app})
-    : ownsSession = false;
+    : ownsSession = false,
+      v2 = null;
 
   /// A private room opened with its password: this screen opens the
   /// session and closes it again on the way out.
   const ChatScreen.private({super.key, required this.session})
     : app = null,
-      ownsSession = true;
+      ownsSession = true,
+      v2 = null;
+
+  /// A v2 group (experimental): [session] stays open in [v2].
+  const ChatScreen.v2({
+    super.key,
+    required V2RoomSession this.session,
+    required V2Groups this.v2,
+  }) : app = null,
+       ownsSession = false;
 
   final RoomSession session;
   final AppSession? app;
   final bool ownsSession;
+  final V2Groups? v2;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -72,9 +86,21 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _highlightTimer;
   String _lastText = '';
 
+  // v2: faster syncs while the conversation is open.
+  Timer? _v2Timer;
+
   @override
   void initState() {
     super.initState();
+    final v2 = widget.v2;
+    if (v2 != null) {
+      final group = (_session as V2RoomSession).group;
+      unawaited(v2.sync(group));
+      _v2Timer = Timer.periodic(
+        const Duration(seconds: 4),
+        (_) => unawaited(v2.sync(group)),
+      );
+    }
     _text.addListener(() {
       setState(() {});
       // Only real edits count as typing (not cursor moves or focus), and
@@ -87,6 +113,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _v2Timer?.cancel();
     _highlightTimer?.cancel();
     _scroll.dispose();
     _textFocus.dispose();
@@ -297,7 +324,41 @@ class _ChatScreenState extends State<ChatScreen> {
   // ---------------------------------------------------------------- menu
 
   Future<void> _menu(String action) async {
+    final v2 = widget.v2;
+    final group = v2 == null ? null : (_session as V2RoomSession).group;
     switch (action) {
+      case 'invite' when v2 != null:
+        try {
+          final code = await v2.createInvite(group!);
+          if (!mounted) return;
+          await _open(V2InviteScreen(code: code, adminCik: v2.myCik(group)));
+        } on Object catch (e) {
+          _toast('Nie udało się: $e');
+        }
+      case 'forget' when v2 != null:
+        final yes = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Usunąć grupę z tego telefonu?'),
+            content: const Text(
+              'Tracisz jej klucze i historię na tym telefonie. Pozostali '
+              'członkowie nadal widzą cię w grupie.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Anuluj'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Usuń'),
+              ),
+            ],
+          ),
+        );
+        if (yes != true) return;
+        if (mounted) Navigator.of(context).pop();
+        await v2.leave(group!);
       case 'invite':
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
@@ -533,19 +594,27 @@ class _ChatScreenState extends State<ChatScreen> {
           PopupMenuButton<String>(
             onSelected: _menu,
             itemBuilder: (_) => [
-              const PopupMenuItem(value: 'invite', child: Text('Zaproś')),
+              // In a v2 group only the admin can let people in.
+              if (widget.v2 == null ||
+                  widget.v2!.isAdmin((_session as V2RoomSession).group))
+                const PopupMenuItem(
+                  key: ValueKey('menu-invite'),
+                  value: 'invite',
+                  child: Text('Zaproś'),
+                ),
               const PopupMenuItem(value: 'members', child: Text('Osoby')),
               const PopupMenuItem(value: 'profile', child: Text('Mój profil')),
               const PopupMenuItem(
                 value: 'settings',
                 child: Text('Ustawienia pokoju'),
               ),
-              CheckedPopupMenuItem(
-                key: const ValueKey('menu-share-typing'),
-                value: 'typing',
-                checked: _session.shareTyping,
-                child: const Text('Pokazuj, że piszę'),
-              ),
+              if (_session.typingSupported)
+                CheckedPopupMenuItem(
+                  key: const ValueKey('menu-share-typing'),
+                  value: 'typing',
+                  checked: _session.shareTyping,
+                  child: const Text('Pokazuj, że piszę'),
+                ),
               const PopupMenuItem(
                 value: 'forget',
                 child: Text('Usuń z telefonu'),
@@ -571,6 +640,11 @@ class _ChatScreenState extends State<ChatScreen> {
                         actions: const [SizedBox.shrink()],
                       ),
               ),
+              if (widget.v2 != null)
+                _V2Banners(
+                  groups: widget.v2!,
+                  group: (_session as V2RoomSession).group,
+                ),
               Expanded(
                 child: ListenableBuilder(
                   listenable: _session,
@@ -808,4 +882,53 @@ class _ChatScreenState extends State<ChatScreen> {
 
   static String _fmt(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+}
+
+/// v2 group state above the conversation: waiting to be let in, and the
+/// core's warnings (forked log, diverged history, lost messages, removal).
+class _V2Banners extends StatelessWidget {
+  const _V2Banners({required this.groups, required this.group});
+
+  final V2Groups groups;
+  final V2Group group;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: groups,
+    builder: (context, _) {
+      final info = groups.info(group);
+      final lost = info['lost_messages'] as int? ?? 0;
+      final warnings = [
+        if (info['fork_suspected'] == true)
+          'Uwaga: log grupy rozgałęził się. Możliwa próba ataku.',
+        if (info['history_diverged'] == true)
+          'Twoja historia różni się od historii grupy.',
+        if (lost > 0) 'Część wiadomości nie dotarła ($lost).',
+        if (info['removed'] == true) 'Usunięto cię z tej grupy.',
+      ];
+      final scheme = Theme.of(context).colorScheme;
+      return Column(
+        children: [
+          if (group.joining)
+            const MaterialBanner(
+              key: ValueKey('v2-waiting'),
+              content: Text(
+                'Prośba wysłana. Admin wpuści cię przy najbliższej '
+                'synchronizacji (musi mieć włączoną aplikację).',
+              ),
+              actions: [SizedBox.shrink()],
+            ),
+          for (final w in warnings)
+            MaterialBanner(
+              backgroundColor: scheme.errorContainer,
+              content: Text(
+                w,
+                style: TextStyle(color: scheme.onErrorContainer),
+              ),
+              actions: const [SizedBox.shrink()],
+            ),
+        ],
+      );
+    },
+  );
 }

@@ -1,7 +1,60 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:p2p_communicator/room/message.dart';
 import 'package:p2p_communicator/v2/v2_groups.dart';
+import 'package:p2p_communicator/v2/v2_room_session.dart';
+import 'package:p2p_communicator/vault/pin_vault.dart';
+import 'package:veilid/veilid.dart';
 
 import 'support/memory_dht.dart';
+
+/// A v2 room without the vault and media cache (unit tests have neither).
+class TestRoom extends V2RoomSession {
+  TestRoom(super.groups, super.group, super.room);
+
+  Uint8List? cache;
+
+  @override
+  Future<void> writeCache(Uint8List data) async => cache = data;
+
+  @override
+  Future<Uint8List?> readCache() async => cache;
+
+  @override
+  Future<void> close() async {}
+}
+
+V2Groups phone(MemoryDht dht) => V2Groups(
+  dht,
+  save: () async {},
+  openRoom: (groups, group, secrets) async => TestRoom(
+    groups,
+    group,
+    UnlockedRoom(
+      'slot-${group.id}',
+      SharedSecret(
+        kind: cryptoKindVLD0,
+        value: BareSharedSecret.fromBytes(Uint8List(32)),
+      ),
+      secrets,
+    ),
+  ),
+);
+
+/// Lets queued sends (greetings, room look) go out between syncs.
+Future<void> rounds(List<(V2Groups, V2Group)> who, {int times = 3}) async {
+  for (var i = 0; i < times; i++) {
+    for (final (p, g) in who) {
+      await Future<void>.delayed(Duration.zero);
+      await p.sync(g);
+    }
+  }
+}
+
+List<String> texts(V2RoomSession r) => [
+  for (final m in r.messages) m.text ?? '',
+];
 
 void main() {
   test('invite parsing and the fingerprint', () {
@@ -20,69 +73,97 @@ void main() {
     expect(v2Fingerprint(cik), startsWith('ABAB ABAB'));
   });
 
-  test('two phones: create, invite, join, talk, restart', () async {
-    final dht = MemoryDht();
-    var aliceSaves = 0;
-    final alice = V2Groups(dht, save: () async => aliceSaves++);
-    final bob = V2Groups(dht, save: () async {});
+  test('core inbox entries become chat messages', () {
+    final wire = ChatMessage(
+      id: 'm1',
+      author: 'ignored',
+      ts: 5,
+      type: MsgType.text,
+      text: 'hej',
+    ).toWire();
+    final m = V2RoomSession.parse(
+      'alice',
+      '{"id":"m1","ts":5,"t":"text",'
+          '"text":"hej"}',
+      0,
+    )!;
+    expect(wire['text'], 'hej');
+    // The author is who MLS says sent it, never a field of the message.
+    expect(m.author, 'alice');
+    expect(m.ts, 5);
+    // Plain text from the first v2 screens still shows.
+    expect(V2RoomSession.parse('bob', 'zwykły tekst', 3)!.text, 'zwykły tekst');
+    // A type from a newer version, or a malformed message, is skipped.
+    expect(
+      V2RoomSession.parse('bob', '{"id":"x","ts":1,"t":"poll"}', 4),
+      isNull,
+    );
+    expect(V2RoomSession.parse('bob', '{"id":1}', 5), isNull);
+  });
 
-    final ga = await alice.create('Wycieczka');
+  test('two phones: join, names, room look, replies, restart', () async {
+    final dht = MemoryDht();
+    final alice = phone(dht);
+    final bob = phone(dht);
+
+    final ga = await alice.create('Wycieczka', 'Ala');
     expect(alice.isAdmin(ga), isTrue);
     final code = await alice.createInvite(ga);
-    expect(ga.openInvites, hasLength(1));
-
     final invite = V2Invite.tryParse(code)!;
     expect(invite.adminCik, alice.myCik(ga));
-    final gb = await bob.join(invite, 'Od Alicji');
+    final gb = await bob.join(invite, 'Od Alicji', 'Bob');
     expect(gb.joining, isTrue);
+    expect(bob.roomOf(gb).roomName, 'Od Alicji');
 
-    // Bob's request is in; Alice's sync lets him in; Bob's completes it.
-    await bob.sync(gb);
-    expect(gb.joining, isTrue);
-    await alice.sync(ga);
-    expect(ga.openInvites, isEmpty);
-    for (var i = 0; i < 3 && gb.joining; i++) {
-      await bob.sync(gb);
-    }
+    // Sending before being let in fails instead of getting lost.
+    await bob.roomOf(gb).sendText('za wcześnie');
+    expect(bob.roomOf(gb).messages.single.status, MsgStatus.failed);
+
+    await rounds([(bob, gb), (alice, ga)], times: 4);
     expect(gb.joining, isFalse);
-    await alice.sync(ga);
-    expect(alice.info(ga)['members'], hasLength(2));
+    expect(ga.openInvites, isEmpty);
 
-    await alice.send(ga, 'cześć Bob');
-    await bob.send(gb, 'cześć Alicjo');
-    for (var i = 0; i < 3; i++) {
-      await alice.sync(ga);
-      await bob.sync(gb);
-    }
-    // Bob's own message is listed when sent, Alice's when it arrives.
-    expect(gb.messages.map((m) => m.text), ['cześć Alicjo', 'cześć Bob']);
-    expect(gb.messages.first.mine, isTrue);
-    expect(gb.messages.last.mine, isFalse);
-    expect(ga.messages.map((m) => m.text), contains('cześć Alicjo'));
-    expect(ga.messages.where((m) => m.text == 'cześć Bob').single.mine, isTrue);
-    expect(aliceSaves, greaterThan(0));
+    final ra = alice.roomOf(ga);
+    final rb = bob.roomOf(gb);
+    expect(ra.memberOutboxes, hasLength(2));
+    // Both told each other their names; the admin also the room look.
+    expect(ra.nameOf(bob.myCik(gb)), 'Bob');
+    expect(rb.nameOf(alice.myCik(ga)), 'Ala');
+    expect(rb.roomName, 'Wycieczka');
 
-    // What the app stores brings the group back as it was.
-    final saved = bob.toJson();
-    await bob.close();
-    final bob2 = V2Groups(dht, save: () async {});
-    bob2.load(saved);
-    final gb2 = bob2.groups.single;
-    expect(gb2.name, 'Od Alicji');
-    expect(gb2.messages, hasLength(2));
-    await alice.send(ga, 'po restarcie');
-    for (var i = 0; i < 3; i++) {
-      await alice.sync(ga);
-      await bob2.sync(gb2);
-    }
-    expect(gb2.messages.last.text, 'po restarcie');
+    await ra.sendText('cześć Bob');
+    await rounds([(bob, gb), (alice, ga)]);
+    final hello = rb.messages.where((m) => m.text == 'cześć Bob').single;
+    expect(hello.author, alice.myCik(ga));
+
+    await rb.sendText('cześć Ala', replyTo: hello);
+    await rounds([(alice, ga), (bob, gb)]);
+    final reply = ra.messages.where((m) => m.text == 'cześć Ala').single;
+    expect(reply.replyTo?.id, hello.id);
+    expect(reply.author, bob.myCik(gb));
+    // Listed by the sender's time: the reply comes after the original.
     expect(
-      gb2.messages.where((m) => m.text == 'cześć Bob'),
-      hasLength(1),
-      reason: 'nothing delivered twice after a restart',
+      texts(ra).indexOf('cześć Ala'),
+      greaterThan(texts(ra).indexOf('cześć Bob')),
     );
 
-    // An invite nobody used stays open; a spent one is dropped.
+    // Renaming the room reaches the other member.
+    await ra.updateRoom(name: 'Tatry 2026');
+    await rounds([(bob, gb)]);
+    expect(rb.roomName, 'Tatry 2026');
+
+    // After a restart nothing already read is delivered again.
+    final saved = bob.toJson();
+    await bob.close();
+    final bob2 = phone(dht);
+    await bob2.load(saved);
+    final gb2 = bob2.groups.single;
+    expect(gb2.me, 'Bob');
+    await ra.sendText('po restarcie');
+    await rounds([(alice, ga), (bob2, gb2)]);
+    expect(texts(bob2.roomOf(gb2)), ['po restarcie']);
+
+    // An invite nobody used stays open.
     await alice.createInvite(ga);
     await alice.sync(ga);
     expect(ga.openInvites, hasLength(1));
