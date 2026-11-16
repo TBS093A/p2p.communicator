@@ -1857,10 +1857,29 @@ impl Member {
         // nothing has changed yet.
         let (control, owner) = dht.create()?;
         let group = self.group.as_mut().expect("member has a group");
-        let bundle = group
-            .self_update(&self.provider, &self.signer, LeafNodeParameters::default())
-            .map_err(mls)?;
-        let commit = bundle.into_contents().0.to_bytes().map_err(mls)?;
+        // §B5.4: the takeover commit removes the lost admin's leaf, so the
+        // members do not wait for its new outbox until the grace period
+        // ends; a returning device rejoins as a new member. (If that leaf
+        // is already gone, the commit only refreshes our own.)
+        let old_admin = self.st.admin_cik.clone();
+        let leaf = group
+            .members()
+            .find(|m| wire::hex(&m.signature_key) == old_admin)
+            .map(|m| m.index);
+        let commit = match leaf {
+            Some(leaf) => {
+                let (commit, _, _) = group
+                    .remove_members(&self.provider, &self.signer, &[leaf])
+                    .map_err(mls)?;
+                commit.to_bytes().map_err(mls)?
+            }
+            None => {
+                let bundle = group
+                    .self_update(&self.provider, &self.signer, LeafNodeParameters::default())
+                    .map_err(mls)?;
+                bundle.into_contents().0.to_bytes().map_err(mls)?
+            }
+        };
         self.write_outbox(dht, Kind::Mls, &commit)?;
         let group = self.group.as_mut().expect("member has a group");
         group.merge_pending_commit(&self.provider).map_err(mls)?;

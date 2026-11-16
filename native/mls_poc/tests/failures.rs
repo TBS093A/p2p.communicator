@@ -431,6 +431,13 @@ fn f12_admin_device_lost() {
     assert_eq!(g[1].st.admin_cik, g[0].st.cik);
     assert_eq!(g[1].st.gen, 1);
     assert_same_epoch(&[&g[0], &g[1]]);
+    // §B5.4: the lost admin's leaf is gone, so nobody waits for it to move
+    // (the move finished without the grace period, F14 lesson).
+    let old_admin = alice.st.cik.clone();
+    assert!(!g[0].members().contains(&old_admin));
+    assert!(!g[1].members().contains(&old_admin));
+    assert_eq!(g[1].st.move_state, MoveState::Stable);
+    assert!(!has_event(&g[1], "grace period over"));
     g[1].send_text(&mut dht, "nowy admin").unwrap();
     sync_all(&mut dht, &mut g);
     assert!(texts(&g[0]).contains(&"nowy admin".to_string()));
