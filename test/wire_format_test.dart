@@ -41,6 +41,15 @@ void main() {
     expect(wire.seq, 7);
     expect(wire.media!.chunkCount, 3);
     expect(wire.media!.durationMs, 4200);
+    expect(wire.media!.key, isNull, reason: 'v1: plain chunks');
+    expect(m.toWire()['m'], isNot(contains('k')));
+
+    // v2 (PROTOCOL §B9): the file's key travels inside the message.
+    final sealed = MediaRef.fromJson({
+      ...m.media!.toJson(),
+      'k': 'VLD0:file-key',
+    });
+    expect(MediaRef.fromJson(sealed.toJson()).key, 'VLD0:file-key');
 
     m.status = MsgStatus.sending;
     final cached = ChatMessage.fromCache(m.toCache());

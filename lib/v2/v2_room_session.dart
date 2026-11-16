@@ -47,6 +47,11 @@ class V2RoomSession extends RoomSession {
   @override
   void userTyping() {}
 
+  // PROTOCOL §B9: files are sealed with their own key before chunking; a
+  // leaked blob record key shows only the size.
+  @override
+  bool get encryptMedia => true;
+
   @override
   Future<void> connectTransport() async {} // V2Groups syncs
 

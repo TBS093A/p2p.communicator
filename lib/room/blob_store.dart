@@ -21,12 +21,17 @@ class BlobStore {
   static const chunksPerRecord = 30;
   static const _parallel = 4;
 
+  /// With [encrypt] (v2, PROTOCOL §B9) every chunk is sealed with a fresh
+  /// per-file key, bound to its index and the chunk count, before it is
+  /// written; the key travels only in the (end-to-end encrypted) message.
+  /// A sealed chunk is 40 bytes longer, still well inside a subkey.
   static Future<MediaRef> upload(
     Uint8List bytes, {
     required String mime,
     int? width,
     int? height,
     int? durationMs,
+    bool encrypt = false,
     void Function(double progress)? onProgress,
   }) async {
     final hash = await Crypto.hashHex(bytes);
@@ -34,6 +39,9 @@ class BlobStore {
     final recordCount = (chunks + chunksPerRecord - 1) ~/ chunksPerRecord;
     final records = <String>[];
     var done = 0;
+    final key = encrypt
+        ? Crypto.secretFromBytes(await Crypto.randomBytes(32))
+        : null;
 
     for (var r = 0; r < recordCount; r++) {
       final first = r * chunksPerRecord;
@@ -46,7 +54,15 @@ class BlobStore {
         await Dht.pool(count, _parallel, (j) async {
           final start = (first + j) * chunkSize;
           final end = min(start + chunkSize, bytes.length);
-          await Dht.set(desc.key, j, Uint8List.sublistView(bytes, start, end));
+          final plain = Uint8List.sublistView(bytes, start, end);
+          final data = key == null
+              ? plain
+              : await Crypto.seal(
+                  key,
+                  plain,
+                  context: _chunkContext(first + j, chunks),
+                );
+          await Dht.set(desc.key, j, data);
           onProgress?.call(++done / chunks);
         });
       } finally {
@@ -65,8 +81,14 @@ class BlobStore {
       width: width,
       height: height,
       durationMs: durationMs,
+      key: key?.toString(),
     );
   }
+
+  /// What a chunk's seal is bound to: its index and how many there are, so
+  /// chunks cannot be swapped, reordered or the file cut short.
+  static String _chunkContext(int index, int total) =>
+      'media-chunk:$index/$total';
 
   static Future<Uint8List> download(
     MediaRef ref, {
@@ -75,24 +97,40 @@ class BlobStore {
     final out = Uint8List(ref.size);
     final total = ref.chunkCount;
     var done = 0;
+    final SharedSecret? key;
+    try {
+      key = ref.key == null ? null : SharedSecret.fromString(ref.key!);
+    } on Object {
+      throw MediaCorruptException();
+    }
 
     for (var r = 0; r < ref.records.length; r++) {
-      final key = RecordKey.fromString(ref.records[r]);
+      final record = RecordKey.fromString(ref.records[r]);
       final first = r * ref.chunksPerRecord;
       final count = min(ref.chunksPerRecord, total - first);
-      await Dht.retry(() => Dht.rc.openDHTRecord(key));
+      await Dht.retry(() => Dht.rc.openDHTRecord(record));
       try {
         await Dht.pool(count, _parallel, (j) async {
-          final data = await _chunk(key, j);
-          out.setRange(
-            (first + j) * ref.chunkSize,
-            (first + j) * ref.chunkSize + data.length,
-            data,
-          );
+          final index = first + j;
+          var data = await _chunk(record, j);
+          if (key != null) {
+            try {
+              data = await Crypto.open(
+                key,
+                data,
+                context: _chunkContext(index, total),
+              );
+            } on Object {
+              throw MediaCorruptException(); // altered, swapped or wrong key
+            }
+          }
+          final start = index * ref.chunkSize;
+          if (start + data.length > ref.size) throw MediaCorruptException();
+          out.setRange(start, start + data.length, data);
           onProgress?.call(++done / total);
         });
       } finally {
-        await Dht.close(key);
+        await Dht.close(record);
       }
     }
 

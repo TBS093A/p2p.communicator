@@ -3,9 +3,72 @@
 // a group and an invite, the other joins with the admin's fingerprint
 // checked, and they exchange messages both ways. Runs inside the DAST app
 // test once the node is up.
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
+import 'package:p2p_communicator/core/crypto.dart';
+import 'package:p2p_communicator/room/blob_store.dart';
+import 'package:p2p_communicator/room/dht.dart';
+import 'package:p2p_communicator/room/message.dart';
 import 'package:p2p_communicator/v2/veilid_core_dht.dart';
 import 'package:p2pc_core/p2pc_core.dart';
+import 'package:veilid/veilid.dart';
+
+/// PROTOCOL §B9 on the real network: a file is sealed chunk by chunk before
+/// upload, the records hold no plaintext, and only the right key (with
+/// every chunk at its place) gives the file back. Returns a short report.
+Future<List<String>> encryptedMediaOverVeilid() async {
+  final rnd = Random(9);
+  final file = Uint8List.fromList(
+    List.generate(70000, (_) => rnd.nextInt(256)), // 3 chunks, 1 record
+  );
+  final ref = await BlobStore.upload(
+    file,
+    mime: 'application/octet-stream',
+    encrypt: true,
+  );
+  final steps = ['uploaded ${ref.chunkCount} sealed chunks'];
+  if (ref.key == null) throw StateError('no media key');
+
+  // What a storage node (or anyone with the record key) sees.
+  final record = RecordKey.fromString(ref.records.single);
+  await Dht.retry(() => Dht.rc.openDHTRecord(record));
+  final Uint8List? raw;
+  try {
+    raw = await Dht.get(record, 0);
+  } finally {
+    await Dht.close(record);
+  }
+  if (raw == null) throw StateError('chunk 0 not readable');
+  final plain0 = Uint8List.sublistView(file, 0, BlobStore.chunkSize);
+  if (raw.length != plain0.length + 40 || listEquals(raw, plain0)) {
+    throw StateError('chunk 0 is not sealed (${raw.length} bytes)');
+  }
+  final leak = Uint8List.sublistView(file, 1000, 1032);
+  for (var i = 0; i + leak.length <= raw.length; i++) {
+    if (listEquals(Uint8List.sublistView(raw, i, i + leak.length), leak)) {
+      throw StateError('plaintext found in a sealed chunk');
+    }
+  }
+
+  final back = await BlobStore.download(ref);
+  if (!listEquals(back, file)) throw StateError('file changed in transit');
+  steps.add('downloaded and checked');
+
+  // A wrong key, or none, must not give anything back.
+  final wrong = Crypto.secretFromBytes(await Crypto.randomBytes(32));
+  for (final key in [wrong.toString(), null]) {
+    final bad = MediaRef.fromJson({...ref.toJson()..remove('k'), 'k': ?key});
+    try {
+      await BlobStore.download(bad);
+      throw StateError('opened with ${key == null ? 'no' : 'a wrong'} key');
+    } on MediaCorruptException {
+      // expected
+    }
+  }
+  steps.add('wrong or missing key refused');
+  return steps;
+}
 
 List<String> _texts(CoreSession s) => [
   for (final m in (s.info()['inbox'] as List).cast<Map<String, dynamic>>())

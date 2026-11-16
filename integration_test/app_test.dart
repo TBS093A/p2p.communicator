@@ -645,6 +645,9 @@ void main() {
     // node, join with a checked fingerprint, messages both ways.
     final v2 = await v2OverVeilid();
     debugPrint('[v2] ${v2.join(', ')}');
+    // v2 media (§B9): sealed per file before chunking, nothing in clear.
+    final media = await encryptedMediaOverVeilid();
+    debugPrint('[v2] ${media.join(', ')}');
 
     // The same through the app's screens, behind the "eksperymentalne"
     // switch: create a v2 group, invite, join it (as a second member on this
