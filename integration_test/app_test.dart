@@ -132,6 +132,21 @@ void main() {
     await t.pump();
   }
 
+  /// Types [text] into the field with [key]. The emulator's real keyboard
+  /// can push an older copy of the field back after `enterText` (it kept a
+  /// prefilled name once), so retype until the field holds the text.
+  Future<void> typeKey(WidgetTester t, String key, String text) async {
+    final field = find.byKey(ValueKey(key));
+    await pumpUntil(t, field, timeout: const Duration(seconds: 20));
+    String current() => t.widget<TextField>(field).controller!.text;
+    for (var attempt = 1; attempt <= 4; attempt++) {
+      await t.enterText(field, text);
+      await idle(t, const Duration(milliseconds: 600));
+      if (current() == text) break;
+    }
+    expect(current(), text, reason: 'IME reverted $key');
+  }
+
   /// From the home screen: "Nowa" → pick [mode] → fill → create.
   Future<void> newRoom(
     WidgetTester t, {
@@ -647,8 +662,7 @@ void main() {
     await settle(t);
     await tapKey(t, 'v2-new');
     await settle(t);
-    await t.enterText(find.byKey(const ValueKey('v2-name')), 'Test v2');
-    await idle(t, const Duration(milliseconds: 600));
+    await typeKey(t, 'v2-name', 'Test v2');
     await tapKey(t, 'v2-create');
     await hideKeyboard(t);
     // The v2 group opens in the regular chat screen.
@@ -673,14 +687,22 @@ void main() {
     await settle(t);
     await tapKey(t, 'v2-join');
     await settle(t);
-    await t.enterText(find.byKey(const ValueKey('v2-invite-code')), v2Code);
-    await idle(t, const Duration(milliseconds: 600));
-    await t.enterText(find.byKey(const ValueKey('v2-join-name')), 'Dołączona');
-    await idle(t, const Duration(milliseconds: 600));
+    await typeKey(t, 'v2-invite-code', v2Code);
+    await typeKey(t, 'v2-join-name', 'Dołączona');
     // Its own name in this group, not the global profile.
-    await t.enterText(find.byKey(const ValueKey('v2-join-me')), 'Kasia z v2');
-    await idle(t, const Duration(milliseconds: 600));
+    await typeKey(t, 'v2-join-me', 'Kasia z v2');
     await hideKeyboard(t);
+    // Checked again once the keyboard is gone: hiding it can push an older
+    // copy back as well.
+    String joinMe() => t
+        .widget<TextField>(find.byKey(const ValueKey('v2-join-me')))
+        .controller!
+        .text;
+    for (var i = 0; i < 3 && joinMe() != 'Kasia z v2'; i++) {
+      await typeKey(t, 'v2-join-me', 'Kasia z v2');
+      await hideKeyboard(t);
+    }
+    expect(joinMe(), 'Kasia z v2');
     // The joiner sees the same fingerprint as the admin's screen.
     expect(
       t.widget<Text>(find.byKey(const ValueKey('v2-fingerprint'))).data,
