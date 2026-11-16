@@ -205,4 +205,7 @@ only", and says so.
 5. ~~**Proposals by value or by reference.**~~ **Decided (9 Nov 2026):
    by value** (PROTOCOL §B5.1). By reference, a storage node dropping one
    proposal write could block every member who never read it; by value
-   removes that.
+   removes that. **Revised (16 Nov 2026):** MLS allows members' `Update`s
+   only by reference, so the admin copies them into the control log before
+   the commit; members never need a proposal from an outbox, which keeps
+   the same protection.

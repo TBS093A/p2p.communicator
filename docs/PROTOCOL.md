@@ -237,7 +237,7 @@ log** (§B3.1) start a new one.
 
 | Record | Schema / owner | Content |
 | --- | --- | --- |
-| **Control record** `C_g` | `DFLT` with 1 + `L` subkeys (`L` = 28), owner = admin's random key for generation `g` | Subkey 0: header `{v: 2, gen, epoch, logCount, logHash}`. Subkeys 1..`L`: the log, in order: MLS commits and the admin's MLS messages that belong to them (`Directory`, `Move`). Append-only, never wraps (§B3.1). Only the admin writes it. |
+| **Control record** `C_g` | `DFLT` with 1 + `L` subkeys (`L` = 28), owner = admin's random key for generation `g` | Subkey 0: header `{v: 2, gen, epoch, logCount, logHash}`. Subkeys 1..`L`: the log, in order: MLS commits, the members' `Update` proposals they reference (copied, §B5.1), and the admin's MLS messages that belong to them (`Directory`, `Move`, `AdminTransfer`). Append-only, never wraps (§B3.1). Only the admin writes it. |
 | **Member outbox** `O_g,i` | `DFLT` with 1 + `R` subkeys (`R` = 200), owner = member's random key for generation `g` | Subkey 0: head `{count}` only, padded. Subkeys 1..`R`: a ring of MLS `PrivateMessage`s; message `n` lives in subkey `1 + n mod R` (§B3.1). |
 | **Join rendezvous** | `SMPL`: subkeys 0..3 owned by the admin (the answer: Welcome, chunked); one member, subkeys 4..7, whose key pair is in the invite (the request) | The joiner writes one MLS `KeyPackage`, sealed to the admin's `CIK`. One-time. |
 | **Blob** | `DFLT`, random owner | Chunks of the **AEAD-encrypted** file. |
@@ -349,14 +349,34 @@ used invites are ignored.
 * While the admin is offline, proposals queue and membership does not
   change; **application messages keep flowing** in the current epoch.
 
-**Proposals go into the commit by value** (decided 9 Nov 2026). A member's
-proposal in its outbox is only a request to the admin; the admin's commit
-carries the proposal itself, not a reference to it. Members never need the
-original proposal to apply a commit, so a proposal a member never read
-(lost or not yet propagated) cannot block it. Commits get larger, which
-chunking (§B3) already handles. The PoC used proposals by reference (the
-OpenMLS default), where a lost proposal would block every member that
-never read it; the implementation switches to by value.
+**The log carries every proposal a commit needs** (decided 9 Nov 2026,
+revised 16 Nov 2026). A member's proposal in its outbox is only a request
+to the admin. Members never take proposals from outboxes; everything they
+need to apply a commit is in `C_g`, so a proposal a member never read
+(lost or not yet propagated) cannot block it, and a member far behind
+catches up from the log alone.
+
+* Proposals the admin makes itself (`Add`, `Remove`, group context
+  changes) go into its commit **by value**.
+* Members' `Update` proposals cannot: RFC 9420 allows an `Update` only by
+  reference (§12.4), because an `Update` replaces its sender's own leaf.
+  The admin therefore **copies** each referenced `Update` (the member's
+  original MLS message, unchanged, still signed by that member) into the
+  log **right before** the commit that references it. A member reading
+  the log stores each copied proposal, checks it is signed by a current
+  member for the current epoch, and then applies the commit.
+* The copies and the commit are written by the same resumable
+  publication (§B5.1, "Publishing"): they are persisted as bytes in
+  `pending` before anything is written.
+* One commit takes at most as many copied proposals as fit in the log's
+  reserve together with the commit and what follows it (§B3.1); the rest
+  waits for the next commit.
+
+The original decision was "by value" for every proposal. It is kept for
+the admin's own proposals; for `Update`s, copying into the log gives the
+same property within MLS's rules. Commits are not larger; the log grows by
+one entry per copied proposal, which §B3.1 already budgets for (a full log
+moves the group to `g + 1`).
 
 **Publishing a commit.** Anything the admin publishes after a commit (the
 `Directory`, a `Move`) is an MLS message whose ciphertext changes every
@@ -459,11 +479,22 @@ Each remaining member (a persisted state machine, every step idempotent):
 
 ### B5.4 Admin handover and recovery
 
-* **Handover:** the admin commits an `AdminTransfer{to: CIK}` group context
-  extension. The new admin starts generation `g + 1` exactly like §B5.3
-  (without a removal), because the old admin holds the owner key of `C_g`.
-* **Designated successors:** the admin keeps an ordered successor list in
-  the group context (changed only by commits). Members see it.
+* **Handover:** the admin appends `AdminTransfer{to: CIK}`, an MLS
+  application message, to `C_g`'s log (written like any publication,
+  §B5.1). From that log position on, every member treats `to` as the admin:
+  commits in `C_g` signed by the old admin are rejected (§B5.2 rule 1). The
+  new admin then starts generation `g + 1` exactly like §B5.3 (without a
+  removal), because the old admin holds the owner key of `C_g`: it creates
+  `C_{g+1}` and announces it with a `Takeover{gen, control}` message in its
+  own outbox, the same message the recovery below uses but without a
+  commit. Members accept it because it comes from the current admin. `to`
+  must be a current member other than the admin. Until the new admin is
+  online, messages keep flowing and membership is frozen, as with an
+  offline admin (F2).
+* **Designated successors:** the admin keeps an ordered successor list.
+  It travels in the `Directory` (§B3), which the admin appends to the log
+  after a commit (an empty commit is enough to publish a changed list), so
+  members get it in order and E2EE. Members see it.
 * **Recovery after admin device loss:** if a member has seen no commit and
   no message from the admin for `T_successor` (default 14 days, set per
   group), the first successor in the list may publish a `Takeover` commit
@@ -662,6 +693,8 @@ added after the first PoC round and is covered by
 | F20 | **Control log full** (the next entry would not fit in `L` subkeys) | The admin moves the group to `g + 1` without a removal (§B3.1); members follow the `Move` like any other; nothing is lost | Phase 2 |
 | F21 | **A sender's outbox ring wrapped** while a member was offline (more than `R` messages behind) | The overwritten messages show as a gap ("niedostępne"), never silently; the rest is read normally | Phase 2 |
 | F22 | **Oversized message** (plaintext over 4096 bytes) | Refused before sending (the composer limits text; media goes as a blob) | Phase 2 |
+| F23 | **A member's `Update` proposal lost** or not yet propagated to someone | Never needed from the outbox: the admin copies it into the log before the commit that references it (§B5.1); a member far behind catches up from the log alone | Phase 3 |
+| F24 | **Admin hands over** to a member who is offline | Messages keep flowing; membership frozen until the new admin comes online and starts `g + 1` (§B5.4) | Phase 3 |
 
 ## B13. Proof of concept
 
@@ -704,7 +737,8 @@ Acceptance: every item above passes, and nothing in the app's `lib/` changes.
 2. ✅ PoC (§B13), including the failure tests (§B12, F19 too). Open: a
    run of the bench APK on a physical phone.
 3. ✅ Review the PoC; adjust this document where it proved wrong (this
-   revision). Proposals go into commits by value (§B5.1). Open: crypto
+   revision). Everything a commit needs is in the log: the admin's own
+   proposals by value, members' `Update`s copied in (§B5.1). Open: crypto
    provider (§B7), blocked on upstream releases.
 4. Group control record, join flow, removal with generation move; record
    size limits (§B3.1: log moves to a new generation when full, outbox
