@@ -44,10 +44,15 @@ class MediaRef {
     this.width,
     this.height,
     this.durationMs,
+    this.key,
   });
 
   final String mime;
   final int size;
+
+  /// v2 (PROTOCOL §B9): the file's own key; every chunk is sealed with it
+  /// before upload, bound to its index. Null in v1 (plain chunks).
+  final String? key;
 
   /// BLAKE3 of the plain file, checked after download.
   final String hash;
@@ -72,6 +77,7 @@ class MediaRef {
     if (width != null) 'w': width,
     if (height != null) 'h': height,
     if (durationMs != null) 'd': durationMs,
+    if (key != null) 'k': key,
   };
 
   factory MediaRef.fromJson(Map<String, dynamic> j) => MediaRef(
@@ -84,6 +90,7 @@ class MediaRef {
     width: j['w'] as int?,
     height: j['h'] as int?,
     durationMs: j['d'] as int?,
+    key: j['k'] as String?,
   );
 }
 

@@ -291,6 +291,10 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   /// Whether "is typing" can be shared in this room.
   bool get typingSupported => true;
 
+  /// Whether files are encrypted with their own key before upload (v2,
+  /// PROTOCOL §B9). v1 rooms keep plain chunks so v1 members can read them.
+  bool get encryptMedia => false;
+
   /// A message read from another member: reactions are applied, hidden
   /// messages go to [onHidden], the rest is listed. Returns whether a
   /// message was added to [messages] (the caller then saves and redraws).
@@ -801,6 +805,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       final ref = await BlobStore.upload(
         bytes,
         mime: mime,
+        encrypt: encryptMedia,
         width: width,
         height: height,
         durationMs: durationMs,
@@ -1205,7 +1210,11 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   }
 
   Future<MediaRef> _uploadBytes(Uint8List bytes, String mime) async {
-    final ref = await BlobStore.upload(bytes, mime: mime);
+    final ref = await BlobStore.upload(
+      bytes,
+      mime: mime,
+      encrypt: encryptMedia,
+    );
     await _storeMedia(ref.hash, bytes);
     return ref;
   }
