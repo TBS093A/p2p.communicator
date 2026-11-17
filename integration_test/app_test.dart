@@ -24,6 +24,7 @@ import 'package:p2p_communicator/ui/chat_screen.dart';
 import 'package:p2p_communicator/ui/home_screen.dart';
 import 'package:p2p_communicator/ui/invite_screen.dart';
 import 'package:p2p_communicator/ui/members_screen.dart';
+import 'package:p2p_communicator/room/room_session.dart';
 import 'package:p2p_communicator/ui/my_profile_screen.dart';
 import 'package:p2p_communicator/ui/new_room_screen.dart';
 import 'package:p2p_communicator/ui/pin_screen.dart';
@@ -299,6 +300,10 @@ void main() {
   testWidgets('app PIN, DM/groups, private rooms and screenshots', (t) async {
     // A tap that misses its widget should fail here, not minutes later.
     WidgetController.hitTestWarningShouldBeFatal = true;
+    // The v1 parts below exercise the old write paths, which a v2 app no
+    // longer uses (PROTOCOL §B11); the read-only behaviour is checked
+    // where this is switched off.
+    RoomSession.legacyWrites = true;
     // "Gallery" picks return generated images through the app's normal
     // ImagePicker calls.
     final gallery = FakeImagePicker();
@@ -641,11 +646,22 @@ void main() {
     await t.pageBack();
     await settle(t);
 
-    // Phase 5 (PROTOCOL §B11): the v1 conversation moves to a new v2
-    // group with us as its admin; the v2 chat opens. (Alone in this room
+    // Phase 5 (PROTOCOL §B11): as in a real v2 app, v1 rooms only read
+    // now. The room has no composer, only the "old protocol" bar, and it
+    // moves to a new v2 group with us as its admin. (Alone in this room
     // here, so no invites go out; announcing them is covered by unit
     // tests.)
-    await openMenu(t, 'Przenieś do v2');
+    RoomSession.legacyWrites = false;
+    await backToHome(t);
+    await pumpUntil(t, find.byKey(const ValueKey('home-v2-groups')));
+    await t.tap(find.textContaining('Grupy ('));
+    await settle(t);
+    await t.tap(find.text('Wyprawa w Tatry'));
+    await pumpUntil(t, find.byKey(const ValueKey('v1-readonly')));
+    expect(find.byKey(const ValueKey('composer-field')), findsNothing);
+    await settle(t);
+    await shot(t, '07b_v1_read_only');
+    await tapKey(t, 'v1-readonly-move');
     await tapKey(t, 'v1-move-confirm');
     await pumpUntil(t, find.text('Utworzono grupę v2 i wysłano zaproszenia'));
     await pumpUntil(t, find.text('osób: 1'));
@@ -661,18 +677,10 @@ void main() {
     final media = await encryptedMediaOverVeilid();
     debugPrint('[v2] ${media.join(', ')}');
 
-    // The same through the app's screens, behind the "eksperymentalne"
-    // switch: create a v2 group, invite, join it (as a second member on this
-    // phone) with the admin's fingerprint checked, and talk.
+    // The same through the app's screens (v2 is the default now, no
+    // switch): create a v2 group, invite, join it (as a second member on
+    // this phone) with the admin's fingerprint checked, and talk.
     await backToHome(t);
-    expect(find.byKey(const ValueKey('v2-home')), findsNothing);
-    await tapKey(t, 'my-profile');
-    await pumpUntil(t, find.byType(MyProfileScreen));
-    await settle(t);
-    await tapKey(t, 'experimental-v2');
-    await settle(t);
-    await t.pageBack();
-    await settle(t);
     await tapKey(t, 'v2-home');
     await settle(t);
     await tapKey(t, 'v2-new');
@@ -876,6 +884,10 @@ void main() {
       ..pop()
       ..pop();
     await settle(t);
+
+    // The rest checks the old v1 paths that stay in the app for reading
+    // (DMs by QR, private rooms, profiles): writes back on for them.
+    RoomSession.legacyWrites = true;
 
     // A DM started with a QR code, listed under "DM".
     await backToHome(t);

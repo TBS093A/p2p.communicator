@@ -7,6 +7,7 @@ import '../core/veilid_node.dart';
 import '../vault/room_secrets.dart';
 import 'dht.dart';
 import 'invite.dart';
+import 'room_session.dart';
 
 /// On-network layout of a room. All records are DHT records encrypted by
 /// Veilid with their own secret, which only travels inside invites and the
@@ -56,6 +57,13 @@ class RoomProtocol {
     RoomKind kind = RoomKind.private,
     String? profileKey,
   }) async {
+    // PROTOCOL §B11: no new v1 rooms in a v2 app.
+    if (!RoomSession.legacyWrites) {
+      throw StateError(
+        'Nowe rozmowy są w v2. Stary protokół (v1) jest '
+        'tylko do odczytu.',
+      );
+    }
     assert(kind.isPublic == (profileKey != null));
     // A random owner key per record, i.e. per room: rooms are unlinkable.
     // Local-first: both records are brand new and only reachable through our
@@ -104,6 +112,13 @@ class RoomProtocol {
     String? profileKey,
     bool asPrivate = false,
   }) async {
+    // PROTOCOL §B11: joining a v1 room would claim a roster slot (a write).
+    if (!RoomSession.legacyWrites) {
+      throw StateError(
+        'To zaproszenie do starej wersji (v1), która jest '
+        'już tylko do odczytu. Poproś o zaproszenie do grupy v2.',
+      );
+    }
     await VeilidNode.instance.waitUntilOnline(
       timeout: const Duration(seconds: 90),
     );

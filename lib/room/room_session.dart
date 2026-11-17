@@ -266,19 +266,43 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   @protected
   Future<void> connectTransport() => _connect();
 
+  /// PROTOCOL §B11: a v2 app opens v1 rooms read-only: history stays,
+  /// nothing new is written, except the one announcement of a move to v2.
+  /// Tests that still exercise the v1 write paths turn this on.
+  static bool legacyWrites = false;
+
+  /// Key of the move-to-v2 data in a v1 text message's `x` (§B11).
+  static const moveKey = 'v2move';
+
+  static const readOnlyMessage =
+      'Stary protokół (v1): ta rozmowa jest tylko do odczytu. '
+      'Przenieś ją do v2.';
+
+  /// Whether this room only reads (v1 rooms in a v2 app).
+  bool get readOnly => !legacyWrites;
+
   /// Delivers [msg] to the other members (throws if it could not).
   @protected
-  Future<void> appendMessage(ChatMessage msg) => _append(msg);
+  Future<void> appendMessage(ChatMessage msg) {
+    if (readOnly && msg.extra?[moveKey] == null) {
+      return Future.error(StateError(readOnlyMessage));
+    }
+    return _append(msg);
+  }
 
   /// Tells the others how we present ourselves (private-room profile).
   @protected
-  Future<void> publishProfile() =>
-      Dht.setJsonSoon(_outboxKey, 0, _head(_myCount));
+  Future<void> publishProfile() async {
+    if (readOnly) return;
+    await Dht.setJsonSoon(_outboxKey, 0, _head(_myCount));
+  }
 
   /// Read-modify-write of the shared room look.
   @protected
-  Future<void> editMeta(RoomMeta Function(RoomMeta) change) =>
-      _editMeta(change);
+  Future<void> editMeta(RoomMeta Function(RoomMeta) change) async {
+    if (readOnly) throw StyleException(readOnlyMessage);
+    await _editMeta(change);
+  }
 
   /// The encrypted local cache.
   @protected
@@ -289,7 +313,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   Future<Uint8List?> readCache() => PinVault.instance.readData(room);
 
   /// Whether "is typing" can be shared in this room.
-  bool get typingSupported => true;
+  bool get typingSupported => !readOnly;
 
   /// Whether files are encrypted with their own key before upload (v2,
   /// PROTOCOL §B9). v1 rooms keep plain chunks so v1 members can read them.
@@ -723,7 +747,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   /// keystroke, never on focus alone). Serialized with sends, so the head's
   /// message count can never go backwards.
   void userTyping() {
-    if (!_shareTyping || !_connected || _closed) return;
+    if (readOnly || !_shareTyping || !_connected || _closed) return;
     if (!_typingThrottle.shouldSend(DateTime.now().millisecondsSinceEpoch)) {
       return;
     }
@@ -915,6 +939,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   /// Sets (or with null/blank clears) our nickname in this public room. It
   /// replaces the global name here only; picture and status stay global.
   Future<void> setNick(String? nick) async {
+    if (readOnly) throw StateError(readOnlyMessage);
     if (!isPublic) {
       throw StateError('private rooms have their own per-room profile');
     }
@@ -938,6 +963,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   /// global picture). Like a nickname: everyone here sees it, nobody
   /// elsewhere. The image is uploaded like any avatar (encrypted blob).
   Future<void> setRoomAvatar(File? file) async {
+    if (readOnly) throw StateError(readOnlyMessage);
     if (!isPublic) {
       throw StateError('private rooms have their own per-room profile');
     }

@@ -20,10 +20,6 @@ class UiPrefs {
   /// When the last automatic check ran (ms since epoch), 0 = never.
   int lastUpdateCheck = 0;
 
-  /// Shows the experimental v2 groups (MLS, docs/V2_PLAN.md). Says nothing
-  /// about which groups exist: those live under the app PIN.
-  final ValueNotifier<bool> experimentalV2 = ValueNotifier(false);
-
   File? _file;
 
   Future<void> load() async {
@@ -40,9 +36,6 @@ class UiPrefs {
       if (j['lastUpdateCheck'] is int) {
         lastUpdateCheck = j['lastUpdateCheck'] as int;
       }
-      if (j['experimentalV2'] is bool) {
-        experimentalV2.value = j['experimentalV2'] as bool;
-      }
     } on Object {
       // First run or unreadable: keep the defaults.
     }
@@ -53,14 +46,8 @@ class UiPrefs {
       'theme': themeMode.value.name,
       'autoUpdate': autoUpdateCheck.value,
       'lastUpdateCheck': lastUpdateCheck,
-      'experimentalV2': experimentalV2.value,
     }),
   );
-
-  Future<void> setExperimentalV2(bool on) async {
-    experimentalV2.value = on;
-    await _save();
-  }
 
   Future<void> setThemeMode(ThemeMode mode) async {
     themeMode.value = mode;

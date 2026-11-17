@@ -53,7 +53,7 @@ class V2HomeScreen extends StatelessWidget {
     return ListenableBuilder(
       listenable: groups,
       builder: (context, _) => Scaffold(
-        appBar: AppBar(title: const Text('Grupy v2 (eksperymentalne)')),
+        appBar: AppBar(title: const Text('Grupy v2')),
         floatingActionButton: FloatingActionButton.extended(
           key: const ValueKey('v2-new'),
           onPressed: () => _create(context),

@@ -12,6 +12,7 @@ import 'package:flutter/widgets.dart';
 import 'package:p2pc_core/p2pc_core.dart';
 
 import '../room/message.dart';
+import '../room/room_session.dart';
 import '../vault/room_secrets.dart';
 import 'v2_room_session.dart';
 
@@ -79,7 +80,7 @@ class V1Move {
   final String messageId;
 
   /// Key of the move data in a v1 text message's `x`.
-  static const key = 'v2move';
+  static const key = RoomSession.moveKey;
 
   /// Most invites in one v1 message (a v1 outbox subkey holds 32 KiB).
   static const invitesPerMessage = 20;
