@@ -39,6 +39,31 @@ class UnlockedApp implements VaultArea {
   final Map<String, dynamic> payload;
 }
 
+/// A private slot as opened by its password: a v1 room ([v1]), a v2
+/// conversation ([hasV2], PROTOCOL §B11.1), or both after a move.
+class PrivateSlot implements VaultArea {
+  PrivateSlot._(this.slotId, this.key, this.payload);
+  @override
+  final String slotId;
+  @override
+  final SharedSecret key;
+  final Map<String, dynamic> payload;
+
+  static const v2Key = 'v2';
+
+  bool get hasV2 => payload[v2Key] == 1;
+
+  /// The v1 room's secrets, if this slot holds one.
+  RoomSecrets? get v1 {
+    if (payload['rosterKey'] is! String) return null;
+    try {
+      return RoomSecrets.fromJson(payload);
+    } on Object {
+      return null;
+    }
+  }
+}
+
 class VaultLockedOut implements Exception {
   VaultLockedOut(this.remaining);
   final Duration remaining;
@@ -124,10 +149,80 @@ class PinVault {
   /// Returns the private room for [password], or null. Throws
   /// [VaultLockedOut] while attempts are throttled.
   Future<UnlockedRoom?> unlock(String password) async {
+    final slot = await openPrivate(password);
+    final v1 = slot?.v1;
+    if (slot == null || v1 == null) return null;
+    return UnlockedRoom(slot.slotId, slot.key, v1);
+  }
+
+  /// Opens the private slot of [password], whatever it holds: a v1 room, a
+  /// v2 conversation (PROTOCOL §B11.1), or both after a move. Null if
+  /// nothing opens. Throws [VaultLockedOut] while attempts are throttled.
+  Future<PrivateSlot?> openPrivate(String password) async {
     final opened = await _open(password, '');
     if (opened == null) return null;
     final (slot, json) = opened;
-    return UnlockedRoom(slot.id, slot.key, RoomSecrets.fromJson(json));
+    return PrivateSlot._(slot.id, slot.key, json);
+  }
+
+  /// A new private slot for a v2 conversation (§B11.1).
+  Future<PrivateSlot> storePrivateV2(String password) async {
+    final slot = await _slotFor(password);
+    if (await _slotFile(slot.id).exists()) {
+      throw StateError('Password already used by another room');
+    }
+    final payload = {PrivateSlot.v2Key: 1};
+    await _writeSlot(slot, payload);
+    await _writeDecoys(_rng.nextInt(3));
+    return PrivateSlot._(slot.id, slot.key, payload);
+  }
+
+  /// Marks an opened v1 private room's slot as moved to v2 (§B11.1): the
+  /// same password then opens the v2 conversation; the v1 room stays.
+  Future<PrivateSlot> markMovedToV2(PrivateSlot slot) async {
+    final payload = {...slot.payload, PrivateSlot.v2Key: 1};
+    await _writeSlot(_Slot(slot.slotId, slot.key), payload, keepData: true);
+    return PrivateSlot._(slot.slotId, slot.key, payload);
+  }
+
+  /// An area (data file and media folder) of its own inside [parent],
+  /// derived from its key, so it is as hidden as [parent] itself.
+  Future<UnlockedRoom> derivedArea(
+    VaultArea parent,
+    String label,
+    RoomSecrets secrets,
+  ) async => UnlockedRoom(
+    await _derivedId(parent, label),
+    await Crypto.subsecret(parent.key, '$label:key'),
+    secrets,
+  );
+
+  /// Like [derivedArea], for state that is not a room (§B11.1: the v2
+  /// conversation's core state in a private slot).
+  Future<VaultArea> derivedDataArea(VaultArea parent, String label) async =>
+      _Area(
+        await _derivedId(parent, label),
+        await Crypto.subsecret(parent.key, '$label:key'),
+      );
+
+  Future<String> _derivedId(VaultArea parent, String label) async => Crypto.hex(
+    Uint8List.sublistView(await Crypto.subkey(parent.key, '$label:id'), 0, 16),
+  );
+
+  /// Forgets a private slot and the areas derived from it (by [labels]).
+  Future<void> forgetPrivate(PrivateSlot slot, List<String> labels) async {
+    for (final l in labels) {
+      final f = _dataFile(await _derivedId(slot, l));
+      if (await f.exists()) {
+        await f.writeAsBytes(
+          await Crypto.randomBytes(1024 + _rng.nextInt(60000)),
+        );
+      }
+    }
+    await _slotFile(slot.slotId).writeAsBytes(
+      await Crypto.randomBytes(await _sealedSlotSize()),
+      flush: true,
+    );
   }
 
   // ------------------------------------------------------------------- app
@@ -369,5 +464,13 @@ class PinVault {
 class _Slot {
   _Slot(this.id, this.key);
   final String id;
+  final SharedSecret key;
+}
+
+class _Area implements VaultArea {
+  _Area(this.slotId, this.key);
+  @override
+  final String slotId;
+  @override
   final SharedSecret key;
 }

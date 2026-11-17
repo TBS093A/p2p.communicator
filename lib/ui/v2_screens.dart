@@ -1,6 +1,8 @@
 // Screens of the experimental v2 groups (MLS): the list, a new group, the
 // invite as a QR code with the admin's fingerprint, and joining with that
 // fingerprint checked. The conversation itself is the regular ChatScreen.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -344,10 +346,20 @@ class V2JoinScreen extends StatefulWidget {
     required this.myName,
     this.code,
     this.groupName,
+    this.onClose,
+    this.onJoined,
   });
 
   final V2Groups groups;
   final String myName;
+
+  /// A private conversation's [groups] (PROTOCOL §B11.1): stopped when
+  /// this screen goes without joining, else by the chat it opens.
+  final Future<void> Function()? onClose;
+
+  /// Runs once the join request went out (e.g. a private v1 room's slot
+  /// now opens the v2 conversation).
+  final Future<void> Function(V2Group group)? onJoined;
 
   /// Prefilled from a move announced in a v1 room (PROTOCOL §B11): only a
   /// hint, the admin's fingerprint still has to be checked.
@@ -367,6 +379,9 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
   bool _checked = false;
   bool _busy = false;
 
+  /// The chat it opened stops a private conversation from here on.
+  bool _handedOff = false;
+
   @override
   void initState() {
     super.initState();
@@ -378,6 +393,8 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
     _code.dispose();
     _name.dispose();
     _me.dispose();
+    final close = widget.onClose;
+    if (!_handedOff && close != null) unawaited(close());
     super.dispose();
   }
 
@@ -398,10 +415,16 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
     try {
       final groups = widget.groups;
       final g = await groups.join(invite, _name.text, _me.text);
+      await widget.onJoined?.call(g);
       if (!mounted) return;
+      _handedOff = true;
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
-          builder: (_) => ChatScreen.v2(session: groups.roomOf(g), v2: groups),
+          builder: (_) => ChatScreen.v2(
+            session: groups.roomOf(g),
+            v2: groups,
+            onClose: widget.onClose,
+          ),
         ),
       );
     } on Object catch (e) {
@@ -682,12 +705,17 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
                         : Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              IconButton(
-                                key: ValueKey('v2-member-dm-${room.nameOf(c)}'),
-                                tooltip: 'Napisz prywatnie',
-                                icon: const Icon(Icons.chat_bubble_outline),
-                                onPressed: () => _dm(c, room.nameOf(c)),
-                              ),
+                              // Not from a private conversation (§B11.1):
+                              // the DM would live outside its slot.
+                              if (!groups.private)
+                                IconButton(
+                                  key: ValueKey(
+                                    'v2-member-dm-${room.nameOf(c)}',
+                                  ),
+                                  tooltip: 'Napisz prywatnie',
+                                  icon: const Icon(Icons.chat_bubble_outline),
+                                  onPressed: () => _dm(c, room.nameOf(c)),
+                                ),
                               if (iAmAdmin) _adminMenu(c, room, successor),
                             ],
                           ),

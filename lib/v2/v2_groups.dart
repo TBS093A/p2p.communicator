@@ -278,6 +278,7 @@ class V2Groups extends ChangeNotifier {
     required V2RoomOpener openRoom,
     int Function()? clock,
     bool Function()? appActive,
+    this.private = false,
   }) : _save = save,
        _openRoom = openRoom,
        clock = clock ?? _wallClock,
@@ -286,6 +287,11 @@ class V2Groups extends ChangeNotifier {
        _host = CoreHost(dht);
 
   final CoreDht _dht;
+
+  /// A private conversation's own instance (PROTOCOL §B11.1): one group in
+  /// a password slot. DMs are not started from it or offered in it: they
+  /// would live outside that slot.
+  final bool private;
 
   static int _wallClock() => DateTime.now().millisecondsSinceEpoch;
 
@@ -538,6 +544,7 @@ class V2Groups extends ChangeNotifier {
   /// A DM invite for us arrived in [via] from [from] (MLS proved who sent
   /// it). Kept until accepted or declined.
   void offerDm(V2Group via, String from, String code, String id) {
+    if (private) return;
     if (V2Invite.tryParse(code) == null) return;
     if (via.dmOffers.any((o) => o.id == id || o.code == code)) return;
     if (groups.any((g) => g.joinInvite == code)) return;
