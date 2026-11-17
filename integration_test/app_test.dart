@@ -24,6 +24,7 @@ import 'package:p2p_communicator/ui/chat_screen.dart';
 import 'package:p2p_communicator/ui/home_screen.dart';
 import 'package:p2p_communicator/ui/invite_screen.dart';
 import 'package:p2p_communicator/ui/members_screen.dart';
+import 'package:p2p_communicator/room/message.dart';
 import 'package:p2p_communicator/room/room_session.dart';
 import 'package:p2p_communicator/ui/my_profile_screen.dart';
 import 'package:p2p_communicator/ui/new_room_screen.dart';
@@ -781,6 +782,61 @@ void main() {
     await pumpUntil(t, find.text('Kasia z v2'));
     await settle(t);
     await shot(t, '11_v2_admin');
+
+    // The same message kinds as v1, in the v2 group: a photo from the
+    // gallery, a voice note, an emoji on its own (shown large), and a reply
+    // quoting the photo (the quote shows the picture itself).
+    gallery.queue.add(roomPicture);
+    await t.tap(find.byTooltip('Załącz'));
+    await pumpUntil(t, find.text('Zdjęcie z galerii'));
+    await settle(t);
+    await t.tap(find.text('Zdjęcie z galerii'));
+    final photo = find.descendant(
+      of: find.byWidgetPredicate(
+        (w) => w is MessageBubble && w.message.type == MsgType.image,
+      ),
+      matching: find.byType(Image),
+    );
+    await pumpUntil(t, photo, timeout: const Duration(minutes: 2));
+    // A voice note through the session (the CI emulator has no reliable
+    // microphone; recording itself is the v1 composer code).
+    final v2Session = t
+        .widget<ChatScreen>(find.byType(ChatScreen).last)
+        .session;
+    final voiceFile = File('${Directory.systemTemp.path}/dast_voice.m4a')
+      ..writeAsBytesSync(List.filled(4000, 7));
+    await v2Session.sendFile(voiceFile, MsgType.voice, durationMs: 2300);
+    await pumpUntil(
+      t,
+      find.byWidgetPredicate(
+        (w) =>
+            w is MessageBubble &&
+            w.message.type == MsgType.voice &&
+            w.message.status == MsgStatus.sent,
+      ),
+      timeout: const Duration(minutes: 2),
+    );
+    await send(t, '🎉');
+    await pumpUntil(t, find.text('🎉'));
+    await hideKeyboard(t);
+    await settle(t);
+    await t.longPress(photo.last);
+    await settle(t);
+    await pumpUntil(t, find.byKey(const ValueKey('msg-reply')));
+    await tapKey(t, 'msg-reply');
+    await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
+    await send(t, 'piękny widok');
+    await hideKeyboard(t);
+    await pumpUntil(
+      t,
+      find.descendant(
+        of: find.byType(QuotedBubble),
+        matching: find.byType(Image),
+      ),
+      timeout: const Duration(minutes: 1),
+    );
+    await settle(t);
+    await shot(t, '11d_v2_media');
 
     // A DM from the shared group (phase 4b, PROTOCOL §B10): the admin
     // starts one with Kasia; her copy of the group gets the offer, she
