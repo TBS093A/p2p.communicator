@@ -34,6 +34,7 @@ import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/update_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
 import 'package:p2p_communicator/ui/widgets/message_bubble.dart';
+import 'package:p2p_communicator/ui/widgets/message_list.dart';
 
 import 'test_images.dart';
 import 'test_platforms.dart';
@@ -844,12 +845,23 @@ void main() {
       ('cześć z grupy v2', 140.0), // Kasia's
       ('piękny widok', -140.0), // ours
     ]) {
+      // Older ones are scrolled up and not built: scroll the (reversed)
+      // message list until this one is on screen.
+      await t.scrollUntilVisible(
+        find.text(text),
+        250,
+        scrollable: find
+            .descendant(
+              of: find.byType(MessageList),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await settle(t);
       final bubble = find.ancestor(
         of: find.text(text).last,
         matching: find.byType(MessageBubble),
       );
-      await t.ensureVisible(bubble.first); // older ones scrolled up
-      await settle(t);
       await t.timedDrag(
         bubble.first,
         Offset(dx, 0),
