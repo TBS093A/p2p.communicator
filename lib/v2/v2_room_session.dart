@@ -150,13 +150,24 @@ class V2RoomSession extends RoomSession {
         final m = x['m'];
         if (m is! Map || msg.ts <= group.metaTs) return;
         try {
-          meta = RoomMeta.fromJson(m.cast(), fallbackName: meta.name);
+          final next = RoomMeta.fromJson(m.cast(), fallbackName: meta.name);
+          // A DM is named after the other person on each side.
+          meta = group.dm ? next.copyWith(name: meta.name) : next;
         } on Object {
           return;
         }
         group.metaTs = msg.ts;
+      // PROTOCOL §B10: a DM invite for one member, sent through this group
+      // (MLS proved who sent it). Everyone else ignores it.
+      case MsgType.dmInvite:
+        final v = x['v2'];
+        if (v is! Map || msg.author == myOutbox) return;
+        final code = v['i'];
+        if (v['to'] != myOutbox || code is! String) return;
+        groups.offerDm(group, msg.author, code, msg.id);
+        return;
       default:
-        return; // DM invites and the like have no meaning in v2
+        return;
     }
     notifyListeners();
     scheduleSave();

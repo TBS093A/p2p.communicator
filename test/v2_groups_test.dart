@@ -290,4 +290,55 @@ void main() {
       }
     },
   );
+
+  test('DM from a shared group: only the invited member gets it', () async {
+    final dht = MemoryDht();
+    final alice = phone(dht);
+    final bob = phone(dht);
+    final carol = phone(dht);
+
+    Future<V2Group> joinAs(V2Groups p, V2Group admin, String me) async {
+      final code = await alice.createInvite(admin);
+      final g = await p.join(V2Invite.tryParse(code)!, 'Grupa', me);
+      await rounds([(p, g), (alice, admin)], times: 4);
+      return g;
+    }
+
+    final ga = await alice.create('Rada', 'Ala');
+    final gb = await joinAs(bob, ga, 'Bob');
+    final gc = await joinAs(carol, ga, 'Karola');
+    final all = [(alice, ga), (bob, gb), (carol, gc)];
+    await rounds(all, times: 3);
+
+    final bobCik = bob.myCik(gb);
+    final dmA = await alice.startDm(ga, bobCik, 'Bob');
+    expect(alice.myCik(dmA), isNot(alice.myCik(ga)), reason: 'new identity');
+    await rounds(all, times: 2);
+    expect(carol.dmOffers, isEmpty, reason: 'meant for Bob only');
+    expect(alice.dmOffers, isEmpty);
+    expect(bob.dmOffers, hasLength(1));
+    final (via, offer) = bob.dmOffers.single;
+    expect(via, gb);
+    expect(offer.from, alice.myCik(ga));
+    // Kept across a restart of the app data.
+    expect(V2Group.fromJson(gb.toJson()).dmOffers.single.code, offer.code);
+
+    final dmB = await bob.acceptDm(gb, offer);
+    expect(bob.dmOffers, isEmpty);
+    expect(bob.myCik(dmB), isNot(bobCik), reason: 'new identity');
+    final dm = [(alice, dmA), (bob, dmB)];
+    await rounds(dm, times: 4);
+    expect(dmB.joining, isFalse);
+    expect(alice.roomOf(dmA).memberOutboxes, hasLength(2));
+    // Each side names the DM after the other person.
+    expect(alice.roomOf(dmA).roomName, 'Bob');
+    expect(bob.roomOf(dmB).roomName, 'Ala');
+    await bob.roomOf(dmB).sendText('tylko dla Ali');
+    await rounds(dm, times: 2);
+    expect(texts(alice.roomOf(dmA)), contains('tylko dla Ali'));
+    expect(texts(carol.roomOf(gc)), isNot(contains('tylko dla Ali')));
+    for (final p in [alice, bob, carol]) {
+      await p.close();
+    }
+  });
 }

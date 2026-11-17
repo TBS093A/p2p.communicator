@@ -229,6 +229,11 @@ pub mod hex_bytes {
     }
 }
 
+/// Hex to bytes; None for odd length or a non-hex digit.
+pub fn unhex_opt(s: &str) -> Option<Vec<u8>> {
+    crate::api::unhex(s)
+}
+
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }

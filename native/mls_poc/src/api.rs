@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::member::{Invite, Member, PocError};
+use crate::member::{DmProof, Invite, Member, PocError};
 use crate::snapshot::SnapshotDht;
 use crate::wire;
 
@@ -30,13 +30,27 @@ pub enum Op {
     /// Read everything new: commits, messages, moves, takeovers.
     Sync,
     CreateGroup,
-    /// Admin: a one-time invite. Result: the `p2pc2.` invite string.
-    CreateInvite,
+    /// Admin: a one-time invite. Result: the `p2pc2.` invite string. With
+    /// `for_cik` (a DM started from a shared group, §B10) only a join
+    /// request proven by that `CIK` there is admitted.
+    CreateInvite {
+        #[serde(default)]
+        for_cik: Option<String>,
+    },
     /// Joiner: request to join, after the admin's key was checked out of
-    /// band (`verified_admin` is the CIK the user compared).
+    /// band (`verified_admin` is the CIK the user compared), or, for a DM
+    /// invite from a shared group, with the `proof` from `sign_dm_join`.
     RequestJoin {
         invite: String,
         verified_admin: String,
+        #[serde(default)]
+        proof: Option<DmProof>,
+    },
+    /// In the shared group: sign that `new_cik` joining through
+    /// `rendezvous` is this member (§B10). Result: `{cik, sig}`.
+    SignDmJoin {
+        rendezvous: String,
+        new_cik: String,
     },
     /// Admin: stage adding the joiner who wrote to this rendezvous.
     StageAdd {
@@ -287,14 +301,24 @@ fn run(m: &mut Member, op: &Op, dht: &mut SnapshotDht) -> Result<Value, PocError
             m.create_group(dht)?;
             Value::Null
         }
-        Op::CreateInvite => json!(m.create_invite(dht)?.encode()),
+        Op::CreateInvite { for_cik } => {
+            json!(m.create_invite_for(dht, for_cik.as_deref())?.encode())
+        }
         Op::RequestJoin {
             invite,
             verified_admin,
+            proof,
         } => {
             let inv = Invite::decode(invite)?;
-            m.request_join(dht, &inv, verified_admin)?;
+            m.request_join_with(dht, &inv, verified_admin, proof.clone())?;
             Value::Null
+        }
+        Op::SignDmJoin {
+            rendezvous,
+            new_cik,
+        } => {
+            let p = m.sign_dm_join(rendezvous, new_cik)?;
+            json!({"cik": p.cik, "sig": p.sig})
         }
         Op::StageAdd { rendezvous } => {
             m.stage_add(dht, rendezvous)?;

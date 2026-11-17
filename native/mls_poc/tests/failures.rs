@@ -1052,3 +1052,65 @@ fn f24_update_pending_across_a_handover() {
     assert!(texts(&g[0]).contains(&"odblokowana".to_string()));
     assert_same_epoch(&[&g[0], &g[1], &g[2]]);
 }
+
+// F25: a DM invite started from a shared group (§B10) admits only the
+// member it was meant for: another member who read it, with no proof, its
+// own proof, or a proof claiming to be the recipient, is refused, and the
+// invite stays open until the recipient joins with a fresh identity.
+#[test]
+fn f25_dm_invite_admits_only_the_invited_member() {
+    let (mut dht, g) = group(&["alice", "bob", "carol"]);
+    let bob_g = g[1].st.cik.clone();
+    let mut alice_dm = Member::new("alice (DM)");
+    alice_dm.create_group(&mut dht).unwrap();
+    // Not a key: refused before anything is created.
+    assert!(alice_dm.create_invite_for(&mut dht, Some("xyz")).is_err());
+    let invite = alice_dm.create_invite_for(&mut dht, Some(&bob_g)).unwrap();
+    let rv = invite.rendezvous.clone();
+    let admin = invite.admin_cik.clone();
+
+    // Carol read the invite in the group and tries it three ways.
+    let mut carol_dm = Member::new("carol (DM)");
+    let carol_cik = carol_dm.st.cik.clone();
+    let own = g[2].sign_dm_join(&rv, &carol_cik).unwrap();
+    let mut forged = own.clone();
+    forged.cik = bob_g.clone(); // claims to be Bob, signed by Carol
+    for proof in [None, Some(own), Some(forged)] {
+        carol_dm
+            .request_join_with(&mut dht, &invite, &admin, proof)
+            .unwrap();
+        let err = alice_dm.stage_add(&mut dht, &rv).unwrap_err();
+        assert!(
+            err.to_string().contains("not from the invited member"),
+            "{err}"
+        );
+        assert!(alice_dm.st.pending.is_none());
+    }
+    // Bob's proof for a different new identity does not fit Carol's either.
+    let stolen = g[1].sign_dm_join(&rv, "00".repeat(32).as_str()).unwrap();
+    carol_dm
+        .request_join_with(&mut dht, &invite, &admin, Some(stolen))
+        .unwrap();
+    assert!(alice_dm.stage_add(&mut dht, &rv).is_err());
+
+    // Bob joins with a fresh identity and the proof from the group.
+    let mut bob_dm = Member::new("bob (DM)");
+    assert_ne!(bob_dm.st.cik, bob_g, "a new identity for the DM");
+    let proof = g[1].sign_dm_join(&rv, &bob_dm.st.cik).unwrap();
+    bob_dm
+        .request_join_with(&mut dht, &invite, &admin, Some(proof))
+        .unwrap();
+    alice_dm.stage_add(&mut dht, &rv).unwrap();
+    alice_dm.publish_pending(&mut dht).unwrap();
+    assert!(bob_dm.complete_join(&mut dht, &invite).unwrap());
+    let mut dm = vec![alice_dm, bob_dm];
+    sync_all(&mut dht, &mut dm);
+    assert_eq!(dm[0].members().len(), 2);
+    dm[1].send_text(&mut dht, "prywatnie").unwrap();
+    sync_all(&mut dht, &mut dm);
+    assert!(texts(&dm[0]).contains(&"prywatnie".to_string()));
+    // Used once: a second request is refused.
+    assert!(dm[0].stage_add(&mut dht, &rv).is_err());
+    // Carol never got in.
+    assert!(carol_dm.group().is_none());
+}

@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../room/message.dart';
 import '../v2/v2_groups.dart';
+import '../v2/v2_room_session.dart';
 import 'chat_screen.dart';
 import 'scan_screen.dart';
 import 'widgets/avatar.dart';
@@ -72,6 +73,8 @@ class V2HomeScreen extends StatelessWidget {
                 ),
               ),
             ),
+            for (final (via, offer) in groups.dmOffers)
+              _DmOfferTile(groups: groups, via: via, offer: offer),
             const Divider(),
             if (groups.groups.isEmpty)
               const Padding(
@@ -86,6 +89,59 @@ class V2HomeScreen extends StatelessWidget {
             for (final g in groups.groups) _GroupTile(groups: groups, group: g),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Someone from a shared group wants a private conversation (PROTOCOL
+/// §B10). Accepting joins it with a new identity; no fingerprint to check,
+/// the invite came from them inside the group.
+class _DmOfferTile extends StatelessWidget {
+  const _DmOfferTile({
+    required this.groups,
+    required this.via,
+    required this.offer,
+  });
+
+  final V2Groups groups;
+  final V2Group via;
+  final V2DmOffer offer;
+
+  Future<void> _accept(BuildContext context) async {
+    try {
+      final g = await groups.acceptDm(via, offer);
+      if (context.mounted) await openV2Chat(context, groups, g);
+    } on Object catch (e) {
+      if (context.mounted) _toast(context, 'Nie udało się: ${_plain(e)}');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final room = groups.roomOf(via);
+    final name = room.nameOf(offer.from);
+    return ListTile(
+      key: ValueKey('v2-dm-offer-$name'),
+      leading: Avatar.member(room, offer.from),
+      title: Text('$name chce pisać prywatnie'),
+      subtitle: Text('z grupy ${room.roomName}'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            key: ValueKey('v2-dm-decline-$name'),
+            tooltip: 'Odrzuć',
+            icon: const Icon(Icons.close),
+            onPressed: () => groups.declineDm(via, offer),
+          ),
+          IconButton(
+            key: ValueKey('v2-dm-accept-$name'),
+            tooltip: 'Przyjmij',
+            icon: const Icon(Icons.check),
+            onPressed: () => _accept(context),
+          ),
+        ],
       ),
     );
   }
@@ -482,6 +538,58 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
     await _run(() => groups.removeMember(g, cik), 'Usunięto $name');
   }
 
+  Widget _adminMenu(String c, V2RoomSession room, String? successor) =>
+      PopupMenuButton<String>(
+        key: ValueKey('v2-member-menu-${room.nameOf(c)}'),
+        onSelected: (a) => switch (a) {
+          'remove' => _remove(c, room.nameOf(c)),
+          'handover' => _handOver(c, room.nameOf(c)),
+          'successor' => _run(
+            () => groups.setSuccessor(g, c),
+            '${room.nameOf(c)} przejmie grupę, jeśli stracisz telefon',
+          ),
+          _ => _run(
+            () => groups.setSuccessor(g, null),
+            'Grupa nie ma już następcy admina',
+          ),
+        },
+        itemBuilder: (_) => [
+          if (c != successor)
+            const PopupMenuItem(
+              value: 'successor',
+              child: Text('Ustaw jako następcę'),
+            )
+          else
+            const PopupMenuItem(
+              value: 'no-successor',
+              child: Text('Usuń jako następcę'),
+            ),
+          const PopupMenuItem(
+            value: 'handover',
+            child: Text('Przekaż rolę admina'),
+          ),
+          const PopupMenuItem(value: 'remove', child: Text('Usuń z grupy')),
+        ],
+      );
+
+  /// A private conversation with [cik] (PROTOCOL §B10): a new two-member
+  /// group with a fresh identity; the invite goes to them in this group.
+  Future<void> _dm(String cik, String name) async {
+    setState(() => _busy = true);
+    final V2Group dm;
+    try {
+      dm = await groups.startDm(g, cik, name);
+    } on Object catch (e) {
+      if (mounted) _toast(context, 'Nie udało się: ${_plain(e)}');
+      return;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (!mounted) return;
+    _toast(context, 'Wysłano zaproszenie do rozmowy prywatnej: $name');
+    await openV2Chat(context, groups, dm);
+  }
+
   Future<void> _handOver(String cik, String name) async {
     final yes = await showDialog<bool>(
       context: context,
@@ -551,44 +659,20 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
                         'klucz ${v2Fingerprint(c).substring(0, 9)}',
                       ].join(' · '),
                     ),
-                    trailing: iAmAdmin && c != me
-                        ? PopupMenuButton<String>(
-                            key: ValueKey('v2-member-menu-${room.nameOf(c)}'),
-                            onSelected: (a) => switch (a) {
-                              'remove' => _remove(c, room.nameOf(c)),
-                              'handover' => _handOver(c, room.nameOf(c)),
-                              'successor' => _run(
-                                () => groups.setSuccessor(g, c),
-                                '${room.nameOf(c)} przejmie grupę, jeśli '
-                                'stracisz telefon',
+                    trailing: c == me
+                        ? null
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                key: ValueKey('v2-member-dm-${room.nameOf(c)}'),
+                                tooltip: 'Napisz prywatnie',
+                                icon: const Icon(Icons.chat_bubble_outline),
+                                onPressed: () => _dm(c, room.nameOf(c)),
                               ),
-                              _ => _run(
-                                () => groups.setSuccessor(g, null),
-                                'Grupa nie ma już następcy admina',
-                              ),
-                            },
-                            itemBuilder: (_) => [
-                              if (c != successor)
-                                const PopupMenuItem(
-                                  value: 'successor',
-                                  child: Text('Ustaw jako następcę'),
-                                )
-                              else
-                                const PopupMenuItem(
-                                  value: 'no-successor',
-                                  child: Text('Usuń jako następcę'),
-                                ),
-                              const PopupMenuItem(
-                                value: 'handover',
-                                child: Text('Przekaż rolę admina'),
-                              ),
-                              const PopupMenuItem(
-                                value: 'remove',
-                                child: Text('Usuń z grupy'),
-                              ),
+                              if (iAmAdmin) _adminMenu(c, room, successor),
                             ],
-                          )
-                        : null,
+                          ),
                   ),
                 const Divider(),
                 Padding(
