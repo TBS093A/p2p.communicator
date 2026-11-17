@@ -45,6 +45,9 @@ pub enum Op {
         verified_admin: String,
         #[serde(default)]
         proof: Option<DmProof>,
+        /// Shown to the admin with our fingerprint (§B4 step 4).
+        #[serde(default)]
+        name: Option<String>,
     },
     /// In the shared group: sign that `new_cik` joining through
     /// `rendezvous` is this member (§B10). Result: `{cik, sig}`.
@@ -53,7 +56,16 @@ pub enum Op {
         new_cik: String,
     },
     /// Admin: stage adding the joiner who wrote to this rendezvous.
+    /// With `cik`: only if the request is still the one the admin approved
+    /// (from `peek_join`).
     StageAdd {
+        rendezvous: String,
+        #[serde(default)]
+        cik: Option<String>,
+    },
+    /// Admin: the join request waiting at `rendezvous`, to approve or not
+    /// (§B4 step 4). Result: `{cik, name}`, or null while there is none.
+    PeekJoin {
         rendezvous: String,
     },
     /// Admin: stage committing the pending proposals (e.g. Updates).
@@ -308,9 +320,10 @@ fn run(m: &mut Member, op: &Op, dht: &mut SnapshotDht) -> Result<Value, PocError
             invite,
             verified_admin,
             proof,
+            name,
         } => {
             let inv = Invite::decode(invite)?;
-            m.request_join_with(dht, &inv, verified_admin, proof.clone())?;
+            m.request_join_named(dht, &inv, verified_admin, proof.clone(), name.as_deref())?;
             Value::Null
         }
         Op::SignDmJoin {
@@ -320,10 +333,17 @@ fn run(m: &mut Member, op: &Op, dht: &mut SnapshotDht) -> Result<Value, PocError
             let p = m.sign_dm_join(rendezvous, new_cik)?;
             json!({"cik": p.cik, "sig": p.sig})
         }
-        Op::StageAdd { rendezvous } => {
-            m.stage_add(dht, rendezvous)?;
+        Op::StageAdd { rendezvous, cik } => {
+            match cik {
+                Some(cik) => m.stage_add_approved(dht, rendezvous, cik)?,
+                None => m.stage_add(dht, rendezvous)?,
+            }
             Value::Null
         }
+        Op::PeekJoin { rendezvous } => match m.peek_join(dht, rendezvous)? {
+            Some(v) => json!({"cik": v.cik, "name": v.name}),
+            None => Value::Null,
+        },
         Op::StageCommitProposals => {
             m.stage_commit_proposals()?;
             Value::Null

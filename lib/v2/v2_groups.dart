@@ -61,6 +61,72 @@ class V2DmOffer {
   }
 }
 
+/// A move to v2 announced in a v1 room (PROTOCOL §B11), with the invite
+/// meant for us. Only a hint: a v1 room proves nothing about its writer,
+/// so joining still needs the admin's fingerprint checked and approval.
+class V1Move {
+  const V1Move({
+    required this.from,
+    required this.name,
+    required this.code,
+    required this.messageId,
+  });
+
+  /// v1 outbox of whoever announced it.
+  final String from;
+  final String name;
+  final String code;
+  final String messageId;
+
+  /// Key of the move data in a v1 text message's `x`.
+  static const key = 'v2move';
+
+  /// Most invites in one v1 message (a v1 outbox subkey holds 32 KiB).
+  static const invitesPerMessage = 20;
+
+  /// The newest announced move with an invite for [myOutbox], if any.
+  static V1Move? find(Iterable<ChatMessage> messages, String myOutbox) {
+    for (final m in messages.toList().reversed) {
+      if (m.type != MsgType.text || m.author == myOutbox) continue;
+      final x = m.extra?[key];
+      if (x is! Map) continue;
+      final inv = x['inv'];
+      final name = x['name'];
+      if (inv is! Map) continue;
+      final code = inv[myOutbox];
+      if (code is! String || V2Invite.tryParse(code) == null) continue;
+      return V1Move(
+        from: m.author,
+        name: name is String && name.trim().isNotEmpty
+            ? name.trim()
+            : 'Grupa v2',
+        code: code,
+        messageId: m.id,
+      );
+    }
+    return null;
+  }
+
+  /// The data for one announcing message.
+  static Map<String, dynamic> extra(String name, Map<String, String> inv) => {
+    key: {'name': name, 'inv': inv},
+  };
+}
+
+/// A join request waiting for the admin (PROTOCOL §B4 step 4): the name
+/// the joiner chose and their key, to compare with them before approving.
+class V2JoinRequest {
+  const V2JoinRequest({
+    required this.rendezvous,
+    required this.cik,
+    required this.name,
+  });
+
+  final String rendezvous;
+  final String cik;
+  final String name;
+}
+
 /// A conversation identity key for people to compare, in 16 groups of 4.
 String v2Fingerprint(String cik) {
   final s = cik.toUpperCase();
@@ -76,6 +142,7 @@ class V2Group {
     required this.me,
     required this.state,
     this.joinInvite,
+    this.joinedWith,
     List<String>? openInvites,
     this.inboxSeen = 0,
     this.metaTs = 0,
@@ -125,6 +192,10 @@ class V2Group {
   /// Set while our join request waits for the admin to let us in.
   String? joinInvite;
 
+  /// The invite we joined with (kept after joining), so a move announced
+  /// in a v1 room is not offered again.
+  final String? joinedWith;
+
   /// Admin: rendezvous records of invites handed out and not used yet.
   final List<String> openInvites;
   int inboxSeen;
@@ -149,6 +220,7 @@ class V2Group {
     'me': me,
     'state': base64.encode(state),
     'join': ?joinInvite,
+    'via': ?joinedWith,
     'invites': openInvites,
     'seen': inboxSeen,
     'metaTs': metaTs,
@@ -168,6 +240,7 @@ class V2Group {
     me: j['me'] as String? ?? 'Ja',
     state: base64.decode(j['state'] as String),
     joinInvite: j['join'] as String?,
+    joinedWith: j['via'] as String?,
     openInvites: ((j['invites'] as List?) ?? const []).cast<String>().toList(),
     inboxSeen: j['seen'] as int? ?? 0,
     metaTs: j['metaTs'] as int? ?? 0,
@@ -401,6 +474,7 @@ class V2Groups extends ChangeNotifier {
           me: me.trim(),
           state: s.save(),
           joinInvite: invite.code,
+          joinedWith: invite.code,
         );
         _sessions[g.id] = s;
         try {
@@ -408,6 +482,7 @@ class V2Groups extends ChangeNotifier {
             'op': 'request_join',
             'invite': invite.code,
             'verified_admin': invite.adminCik,
+            'name': me.trim(),
           });
           await _attach(g);
         } on Object {
@@ -468,6 +543,27 @@ class V2Groups extends ChangeNotifier {
     via.dmOffers.add(V2DmOffer(from: from, code: code, id: id));
     unawaited(_save());
     notifyListeners();
+  }
+
+  /// Whether [code] was already used to join one of our groups.
+  bool joinedWith(String code) =>
+      groups.any((g) => g.joinedWith == code || g.joinInvite == code);
+
+  /// Moves a v1 conversation to a new v2 group (PROTOCOL §B11): we become
+  /// its admin and make one invite per other member, keyed by their v1
+  /// outbox. The caller announces them in the v1 room, which is only a
+  /// hint: each joiner still checks our fingerprint and we approve them.
+  Future<(V2Group, Map<String, String>)> createForMove(
+    String name,
+    String me,
+    Iterable<String> members,
+  ) async {
+    final g = await create(name, me);
+    final invites = <String, String>{};
+    for (final m in members) {
+      invites[m] = await createInvite(g);
+    }
+    return (g, invites);
   }
 
   /// Every DM offer with the group it came through.
@@ -744,7 +840,65 @@ class V2Groups extends ChangeNotifier {
     }
   }
 
+  /// Admin: looks at the join requests on open invites (PROTOCOL §B4 step
+  /// 4). In a group they wait for approval (name and key fingerprint
+  /// shown); in a DM the invite is bound to one member who proved who
+  /// they are (§B10), so it is let in at once.
   Future<void> _admit(V2Group g) async {
+    if (g.dm) return _admitDm(g);
+    final waiting = <String, V2JoinRequest>{};
+    for (final rv in g.openInvites.toList()) {
+      try {
+        final r = await _run(g, {'op': 'peek_join', 'rendezvous': rv});
+        if (r is Map && r['cik'] is String) {
+          waiting[rv] = V2JoinRequest(
+            rendezvous: rv,
+            cik: r['cik'] as String,
+            name: (r['name'] as String?) ?? '',
+          );
+        }
+      } on CoreError {
+        // Never the error text: it may quote what the joiner sent.
+        debugPrint('[v2] a join request was refused or already used');
+        g.openInvites.remove(rv);
+        await _save();
+      }
+    }
+    _requests[g.id] = waiting;
+  }
+
+  final _requests = <String, Map<String, V2JoinRequest>>{};
+
+  /// Admin: join requests in [g] waiting for approval.
+  List<V2JoinRequest> joinRequests(V2Group g) =>
+      _requests[g.id]?.values.toList() ?? const [];
+
+  /// Admin: lets in the request shown in [r], only if it is still the same
+  /// one (anyone holding the invite can rewrite it in between).
+  Future<void> approveJoin(V2Group g, V2JoinRequest r) => _serial(() async {
+    await _rotateIfFull(g);
+    await _run(g, {
+      'op': 'stage_add',
+      'rendezvous': r.rendezvous,
+      'cik': r.cik,
+    });
+    g.openInvites.remove(r.rendezvous);
+    _requests[g.id]?.remove(r.rendezvous);
+    await _save();
+    await _run(g, {'op': 'publish_pending'});
+    await _save();
+    notifyListeners();
+  });
+
+  /// Admin: refuses [r]; its invite is not used any more.
+  Future<void> rejectJoin(V2Group g, V2JoinRequest r) async {
+    g.openInvites.remove(r.rendezvous);
+    _requests[g.id]?.remove(r.rendezvous);
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> _admitDm(V2Group g) async {
     for (final rv in g.openInvites.toList()) {
       try {
         await _run(g, {'op': 'stage_add', 'rendezvous': rv});

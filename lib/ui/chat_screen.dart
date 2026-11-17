@@ -336,6 +336,64 @@ class _ChatScreenState extends State<ChatScreen> {
     };
   }
 
+  /// PROTOCOL §B11: a new v2 group with us as its admin, one invite per
+  /// other member, announced here. Old apps just show the text.
+  Future<void> _moveToV2() async {
+    final app = widget.app!;
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Przenieść rozmowę do v2?'),
+        content: const Text(
+          'Powstanie nowa grupa v2 (szyfrowanie MLS), a ty zostaniesz jej '
+          'adminem. Tutaj wyślesz każdej osobie jej zaproszenie. Każdy, kto '
+          'dołącza, porówna z tobą odcisk klucza, a ty zatwierdzisz jego '
+          'prośbę po sprawdzeniu jego klucza.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Anuluj'),
+          ),
+          FilledButton(
+            key: const ValueKey('v1-move-confirm'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Przenieś'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true || !mounted) return;
+    final V2Group g;
+    try {
+      final others = _session.memberOutboxes
+          .where((o) => o != _session.myOutbox)
+          .toList();
+      final (group, invites) = await app.v2.createForMove(
+        _session.roomName,
+        _session.nameOf(_session.myOutbox),
+        others,
+      );
+      g = group;
+      final entries = invites.entries.toList();
+      for (var i = 0; i < entries.length; i += V1Move.invitesPerMessage) {
+        final part = entries.skip(i).take(V1Move.invitesPerMessage);
+        await _session.sendText(
+          'Przenoszę tę rozmowę do grupy v2 (szyfrowanie MLS). Zaktualizuj '
+          'aplikację i dołącz z karty nad rozmową. Przed dołączeniem '
+          'porównaj ze mną odcisk mojego klucza.',
+          extra: V1Move.extra(_session.roomName, Map.fromEntries(part)),
+        );
+      }
+    } on Object catch (e) {
+      _toast('Nie udało się przenieść: $e');
+      return;
+    }
+    if (!mounted) return;
+    _toast('Utworzono grupę v2 i wysłano zaproszenia');
+    await openV2Chat(context, app.v2, g);
+  }
+
   Future<void> _menu(String action) async {
     final v2 = widget.v2;
     final group = v2 == null ? null : (_session as V2RoomSession).group;
@@ -392,6 +450,8 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       case 'settings':
         await _open(RoomSettingsScreen(session: _session));
+      case 'move-v2':
+        await _moveToV2();
       case 'presence' when v2 != null:
         final on = !group!.presence;
         await v2.setPresence(group, on);
@@ -647,6 +707,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   checked: _session.shareTyping,
                   child: const Text('Pokazuj, że piszę'),
                 ),
+              // PROTOCOL §B11: a v1 conversation moves to a new v2 group.
+              if (widget.v2 == null && widget.app != null)
+                const PopupMenuItem(
+                  key: ValueKey('menu-move-v2'),
+                  value: 'move-v2',
+                  child: Text('Przenieś do v2'),
+                ),
               const PopupMenuItem(
                 value: 'forget',
                 child: Text('Usuń z telefonu'),
@@ -677,6 +744,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   groups: widget.v2!,
                   group: (_session as V2RoomSession).group,
                 ),
+              if (widget.v2 == null && widget.app != null)
+                _V1MoveBanner(session: _session, groups: widget.app!.v2),
               Expanded(
                 child: ListenableBuilder(
                   listenable: _session,
@@ -916,6 +985,51 @@ class _ChatScreenState extends State<ChatScreen> {
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 }
 
+/// In a v1 room: someone moved the conversation to v2 and left an invite
+/// for us (PROTOCOL §B11). Joining goes through the regular join screen,
+/// with the admin's fingerprint still to be checked.
+class _V1MoveBanner extends StatelessWidget {
+  const _V1MoveBanner({required this.session, required this.groups});
+
+  final RoomSession session;
+  final V2Groups groups;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: Listenable.merge([session, groups]),
+    builder: (context, _) {
+      final move = V1Move.find(session.messages, session.myOutbox);
+      if (move == null || groups.joinedWith(move.code)) {
+        return const SizedBox.shrink();
+      }
+      return MaterialBanner(
+        key: const ValueKey('v1-move-banner'),
+        leading: const Icon(Icons.move_up),
+        content: Text(
+          '${session.nameOf(move.from)} przenosi tę rozmowę do grupy v2 '
+          '„${move.name}”.',
+        ),
+        actions: [
+          FilledButton(
+            key: const ValueKey('v1-move-join'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => V2JoinScreen(
+                  groups: groups,
+                  myName: session.nameOf(session.myOutbox),
+                  code: move.code,
+                  groupName: move.name,
+                ),
+              ),
+            ),
+            child: const Text('Dołącz do v2'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
 /// v2 group state above the conversation: waiting to be let in, and the
 /// core's warnings (forked log, diverged history, lost messages, removal).
 class _V2Banners extends StatelessWidget {
@@ -923,6 +1037,61 @@ class _V2Banners extends StatelessWidget {
 
   final V2Groups groups;
   final V2Group group;
+
+  /// Shows the joiner's full key fingerprint to compare with them (in
+  /// person, or over a channel already trusted) before letting them in.
+  Future<void> _approve(BuildContext context, V2JoinRequest r) async {
+    final name = r.name.isEmpty ? 'tej osoby' : r.name;
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Wpuścić: ${r.name.isEmpty ? 'nowa osoba' : r.name}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Porównaj ten klucz z ekranem $name (na żywo albo zaufanym '
+              'kanałem). Wpuść tylko, jeśli się zgadza.',
+            ),
+            const SizedBox(height: 12),
+            SelectableText(
+              v2Fingerprint(r.cik),
+              key: const ValueKey('v2-request-fingerprint'),
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Anuluj'),
+          ),
+          FilledButton(
+            key: const ValueKey('v2-approve-confirm'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Zgadza się, wpuść'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true) return;
+    try {
+      await groups.approveJoin(group, r);
+    } on Object catch (e) {
+      if (!context.mounted) return;
+      final changed = '$e'.contains('changed');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            changed
+                ? 'Prośba zmieniła się w międzyczasie. Sprawdź ją jeszcze raz.'
+                : 'Nie udało się wpuścić.',
+          ),
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -945,10 +1114,32 @@ class _V2Banners extends StatelessWidget {
             const MaterialBanner(
               key: ValueKey('v2-waiting'),
               content: Text(
-                'Prośba wysłana. Admin wpuści cię przy najbliższej '
-                'synchronizacji (musi mieć włączoną aplikację).',
+                'Prośba wysłana. Admin musi ją zatwierdzić; gdy to zrobi, '
+                'wejdziesz przy najbliższej synchronizacji.',
               ),
               actions: [SizedBox.shrink()],
+            ),
+          // PROTOCOL §B4 step 4: the admin approves each request, after
+          // comparing the key with the person.
+          for (final r in groups.joinRequests(group))
+            MaterialBanner(
+              key: ValueKey('v2-join-request-${r.name}'),
+              leading: const Icon(Icons.person_add_alt),
+              content: Text(
+                '${r.name.isEmpty ? 'Ktoś' : r.name} prosi o dołączenie',
+              ),
+              actions: [
+                TextButton(
+                  key: ValueKey('v2-reject-${r.name}'),
+                  onPressed: () => groups.rejectJoin(group, r),
+                  child: const Text('Odrzuć'),
+                ),
+                FilledButton(
+                  key: ValueKey('v2-approve-${r.name}'),
+                  onPressed: () => _approve(context, r),
+                  child: const Text('Sprawdź i wpuść'),
+                ),
+              ],
             ),
           for (final w in warnings)
             MaterialBanner(

@@ -113,6 +113,20 @@ struct JoinRequest {
     /// DM started from a shared group (§B10): who the joiner is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     proof: Option<DmProof>,
+    /// The name the joiner chose, shown to the admin with the `CIK`
+    /// fingerprint before approving (§B4 step 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+/// Longest joiner name accepted in a join request (characters).
+pub const MAX_JOIN_NAME: usize = 64;
+
+/// What the admin sees of a join request before approving it (§B4 step 4).
+#[derive(Clone, Debug, Serialize)]
+pub struct JoinRequestView {
+    pub cik: String,
+    pub name: String,
 }
 
 /// §B10: the joiner's `CIK` in the shared group and its signature over
@@ -685,10 +699,27 @@ impl Member {
         verified_admin: &str,
         proof: Option<DmProof>,
     ) -> Result<usize, PocError> {
+        self.request_join_named(dht, invite, verified_admin, proof, None)
+    }
+
+    /// Like [`Member::request_join_with`], with the name the admin is shown
+    /// next to our `CIK` fingerprint (§B4 step 4).
+    pub fn request_join_named(
+        &mut self,
+        dht: &mut dyn Dht,
+        invite: &Invite,
+        verified_admin: &str,
+        proof: Option<DmProof>,
+        name: Option<&str>,
+    ) -> Result<usize, PocError> {
         if verified_admin != invite.admin_cik {
             return Err(PocError::Rejected(
                 "admin key not verified out of band: no join request sent".into(),
             ));
+        }
+        let name = name.map(str::trim).filter(|n| !n.is_empty());
+        if name.is_some_and(|n| n.chars().count() > MAX_JOIN_NAME) {
+            return Err(PocError::Rejected("name too long".into()));
         }
         let kp = KeyPackage::builder()
             .build(CIPHERSUITE, &self.provider, &self.signer, self.credential())
@@ -702,6 +733,7 @@ impl Member {
             key_package: kp_bytes.clone(),
             outbox,
             proof,
+            name: name.map(str::to_string),
         })
         .expect("request serializes");
         let chunks = wire::chunk(Kind::KeyPackage, &req);
@@ -724,6 +756,46 @@ impl Member {
         self.stage_add_many(dht, std::slice::from_ref(rendezvous))
     }
 
+    /// Admin: the join request waiting at `rendezvous`, to show before
+    /// approving it (§B4 step 4); None while there is none (or it is still
+    /// propagating). A malformed or refused request is an error.
+    pub fn peek_join(
+        &self,
+        dht: &mut dyn Dht,
+        rendezvous: &RecordId,
+    ) -> Result<Option<JoinRequestView>, PocError> {
+        match self.read_join_request(dht, rendezvous) {
+            Ok((_, joiner, name)) => Ok(Some(JoinRequestView {
+                cik: joiner.cik,
+                name,
+            })),
+            Err(PocError::Rejected(m))
+                if m == "no join request yet" || m == "join request incomplete" =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Admin: stages the Add the admin approved: only if the request at
+    /// `rendezvous` is still the one shown, from `cik` (anyone holding the
+    /// invite can rewrite the request slot in between).
+    pub fn stage_add_approved(
+        &mut self,
+        dht: &mut dyn Dht,
+        rendezvous: &RecordId,
+        cik: &str,
+    ) -> Result<(), PocError> {
+        let (_, joiner, _) = self.read_join_request(dht, rendezvous)?;
+        if joiner.cik != cik {
+            return Err(PocError::Rejected(
+                "join request changed since it was shown".into(),
+            ));
+        }
+        self.stage_add(dht, rendezvous)
+    }
+
     /// Admin: one Add commit for several join requests (F17: one Welcome
     /// for many members).
     pub fn stage_add_many(
@@ -736,7 +808,7 @@ impl Member {
         let mut kps = vec![];
         let mut joiners = vec![];
         for r in rendezvous {
-            let (kp, joiner) = self.read_join_request(dht, r)?;
+            let (kp, joiner, _) = self.read_join_request(dht, r)?;
             kps.push(kp);
             joiners.push(joiner);
         }
@@ -779,7 +851,7 @@ impl Member {
         &self,
         dht: &mut dyn Dht,
         rendezvous: &RecordId,
-    ) -> Result<(KeyPackage, Joiner), PocError> {
+    ) -> Result<(KeyPackage, Joiner, String), PocError> {
         let owner = self
             .st
             .invites
@@ -853,6 +925,14 @@ impl Member {
                 cik: joiner_cik,
                 outbox: req.outbox,
             },
+            // Shown to the admin only: trimmed and cut to the limit.
+            req.name
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(MAX_JOIN_NAME)
+                .collect(),
         ))
     }
 
