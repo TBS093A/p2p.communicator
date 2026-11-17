@@ -846,18 +846,22 @@ void main() {
       ('piękny widok', -140.0), // ours
     ]) {
       // Older ones are scrolled up and not built: scroll the (reversed)
-      // message list until this one is on screen.
-      await t.scrollUntilVisible(
-        find.text(text),
-        250,
-        scrollable: find
-            .descendant(
-              of: find.byType(MessageList),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
+      // message list until this one is on screen, then a bit more so it
+      // is not under the see-through top bar.
+      final list = find
+          .descendant(
+            of: find.byType(MessageList),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await t.scrollUntilVisible(find.text(text), 250, scrollable: list);
       await settle(t);
+      final y = t.getCenter(find.text(text).last).dy;
+      final mid = t.getCenter(list).dy;
+      if (y < mid) {
+        await t.drag(list, Offset(0, mid - y));
+        await settle(t);
+      }
       final bubble = find.ancestor(
         of: find.text(text).last,
         matching: find.byType(MessageBubble),
