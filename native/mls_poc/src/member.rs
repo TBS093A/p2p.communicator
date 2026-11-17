@@ -332,6 +332,15 @@ pub struct State {
     /// (§B3.1, F21): shown as a gap, never silently.
     #[serde(default)]
     pub lost_messages: u32,
+    /// Admin: control-log values written to `log_written_for` and not yet
+    /// read back from the network, to re-write if a storage node dropped
+    /// them (F16), plus whether the header still has to be confirmed.
+    #[serde(default)]
+    log_written: BTreeMap<u32, Vec<u8>>,
+    #[serde(default)]
+    log_written_for: Option<RecordId>,
+    #[serde(default)]
+    header_unverified: bool,
     /// Admin: members' proposals taken from outboxes and stored, as
     /// (proposal reference, original MLS message), to copy into the log
     /// before the commit that references them (§B5.1, F23).
@@ -475,6 +484,9 @@ impl Member {
                 events: vec![],
                 undecryptable: 0,
                 lost_messages: 0,
+                log_written: BTreeMap::new(),
+                log_written_for: None,
+                header_unverified: false,
                 proposal_copies: vec![],
                 my_proposals: BTreeSet::new(),
                 commit_due: false,
@@ -1355,11 +1367,73 @@ impl Member {
         if self.st.log_count + chunks.len() as u32 > LOG_SUBKEYS {
             return Err(PocError::Rejected("control log full".into()));
         }
+        self.track_log(&control);
         for c in chunks {
             self.st.log_count += 1;
             dht.set(&control, self.st.log_count, &c, &owner)?;
+            self.st.log_written.insert(self.st.log_count, c.clone());
             self.st.log_hash = chain(&self.st.log_hash, &c);
             self.note_log_hash();
+        }
+        Ok(())
+    }
+
+    /// Starts tracking unconfirmed writes anew for a different log.
+    fn track_log(&mut self, control: &RecordId) {
+        if self.st.log_written_for.as_ref() != Some(control) {
+            self.st.log_written.clear();
+            self.st.log_written_for = Some(control.clone());
+        }
+    }
+
+    /// Admin (F16): reads back what it wrote to its control log and not yet
+    /// saw on the network; a value or header a storage node dropped is
+    /// written again with the same bytes (idempotent, like a resumed
+    /// publication). Members only wait for such values (they cannot write
+    /// the log), so this is what lets them continue.
+    fn repair_own_log(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
+        if !self.is_admin() || self.st.pending.is_some() {
+            return Ok(());
+        }
+        let (Some(control), Some(owner)) = (self.st.control.clone(), self.st.control_owner.clone())
+        else {
+            return Ok(());
+        };
+        if self.st.log_written_for.as_ref() != Some(&control) {
+            return Ok(());
+        }
+        let mut repaired = false;
+        for (k, v) in self.st.log_written.clone() {
+            match dht.get(&control, k)? {
+                Some(cur) if cur == v => {
+                    self.st.log_written.remove(&k);
+                }
+                _ => {
+                    dht.set(&control, k, &v, &owner)?;
+                    repaired = true;
+                }
+            }
+        }
+        if self.st.header_unverified {
+            let ok = dht
+                .get(&control, 0)?
+                .and_then(|raw| ControlHeader::decode(&raw).ok())
+                .is_some_and(|h| {
+                    h.gen == self.st.gen
+                        && h.log_count == self.st.log_count
+                        && h.prev == self.st.log_hash
+                });
+            if ok {
+                self.st.header_unverified = false;
+            } else {
+                self.write_header(dht)?;
+                repaired = true;
+            }
+        }
+        if repaired {
+            self.st
+                .events
+                .push("re-wrote lost control log values".into());
         }
         Ok(())
     }
@@ -1417,6 +1491,8 @@ impl Member {
         let chunks = wire::chunk(Kind::Mls, &msg);
         assert_eq!(chunks.len(), 1, "test rewrites a one-chunk entry");
         dht.set(&control, pos, &chunks[0], &owner)?;
+        // The equivocating admin keeps its new version (no F16 repair back).
+        self.st.log_written.insert(pos, chunks[0].clone());
         let mut h = String::new();
         for k in 1..=self.st.log_count {
             let v = dht.get(&control, k)?.expect("own log value");
@@ -1432,6 +1508,8 @@ impl Member {
     fn write_header(&mut self, dht: &mut dyn Dht) -> Result<(), PocError> {
         let control = self.st.control.clone().expect("admin has control");
         let owner = self.st.control_owner.clone().expect("admin owns control");
+        self.track_log(&control);
+        self.st.header_unverified = true;
         let header = ControlHeader {
             v: 2,
             gen: self.st.gen,
@@ -1622,6 +1700,7 @@ impl Member {
             return Ok(());
         }
         self.repair_own_outbox(dht)?;
+        self.repair_own_log(dht)?;
         if self.removed_stop() {
             return Ok(());
         }
