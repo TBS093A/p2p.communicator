@@ -111,7 +111,7 @@ only", and says so.
 | S3 | Member impersonates another member by copying their name/avatar into their own head | A4 | Works visually; outbox key differs, but the UI shows names | Per-conversation identity keys, verified fingerprints, signed profile in membership |
 | S4 | Removed person keeps reading or watching activity | A5 | There is no removal; they read every future message and see every write | New MLS epoch they never get, and the group moves to fresh records they cannot find (PROTOCOL §B5.3) |
 | S5 | Old phone backup or a leaked room secret years later | A3/A5 | Last 200 messages per member in the DHT readable | Forward secrecy (ratchet/MLS) + DHT content only under per-epoch app keys |
-| S6 | Contact in two of your groups links them | A6 | Trivial: same global profile key `p` | Per-conversation identity by default; global profile opt-in |
+| S6 | Contact in two of your groups links them | A6 | Trivial: same global profile key `p` | Per-conversation identity; v2 conversations are never linked to the global profile (PROTOCOL §B10) |
 | S7 | Contact tracks when you are online | A6 | `seen` heartbeat every 60 s; outbox write timing | No heartbeat by default; presence only per conversation, opt-in; batching/jitter |
 | S8 | Forged DM invite claiming to be from a friend | A4 | Fixed in #13 (signature check) | Kept; moves to per-conversation identities: the invite is an MLS message from the sender's `CIK` in the shared group, and only a join request signed by the recipient's `CIK` there is admitted (PROTOCOL §B10, F25) |
 | S9 | Node withholds or rolls back a record value | A2 | Receiver waits/misses messages; sees stale data silently | Per-sender hash chain + gap detection shown in UI |
@@ -159,8 +159,8 @@ only", and says so.
 
 | Area | Decision |
 | --- | --- |
-| Identity | Separate key set per conversation, by default |
-| Global profile | Optional, explicitly enabled per conversation |
+| Identity | Separate key set per conversation |
+| Global profile | Not linked to v2 conversations at all (revised 17 Nov 2026; was "optional, per conversation") |
 | Transport | Veilid with privacy-preserving (safety/private) routes |
 | Encryption | App-level E2EE, independent of DHT record encryption |
 | Groups | Admin keys separate from member keys |

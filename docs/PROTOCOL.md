@@ -193,7 +193,7 @@ are linkable through the global profile; private rooms are not.
 | Removal = new MLS epoch **and** a fresh record generation, resumable | Periodic record generation rotation without removals |
 | Out-of-band key verification; warning on any key change | Post-quantum ciphersuite |
 | Presence off by default, per-conversation opt-in, coarse, E2EE | Independent security audit |
-| Global profile off by default, per-conversation opt-in link | |
+| No link between a conversation and the global profile (§B10) | |
 | Media encrypted before chunking; padded messages | |
 | v1 rooms read-only, move to new v2 groups with verified admin | |
 | Defined behaviour for every failure in §B12 | |
@@ -212,8 +212,8 @@ are linkable through the global profile; private rooms are not.
 4. **No home-grown crypto.** Group key agreement and the message ratchet
    come from MLS and an audited implementation (OpenMLS). No custom ratchet,
    no custom key agreement.
-5. **One identity per conversation by default.** Linking a conversation to
-   your global profile is an explicit, per-conversation choice.
+5. **One identity per conversation.** A conversation is never linked to
+   your global profile (§B10).
 6. **Minimal metadata.** No names or profile pointers in clear, no global
    heartbeat, padded message sizes.
 7. **Privacy over convenience**, as long as the app stays usable.
@@ -226,7 +226,7 @@ are linkable through the global profile; private rooms are not.
 | Record owner keys | Fresh random per record per generation | Write the control record (admin) or a member's outbox. Never reused across generations. |
 | MLS epoch secrets | Per group, per epoch | Encrypt application messages. Old epochs' secrets are deleted after the retention window (§B12) for forward secrecy. |
 | Media key | Per file | AEAD key for a blob; travels only inside an E2EE message. |
-| Global identity `GIK` (optional) | Per user | Only if the user links a conversation to a global profile (§B10). |
+| Global identity `GIK` | Per user | v1 only (the global profile of v1 rooms). Never used in v2 conversations (§B10). |
 | Device key `DK` | Per device | Later (multi-device). Not in v2.0. |
 
 ## B3. Records and generations
@@ -241,7 +241,7 @@ log** (§B3.1) start a new one.
 | **Member outbox** `O_g,i` | `DFLT` with 1 + `R` subkeys (`R` = 200), owner = member's random key for generation `g` | Subkey 0: head `{count}` only, padded. Subkeys 1..`R`: a ring of MLS `PrivateMessage`s; message `n` lives in subkey `1 + n mod R` (§B3.1). |
 | **Join rendezvous** | `SMPL`: subkeys 0..3 owned by the admin (the answer: Welcome, chunked); one member, subkeys 4..7, whose key pair is in the invite (the request) | The joiner writes one MLS `KeyPackage`, sealed to the admin's `CIK`. One-time. |
 | **Blob** | `DFLT`, random owner | Chunks of the **AEAD-encrypted** file. |
-| **Global profile** (optional) | `DFLT`, owner `GIK` | Name and avatar only; no `seen` (§B8). |
+| **Global profile** (v1 only) | `DFLT`, owner `GIK` | Kept for the readable v1 rooms; no `seen` written any more (§B8, §B11). Not referenced by v2 conversations (§B10). |
 
 There is no separate roster: **the MLS group state is the member list**,
 and every member derives it from the commit log. Which outbox belongs to
@@ -571,6 +571,14 @@ release of the provider. No OpenMLS release uses `elliptic-curve 0.14` yet.
 Until one of these ships, the `openmls_rust_crypto` exception stays (it
 expires 2027-02-09 and is re-checked then).
 
+**Re-checked 17 Nov 2026, still blocked.** The fixed pieces exist
+(`hpke-rs 0.8`, `hpke-rs-libcrux 0.8`, `libcrux-kem 0.0.10`), but the
+latest `openmls 0.9.2`, `openmls_libcrux_crypto 0.4.0` and
+`openmls_rust_crypto 0.6.0` cannot use them. Writing our own provider on
+top of them is not done on purpose: it would put new, unaudited
+cryptographic glue where today the advisory sits in code 0x0003 never
+runs.
+
 With `openmls_rust_crypto`, `libcrux-kem 0.0.9` is in `Cargo.lock` only as
 an optional dependency of `hpke-rs` that nothing enables, so it is not
 compiled; CI fails if it ever enters the build.
@@ -621,7 +629,7 @@ outbox it came from):
 | Names and profile pointers in roster and heads | Only inside E2EE messages |
 | `seen` heartbeat every 60 s | None; opt-in coarse presence per conversation |
 | Exact message sizes | Padded buckets |
-| Same global profile in every DM/group | Per-conversation `CIK`; global link opt-in |
+| Same global profile in every DM/group | Per-conversation `CIK`; no global link |
 | Removed member keeps watching the room | Fresh record generation on removal |
 | Write timing per message | Unchanged (later: batching/jitter) |
 
@@ -634,10 +642,13 @@ the E2EE message. A leaked blob record key reveals only the size.
 
 ## B10. Global profile and DMs
 
-* The global profile is **off by default**. A user may link one conversation
-  to it by sending a `link` message: `{profileKey, sig}` where `sig` is the
-  `GIK` signature over `(groupId, CIK)`. Without it nothing connects that
-  conversation to anything else.
+* **v2 conversations are never linked to the global profile** (decided
+  17 Nov 2026; replaces the opt-in `link` message). Each conversation has
+  only its own `CIK`; nothing in it points to the global profile or to any
+  other conversation. A per-conversation link, even opt-in, would let every
+  member of that conversation tie it to the user's other conversations and
+  to the long-lived `GIK`, and a single mistaken tap could not be undone.
+  The global profile remains only for the v1 rooms that are still readable.
 * The global profile no longer carries `seen` or a status.
 * **DMs** are two-member groups using this protocol, each side with a fresh
   `CIK` of its own for the DM. A DM started from a shared group `G`
@@ -711,8 +722,8 @@ not know it exists:
   creates the group in a new slot; joining a private conversation uses
   a `p2pc2.` invite (§B4) with the same fingerprint check and approval,
   and stores it in a new slot under a password the joiner chooses.
-* **Identity.** As every v2 conversation: its own `CIK`, no global
-  profile and no `link` (§B10) is offered there.
+* **Identity.** As every v2 conversation: its own `CIK`, never linked to
+  the global profile (§B10).
 * **Moving a v1 private room.** "Przenieś do v2" inside an opened v1
   private room works as for other rooms (one invite per member announced
   in the v1 room, approval), and the new group is stored in **the same
@@ -808,9 +819,8 @@ Acceptance: every item above passes, and nothing in the app's `lib/` changes.
    outbox ring, rendezvous layout). Membership changes, handover and
    takeover (§B5).
 5. ✅ E2EE messages, encrypted media (§B9), padding.
-6. ✅ Per-conversation identities by default; DMs as two-member groups
-   (§B10); presence opt-in (§B8). Open: the opt-in `link` to the global
-   profile.
+6. ✅ Per-conversation identities, never linked to the global profile;
+   DMs as two-member groups (§B10); presence opt-in (§B8).
 7. ✅ v1 read-only mode and the move to v2 (§B11), shipped 17 Nov 2026
    **before** the independent audit and the crypto provider change, by
    the owner's decision (docs/V2_PLAN.md, "Still open").
