@@ -656,6 +656,11 @@ class _V2MembersScreenState extends State<V2MembersScreen> {
                       [
                         if (c == admin) 'admin',
                         if (c == successor) 'następca admina',
+                        ?switch (room.presenceOf(c)) {
+                          'active' => 'aktywny teraz',
+                          'away' => 'nieobecny',
+                          _ => null,
+                        },
                         'klucz ${v2Fingerprint(c).substring(0, 9)}',
                       ].join(' · '),
                     ),

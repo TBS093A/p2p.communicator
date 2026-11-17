@@ -21,13 +21,19 @@ enum MsgType {
 
   /// Hidden, v2 groups only: the shared room look, `x: {m: RoomMeta}`; the
   /// newest one wins (v1 keeps it in the roster record).
-  meta;
+  meta,
+
+  /// Hidden, v2 groups only, opt-in per conversation (PROTOCOL §B8): the
+  /// author's coarse presence, `x: {s: 'active' | 'away'}`, at most once
+  /// every 15 minutes.
+  presence;
 
   bool get hidden =>
       this == MsgType.dmInvite ||
       this == MsgType.reaction ||
       this == MsgType.profile ||
-      this == MsgType.meta;
+      this == MsgType.meta ||
+      this == MsgType.presence;
 }
 
 enum MsgStatus { sending, sent, failed }

@@ -166,11 +166,35 @@ class V2RoomSession extends RoomSession {
         if (v['to'] != myOutbox || code is! String) return;
         groups.offerDm(group, msg.author, code, msg.id);
         return;
+      // PROTOCOL §B8: coarse, opt-in presence of one member here. Kept in
+      // memory only; dated by the sender (a backlog read later is old).
+      case MsgType.presence:
+        final s = x['s'];
+        if (s is! String || msg.author == myOutbox) return;
+        if (s != 'active' && s != 'away') return;
+        final at = x['at'] is int ? x['at'] as int : msg.ts;
+        final seen = _presence[msg.author];
+        if (seen != null && seen.$2 >= at) return;
+        _presence[msg.author] = (s, at);
+        notifyListeners();
+        return;
       default:
         return;
     }
     notifyListeners();
     scheduleSave();
+  }
+
+  final _presence = <String, (String, int)>{};
+
+  /// What [author] last said about being around, if they share it here and
+  /// it is recent: 'active' or 'away'; null otherwise.
+  String? presenceOf(String author) {
+    final p = _presence[author];
+    if (p == null) return null;
+    final age = groups.clock() - p.$2;
+    if (age > V2Groups.presenceValid.inMilliseconds) return null;
+    return p.$1;
   }
 
   /// A message from the group's core inbox: v1 wire JSON, or plain text

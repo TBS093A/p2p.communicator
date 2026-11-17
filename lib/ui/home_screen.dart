@@ -408,6 +408,7 @@ class _RoomTile extends StatelessWidget {
       MsgType.reaction ||
       MsgType.profile ||
       MsgType.meta => '',
+      MsgType.presence => '',
     };
     final who = m.author == s.myOutbox
         ? 'Ty'

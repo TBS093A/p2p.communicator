@@ -28,10 +28,14 @@ class TestRoom extends V2RoomSession {
 /// Test time for every phone (ms), moved forward by the tests.
 var testClock = DateTime(2026, 11, 16).millisecondsSinceEpoch;
 
+/// Whether the phones' app is in the foreground (presence).
+var testActive = true;
+
 V2Groups phone(MemoryDht dht) => V2Groups(
   dht,
   save: () async {},
   clock: () => testClock,
+  appActive: () => testActive,
   openRoom: (groups, group, secrets) async => TestRoom(
     groups,
     group,
@@ -340,5 +344,64 @@ void main() {
     for (final p in [alice, bob, carol]) {
       await p.close();
     }
+  });
+
+  test('presence: off by default, opt-in here, at most every 15 min', () async {
+    final dht = MemoryDht();
+    final alice = phone(dht);
+    final bob = phone(dht);
+    final ga = await alice.create('Rada', 'Ala');
+    final code = await alice.createInvite(ga);
+    final gb = await bob.join(V2Invite.tryParse(code)!, 'Grupa', 'Bob');
+    final both = [(alice, ga), (bob, gb)];
+    await rounds(both, times: 4);
+    final aliceCik = alice.myCik(ga);
+    final bobCik = bob.myCik(gb);
+    String? seenByBob() => bob.roomOf(gb).presenceOf(aliceCik);
+
+    // Off by default: nothing is sent, nothing is shown.
+    expect(ga.presence, isFalse);
+    expect(ga.presenceSent, isNull);
+    expect(seenByBob(), isNull);
+
+    testActive = true;
+    await alice.setPresence(ga, true);
+    await rounds(both, times: 2);
+    expect(seenByBob(), 'active');
+    final sentAt = ga.presenceAt;
+
+    // The app goes to the background: within 15 minutes nothing new goes
+    // out (the coarse limit), after that "away".
+    testActive = false;
+    testClock += const Duration(minutes: 5).inMilliseconds;
+    await rounds(both, times: 2);
+    expect(ga.presenceAt, sentAt, reason: 'at most once every 15 minutes');
+    expect(seenByBob(), 'active');
+    testClock += const Duration(minutes: 11).inMilliseconds;
+    await rounds(both, times: 2);
+    expect(seenByBob(), 'away');
+    // "Away" is said once, not repeated.
+    final awayAt = ga.presenceAt;
+    testClock += const Duration(minutes: 16).inMilliseconds;
+    await rounds(both, times: 2);
+    expect(ga.presenceAt, awayAt);
+    // ...and fades out like anything not refreshed.
+    testClock += const Duration(minutes: 5).inMilliseconds;
+    expect(seenByBob(), isNull);
+
+    // Turned off: back in the foreground, nothing more is sent.
+    await alice.setPresence(ga, false);
+    testActive = true;
+    testClock += const Duration(minutes: 16).inMilliseconds;
+    await rounds(both, times: 2);
+    expect(ga.presenceAt, awayAt);
+    expect(seenByBob(), isNull);
+    // Bob never turned it on: Alice sees nothing of him.
+    expect(alice.roomOf(ga).presenceOf(bobCik), isNull);
+    // The choice is kept per conversation in the app data.
+    expect(V2Group.fromJson(ga.toJson()).presence, isFalse);
+    expect(V2Group.fromJson(gb.toJson()).presence, isFalse);
+    await alice.close();
+    await bob.close();
   });
 }

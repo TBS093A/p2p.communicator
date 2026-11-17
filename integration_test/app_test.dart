@@ -757,11 +757,17 @@ void main() {
     await pumpUntil(t, find.text('osób: 2'));
     await send(t, 'prywatnie w v2');
     await hideKeyboard(t);
+    // Phase 4c (PROTOCOL §B8): Kasia shares her presence in this DM only.
+    await openMenu(t, 'Pokazuj, że jestem aktywny');
+    await pumpUntil(t, find.textContaining('zobaczą, kiedy jesteś aktywny'));
+    await settle(t);
     await t.pageBack();
     await settle(t);
-    // The admin's DM is named after Kasia and shows her message.
+    // The admin's DM is named after Kasia, shows her message and that she
+    // is around.
     await t.tap(find.byKey(const ValueKey('v2-group-Kasia z v2')).first);
     await pumpUntil(t, find.text('prywatnie w v2'));
+    await pumpUntil(t, find.text('aktywny teraz'));
     await settle(t);
     await shot(t, '11c_v2_dm');
     await t.pageBack();

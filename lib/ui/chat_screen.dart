@@ -323,6 +323,19 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ---------------------------------------------------------------- menu
 
+  /// In a v2 DM: whether the other person is around, if they share it
+  /// (PROTOCOL §B8); null when unknown or not a DM.
+  String? _v2DmPresence() {
+    final s = _session;
+    if (s is! V2RoomSession || !s.group.dm) return null;
+    final other = s.memberOutboxes.where((m) => m != s.myOutbox).firstOrNull;
+    return switch (other == null ? null : s.presenceOf(other)) {
+      'active' => 'aktywny teraz',
+      'away' => 'nieobecny',
+      _ => null,
+    };
+  }
+
   Future<void> _menu(String action) async {
     final v2 = widget.v2;
     final group = v2 == null ? null : (_session as V2RoomSession).group;
@@ -379,6 +392,14 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       case 'settings':
         await _open(RoomSettingsScreen(session: _session));
+      case 'presence' when v2 != null:
+        final on = !group!.presence;
+        await v2.setPresence(group, on);
+        _toast(
+          on
+              ? 'Osoby w tej rozmowie zobaczą, kiedy jesteś aktywny'
+              : 'Nie pokazujesz już tutaj, czy jesteś aktywny',
+        );
       case 'typing':
         final on = !_session.shareTyping;
         _session.setShareTyping(on);
@@ -572,7 +593,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           Text(
                             peer != null
                                 ? peer.presence.label
-                                : 'osób: ${_session.memberOutboxes.length}',
+                                : _v2DmPresence() ??
+                                      'osób: ${_session.memberOutboxes.length}',
                             style: Theme.of(context).textTheme.bodySmall
                                 ?.copyWith(
                                   color: tinted ? barFg.withAlpha(210) : null,
@@ -610,6 +632,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 value: 'settings',
                 child: Text('Ustawienia pokoju'),
               ),
+              // PROTOCOL §B8: opt-in, only for this conversation.
+              if (_session is V2RoomSession)
+                CheckedPopupMenuItem(
+                  key: const ValueKey('menu-share-presence'),
+                  value: 'presence',
+                  checked: (_session as V2RoomSession).group.presence,
+                  child: const Text('Pokazuj, że jestem aktywny'),
+                ),
               if (_session.typingSupported)
                 CheckedPopupMenuItem(
                   key: const ValueKey('menu-share-typing'),
