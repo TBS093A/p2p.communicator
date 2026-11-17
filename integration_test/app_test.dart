@@ -848,6 +848,10 @@ void main() {
         of: find.text(text).last,
         matching: find.byType(MessageBubble),
       );
+      // A bubble with a quoted photo is tall: bring its middle into the
+      // list, away from the composer and the sticky day header.
+      await Scrollable.ensureVisible(t.element(bubble.first), alignment: 0.5);
+      await settle(t);
       await t.timedDrag(
         bubble.first,
         Offset(dx, 0),
