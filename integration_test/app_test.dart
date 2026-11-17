@@ -866,8 +866,11 @@ void main() {
         of: find.text(text).last,
         matching: find.byType(MessageBubble),
       );
-      await t.timedDrag(
-        bubble.first,
+      // Grabbed near its bottom edge: an old message at the top of the
+      // list sits under the sticky day header, which takes the centre.
+      final box = t.getRect(bubble.first);
+      await t.timedDragFrom(
+        Offset(box.center.dx, box.bottom - 8),
         Offset(dx, 0),
         const Duration(milliseconds: 400),
       );
