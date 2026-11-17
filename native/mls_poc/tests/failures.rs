@@ -1059,7 +1059,7 @@ fn f24_update_pending_across_a_handover() {
 // invite stays open until the recipient joins with a fresh identity.
 #[test]
 fn f25_dm_invite_admits_only_the_invited_member() {
-    let (mut dht, mut g) = group(&["alice", "bob", "carol"]);
+    let (mut dht, g) = group(&["alice", "bob", "carol"]);
     let bob_g = g[1].st.cik.clone();
     let mut alice_dm = Member::new("alice (DM)");
     alice_dm.create_group(&mut dht).unwrap();
