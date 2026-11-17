@@ -34,7 +34,6 @@ import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/update_screen.dart';
 import 'package:p2p_communicator/ui/widgets/avatar.dart';
 import 'package:p2p_communicator/ui/widgets/message_bubble.dart';
-import 'package:p2p_communicator/ui/widgets/message_list.dart';
 
 import 'test_images.dart';
 import 'test_platforms.dart';
@@ -839,38 +838,18 @@ void main() {
     await settle(t);
     await shot(t, '11d_v2_media');
 
-    // Swipe to reply, as in v1: someone else's message to the right, our
-    // own to the left; past the threshold the reply bar opens.
-    for (final (text, dx) in [
-      ('cześć z grupy v2', 140.0), // Kasia's
-      ('piękny widok', -140.0), // ours
-    ]) {
-      // Older ones are scrolled up and not built: scroll the (reversed)
-      // message list until this one is on screen, then a bit more so it
-      // is not under the see-through top bar.
-      final list = find
-          .descendant(
-            of: find.byType(MessageList),
-            matching: find.byType(Scrollable),
-          )
-          .first;
-      await t.scrollUntilVisible(find.text(text), 250, scrollable: list);
-      await settle(t);
-      final y = t.getCenter(find.text(text).last).dy;
-      final mid = t.getCenter(list).dy;
-      if (y < mid) {
-        await t.drag(list, Offset(0, mid - y));
-        await settle(t);
-      }
+    // Swipe to reply, as in v1: past the threshold the reply bar opens with
+    // the swiped message. The gesture both ways is covered by
+    // test/message_bubble_test.dart; here on fresh messages mid-screen (an
+    // old one at the top sits under the sticky day header): our own to the
+    // left now, someone else's to the right in the DM below.
+    Future<void> swipeToReply(String text, double dx) async {
       final bubble = find.ancestor(
         of: find.text(text).last,
         matching: find.byType(MessageBubble),
       );
-      // Grabbed near its bottom edge: an old message at the top of the
-      // list sits under the sticky day header, which takes the centre.
-      final box = t.getRect(bubble.first);
-      await t.timedDragFrom(
-        Offset(box.center.dx, box.bottom - 8),
+      await t.timedDrag(
+        bubble.first,
         Offset(dx, 0),
         const Duration(milliseconds: 400),
       );
@@ -887,6 +866,8 @@ void main() {
       await settle(t);
       expect(find.byKey(const ValueKey('reply-bar')), findsNothing);
     }
+
+    await swipeToReply('piękny widok', -140);
 
     // A DM from the shared group (phase 4b, PROTOCOL §B10): the admin
     // starts one with Kasia; her copy of the group gets the offer, she
@@ -927,6 +908,8 @@ void main() {
     await pumpUntil(t, find.text('prywatnie w v2'));
     await pumpUntil(t, find.text('aktywny teraz'));
     await settle(t);
+    // Kasia's newest message, swiped to the right.
+    await swipeToReply('prywatnie w v2', 140);
     await shot(t, '11c_v2_dm');
     await t.pageBack();
     await settle(t);
