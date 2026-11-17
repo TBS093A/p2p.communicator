@@ -51,11 +51,21 @@ V2Groups phone(MemoryDht dht) => V2Groups(
 );
 
 /// Lets queued sends (greetings, room look) go out between syncs.
-Future<void> rounds(List<(V2Groups, V2Group)> who, {int times = 3}) async {
+/// With [approve], an admin lets in every join request it sees (the
+/// approval itself is tested on its own).
+Future<void> rounds(
+  List<(V2Groups, V2Group)> who, {
+  int times = 3,
+  bool approve = true,
+}) async {
   for (var i = 0; i < times; i++) {
     for (final (p, g) in who) {
       await Future<void>.delayed(Duration.zero);
       await p.sync(g);
+      if (!approve) continue;
+      for (final r in p.joinRequests(g)) {
+        await p.approveJoin(g, r);
+      }
     }
   }
 }
@@ -126,6 +136,15 @@ void main() {
     // Sending before being let in fails instead of getting lost.
     await bob.roomOf(gb).sendText('za wcześnie');
     expect(bob.roomOf(gb).messages.single.status, MsgStatus.failed);
+
+    // PROTOCOL §B4 step 4: the request waits for the admin, who sees the
+    // name and key; nothing happens without approval.
+    await rounds([(bob, gb), (alice, ga)], times: 3, approve: false);
+    expect(gb.joining, isTrue);
+    final req = alice.joinRequests(ga).single;
+    expect(req.name, 'Bob');
+    expect(req.cik, bob.myCik(gb));
+    expect(ga.openInvites, hasLength(1));
 
     await rounds([(bob, gb), (alice, ga)], times: 4);
     expect(gb.joining, isFalse);
@@ -344,6 +363,62 @@ void main() {
     for (final p in [alice, bob, carol]) {
       await p.close();
     }
+  });
+
+  test('a move to v2 announced in a v1 room (§B11)', () {
+    final code =
+        'p2pc2.{"rendezvous":"VLD0:r","slot":"00",'
+        '"admin_cik":"${'ab' * 32}"}';
+    ChatMessage text(String id, String author, Map<String, dynamic>? x) =>
+        ChatMessage(
+          id: id,
+          author: author,
+          ts: 1,
+          type: MsgType.text,
+          text: 'przenoszę',
+          extra: x,
+        );
+    final announce = text(
+      'm1',
+      'VLD0:ala',
+      V1Move.extra('Rada', {'VLD0:bob': code, 'VLD0:kasia': 'zepsute'}),
+    );
+    final mine = V1Move.find([announce], 'VLD0:bob')!;
+    expect(mine.code, code);
+    expect(mine.name, 'Rada');
+    expect(mine.from, 'VLD0:ala');
+    // Not for me, malformed, or my own announcement: nothing.
+    expect(V1Move.find([announce], 'VLD0:ewa'), isNull);
+    expect(V1Move.find([announce], 'VLD0:kasia'), isNull);
+    expect(V1Move.find([announce], 'VLD0:ala'), isNull);
+    expect(
+      V1Move.find([
+        text('m2', 'VLD0:ala', {'v2move': 'x'}),
+      ], 'VLD0:bob'),
+      isNull,
+    );
+    // The wire keeps it (old apps just show the text).
+    final back = ChatMessage.fromWire('VLD0:ala', announce.toWire());
+    expect(V1Move.find([back], 'VLD0:bob')!.code, code);
+  });
+
+  test('a refused join request never gets in', () async {
+    final dht = MemoryDht();
+    final alice = phone(dht);
+    final eve = phone(dht);
+    final ga = await alice.create('Rada', 'Ala');
+    final code = await alice.createInvite(ga);
+    final ge = await eve.join(V2Invite.tryParse(code)!, 'Grupa', 'Ewa');
+    await rounds([(eve, ge), (alice, ga)], times: 3, approve: false);
+    final req = alice.joinRequests(ga).single;
+    await alice.rejectJoin(ga, req);
+    expect(ga.openInvites, isEmpty);
+    expect(alice.joinRequests(ga), isEmpty);
+    await rounds([(eve, ge), (alice, ga)], times: 3);
+    expect(ge.joining, isTrue, reason: 'still waiting, never let in');
+    expect(alice.roomOf(ga).memberOutboxes, hasLength(1));
+    await alice.close();
+    await eve.close();
   });
 
   test('presence: off by default, opt-in here, at most every 15 min', () async {

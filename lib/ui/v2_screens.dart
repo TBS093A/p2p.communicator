@@ -338,18 +338,31 @@ class V2InviteScreen extends StatelessWidget {
 }
 
 class V2JoinScreen extends StatefulWidget {
-  const V2JoinScreen({super.key, required this.groups, required this.myName});
+  const V2JoinScreen({
+    super.key,
+    required this.groups,
+    required this.myName,
+    this.code,
+    this.groupName,
+  });
 
   final V2Groups groups;
   final String myName;
+
+  /// Prefilled from a move announced in a v1 room (PROTOCOL §B11): only a
+  /// hint, the admin's fingerprint still has to be checked.
+  final String? code;
+  final String? groupName;
 
   @override
   State<V2JoinScreen> createState() => _V2JoinScreenState();
 }
 
 class _V2JoinScreenState extends State<V2JoinScreen> {
-  final _code = TextEditingController();
-  final _name = TextEditingController(text: 'Grupa v2');
+  late final _code = TextEditingController(text: widget.code ?? '');
+  late final _name = TextEditingController(
+    text: widget.groupName ?? 'Grupa v2',
+  );
   late final _me = TextEditingController(text: widget.myName);
   bool _checked = false;
   bool _busy = false;

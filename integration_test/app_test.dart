@@ -641,6 +641,18 @@ void main() {
     await t.pageBack();
     await settle(t);
 
+    // Phase 5 (PROTOCOL §B11): the v1 conversation moves to a new v2
+    // group with us as its admin; the v2 chat opens. (Alone in this room
+    // here, so no invites go out; announcing them is covered by unit
+    // tests.)
+    await openMenu(t, 'Przenieś do v2');
+    await tapKey(t, 'v1-move-confirm');
+    await pumpUntil(t, find.text('Utworzono grupę v2 i wysłano zaproszenia'));
+    await pumpUntil(t, find.text('osób: 1'));
+    await settle(t);
+    await t.pageBack();
+    await settle(t);
+
     // v2 on the real network: two core members on this device's Veilid
     // node, join with a checked fingerprint, messages both ways.
     final v2 = await v2OverVeilid();
@@ -714,7 +726,29 @@ void main() {
     await tapKey(t, 'v2-fingerprint-ok');
     await tapKey(t, 'v2-join-go');
     await pumpUntil(t, find.byKey(const ValueKey('v2-waiting')));
-    // The admin's group lets the request in on its next background sync.
+    // PROTOCOL §B4 step 4: the admin sees the request with Kasia's name and
+    // key, and lets her in after comparing it.
+    await t.pageBack();
+    await settle(t);
+    await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).first);
+    await pumpUntil(t, find.byKey(const ValueKey('v2-approve-Kasia z v2')));
+    await settle(t);
+    await shot(t, '09b_v2_join_request');
+    await tapKey(t, 'v2-approve-Kasia z v2');
+    await pumpUntil(t, find.byKey(const ValueKey('v2-request-fingerprint')));
+    await settle(t);
+    await tapKey(t, 'v2-approve-confirm');
+    await pumpUntil(t, find.text('osób: 2'));
+    await t.pageBack();
+    await settle(t);
+    // Kasia's copy (still called as she named it, or already "Test v2").
+    final kasiaTile = find.byWidgetPredicate(
+      (w) =>
+          w.key == const ValueKey('v2-group-Dołączona') ||
+          w.key == const ValueKey('v2-group-Test v2'),
+    );
+    await t.tap(kasiaTile.last);
+    await settle(t);
     await pumpUntil(t, find.text('osób: 2'));
     // The admin's greeting carries the room look: the shared name replaces
     // the one typed when joining.

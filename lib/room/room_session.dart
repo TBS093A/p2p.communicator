@@ -760,10 +760,21 @@ class RoomSession extends ChangeNotifier implements MediaSource {
 
   // ----------------------------------------------------------------- send
 
-  Future<void> sendText(String text, {ChatMessage? replyTo}) async {
+  /// [extra]: data for newer apps that older ones ignore (they show the
+  /// text), e.g. the move to v2 (PROTOCOL §B11).
+  Future<void> sendText(
+    String text, {
+    ChatMessage? replyTo,
+    Map<String, dynamic>? extra,
+  }) async {
     final t = text.trim();
     if (t.isEmpty) return;
-    final msg = _newMessage(MsgType.text, text: t, replyTo: replyTo);
+    final msg = _newMessage(
+      MsgType.text,
+      text: t,
+      replyTo: replyTo,
+      extra: extra,
+    );
     await _enqueue(msg, () async => null);
   }
 
@@ -835,6 +846,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     String? text,
     MediaRef? media,
     ChatMessage? replyTo,
+    Map<String, dynamic>? extra,
   }) => ChatMessage(
     id: _uuid.v4(),
     author: myOutbox,
@@ -842,6 +854,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     type: type,
     text: text,
     media: media,
+    extra: extra,
     status: MsgStatus.sending,
     replyTo: replyTo == null ? null : ReplyRef.of(replyTo),
   );
