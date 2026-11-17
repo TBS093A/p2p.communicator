@@ -209,3 +209,10 @@ only", and says so.
    only by reference, so the admin copies them into the control log before
    the commit; members never need a proposal from an outbox, which keeps
    the same protection.
+6. **Shipped before the audit (17 Nov 2026).** v2 became the default and
+   v1 read-only (PROTOCOL §B11) before the independent audit and before
+   the crypto provider without RUSTSEC-2026-0387 (§B7), by the owner's
+   decision. Until both are done, v2's guarantees in §5 rest on our own
+   review and tests (PoC failure scenarios F1–F25, DAST on the real
+   network), not on an outside review, and the known advisory in the
+   current crypto provider stays. Close: audit report and provider change.

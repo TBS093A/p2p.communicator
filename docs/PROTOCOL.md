@@ -679,10 +679,20 @@ are not upgraded in place.
    requires the out-of-band check of the admin's `CIK` (§B4 step 2) and the
    admin's approval.
 4. No v1 key, roster entry or past membership counts as a credential in v2.
-5. v1 invites (`p2pc1.`) can still be scanned, and open read-only.
+5. v1 invites (`p2pc1.`) are **refused** with a request for a v2 invite
+   (revised 17 Nov 2026). Opening a v1 room needs a roster slot, which is
+   a write, and a v1 room does not prove who is in it anyway.
 
-Private rooms follow the same path; their password slot then points to the
-v2 group.
+As implemented (phase 5): the move announcement in the v1 room is one text
+message carrying one invite per other member, keyed by their v1 outbox
+(older apps show only the text). Each joiner checks the admin's
+fingerprint and the admin approves each request after comparing the
+joiner's (§B4 step 4). The announcement is the only write a v2 app still
+makes in a v1 room; the global profile's `seen` is no longer written.
+
+Private rooms open read-only by password as before. A private room's
+password slot pointing to a v2 group, and new private rooms in v2, are not
+implemented yet.
 
 ## B12. Failure scenarios
 
@@ -763,12 +773,15 @@ Acceptance: every item above passes, and nothing in the app's `lib/` changes.
    revision). Everything a commit needs is in the log: the admin's own
    proposals by value, members' `Update`s copied in (§B5.1). Open: crypto
    provider (§B7), blocked on upstream releases.
-4. Group control record, join flow, removal with generation move; record
-   size limits (§B3.1: log moves to a new generation when full, outbox
-   ring, rendezvous layout). The core is in the app (docs/V2_PLAN.md
-   phase 1, done); this is phase 2.
-5. E2EE messages, encrypted media, padding.
-6. Per-conversation identities by default; global profile and presence
-   opt-in.
-7. v1 read-only mode and the move to v2.
+4. ✅ Group control record, join flow, removal with generation move;
+   record size limits (§B3.1: log moves to a new generation when full,
+   outbox ring, rendezvous layout). Membership changes, handover and
+   takeover (§B5).
+5. ✅ E2EE messages, encrypted media (§B9), padding.
+6. ✅ Per-conversation identities by default; DMs as two-member groups
+   (§B10); presence opt-in (§B8). Open: the opt-in `link` to the global
+   profile.
+7. ✅ v1 read-only mode and the move to v2 (§B11), shipped 17 Nov 2026
+   **before** the independent audit and the crypto provider change, by
+   the owner's decision (docs/V2_PLAN.md, "Still open").
 8. Later items from §B0.
