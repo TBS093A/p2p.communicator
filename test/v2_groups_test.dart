@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:p2p_communicator/room/message.dart';
+import 'package:p2p_communicator/v2/private_v2.dart';
 import 'package:p2p_communicator/v2/v2_groups.dart';
 import 'package:p2p_communicator/v2/v2_room_session.dart';
 import 'package:p2p_communicator/vault/pin_vault.dart';
@@ -479,4 +480,67 @@ void main() {
     await alice.close();
     await bob.close();
   });
+
+  test(
+    'a private conversation (§B11.1): its own state, only while open',
+    () async {
+      final dht = MemoryDht();
+      Uint8List? slotData; // what the password slot's data area holds
+
+      Future<PrivateV2> openPrivate() => PrivateV2.open(
+        dht: dht,
+        read: () async => slotData,
+        write: (d) async => slotData = d,
+        clock: () => testClock,
+        appActive: () => testActive,
+        openRoom: (groups, group, secrets) async => TestRoom(
+          groups,
+          group,
+          UnlockedRoom(
+            'slot-${group.id}',
+            SharedSecret(
+              kind: cryptoKindVLD0,
+              value: BareSharedSecret.fromBytes(Uint8List(32)),
+            ),
+            secrets,
+          ),
+        ),
+      );
+
+      // A fresh slot (its data file holds random bytes): nothing there yet.
+      slotData = Uint8List.fromList([1, 2, 3]);
+      var pv = await openPrivate();
+      expect(pv.group, isNull);
+      expect(pv.groups.private, isTrue);
+      final g = await pv.groups.create('Sekret', 'Ala');
+      final cik = pv.groups.myCik(g);
+      final code = await pv.groups.createInvite(g);
+      await pv.close();
+      expect(slotData, isNotNull);
+
+      // Bob joins with an ordinary invite: on the wire it is a v2 group.
+      final bob = phone(dht);
+      final gb = await bob.join(V2Invite.tryParse(code)!, 'Sekret', 'Bob');
+      // While the private conversation is closed, nobody lets him in.
+      await rounds([(bob, gb)], times: 3);
+      expect(gb.joining, isTrue);
+
+      // Opened again from the slot alone: same identity, and while it is
+      // open the request is handled.
+      pv = await openPrivate();
+      final again = pv.group!;
+      expect(pv.groups.myCik(again), cik);
+      await rounds([(bob, gb), (pv.groups, again)], times: 4);
+      expect(gb.joining, isFalse);
+      await bob.roomOf(gb).sendText('cicho');
+      await rounds([(pv.groups, again), (bob, gb)], times: 2);
+      expect(texts(pv.groups.roomOf(again)), contains('cicho'));
+
+      // No DMs from or into it: they would live outside the slot.
+      pv.groups.offerDm(again, bob.myCik(gb), code, 'x');
+      expect(pv.groups.dmOffers, isEmpty);
+      await pv.close();
+      await bob.close();
+    },
+  );
 }

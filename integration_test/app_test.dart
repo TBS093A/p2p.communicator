@@ -885,6 +885,37 @@ void main() {
       ..pop();
     await settle(t);
 
+    // A private v2 conversation (PROTOCOL §B11.1): created behind its own
+    // password, not on any list, and opened again with that password.
+    await backToHome(t);
+    await tapKey(t, 'private-mode');
+    await pumpUntil(t, find.byKey(const ValueKey('private-new')));
+    await settle(t);
+    await tapKey(t, 'private-new');
+    await pumpUntil(t, find.byKey(const ValueKey('private-new-password')));
+    await settle(t);
+    // A phrase with spaces, like the other test passwords (no key-like
+    // token for secret scanners).
+    const v2Password = 'tajne v2 haslo';
+    await typeKey(t, 'private-new-password', v2Password);
+    await typeKey(t, 'private-new-again', v2Password);
+    await typeKey(t, 'private-new-name', 'Sekret v2');
+    await typeKey(t, 'private-new-me', 'Ja w sekrecie');
+    await hideKeyboard(t);
+    await tapKey(t, 'private-new-go');
+    await pumpUntil(t, find.text('osób: 1'));
+    await pumpUntil(t, find.text('Sekret v2'));
+    await send(t, 'tylko pod hasłem');
+    await hideKeyboard(t);
+    await shot(t, '13b_v2_private');
+    await backToHome(t);
+    // Nowhere on the home screen or the v2 list.
+    expect(find.text('Sekret v2'), findsNothing);
+    await privateMode(t, v2Password);
+    await pumpUntil(t, find.text('tylko pod hasłem'));
+    await settle(t);
+    await backToHome(t);
+
     // The rest checks the old v1 paths that stay in the app for reading
     // (DMs by QR, private rooms, profiles): writes back on for them.
     RoomSession.legacyWrites = true;
