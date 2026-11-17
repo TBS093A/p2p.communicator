@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:p2pc_core/p2pc_core.dart';
 
 import '../room/message.dart';
@@ -84,12 +85,23 @@ class V2Group {
     this.sentSinceKeys = 0,
     List<V2DmOffer>? dmOffers,
     this.dm = false,
+    this.presence = false,
+    this.presenceAt = 0,
+    this.presenceSent,
   }) : openInvites = openInvites ?? [],
        dmOffers = dmOffers ?? [];
 
   /// A private conversation (PROTOCOL §B10): each side names it after the
   /// other person, so the room look never renames it.
   final bool dm;
+
+  /// Opt-in (PROTOCOL §B8): show the members of this conversation, and
+  /// only them, whether we are around. Off by default.
+  bool presence;
+
+  /// When we last sent our presence here (ms) and what it said.
+  int presenceAt;
+  String? presenceSent;
 
   /// DM invites other members of this group sent us (PROTOCOL §B10), not
   /// accepted or declined yet.
@@ -145,6 +157,9 @@ class V2Group {
     'sentSinceKeys': sentSinceKeys,
     if (dmOffers.isNotEmpty) 'dmOffers': [for (final o in dmOffers) o.toJson()],
     if (dm) 'dm': true,
+    if (presence) 'presence': true,
+    if (presenceAt > 0) 'presenceAt': presenceAt,
+    'presenceSent': ?presenceSent,
   };
 
   static V2Group fromJson(Map<String, dynamic> j) => V2Group(
@@ -160,6 +175,9 @@ class V2Group {
     keysAt: j['keysAt'] as int? ?? 0,
     sentSinceKeys: j['sentSinceKeys'] as int? ?? 0,
     dm: j['dm'] == true,
+    presence: j['presence'] == true,
+    presenceAt: j['presenceAt'] as int? ?? 0,
+    presenceSent: j['presenceSent'] as String?,
     dmOffers: [
       for (final o in (j['dmOffers'] as List?) ?? const [])
         ?V2DmOffer.fromJson(o),
@@ -185,15 +203,25 @@ class V2Groups extends ChangeNotifier {
     required Future<void> Function() save,
     required V2RoomOpener openRoom,
     int Function()? clock,
+    bool Function()? appActive,
   }) : _save = save,
        _openRoom = openRoom,
        clock = clock ?? _wallClock,
+       appActive = appActive ?? _appInForeground,
        _dht = dht,
        _host = CoreHost(dht);
 
   final CoreDht _dht;
 
   static int _wallClock() => DateTime.now().millisecondsSinceEpoch;
+
+  static bool _appInForeground() {
+    final s = WidgetsBinding.instance.lifecycleState;
+    return s == null || s == AppLifecycleState.resumed;
+  }
+
+  /// Whether the user has the app open (presence says "active" then).
+  final bool Function() appActive;
 
   /// Milliseconds since the epoch (tests move it forward).
   final int Function() clock;
@@ -556,6 +584,41 @@ class V2Groups extends ChangeNotifier {
   /// this many hours (the core's clock is in hours).
   static const adminAroundHours = 48;
 
+  /// PROTOCOL §B8: presence goes out at most this often.
+  static const presenceEvery = Duration(minutes: 15);
+
+  /// A received "active" counts for this long (one missed update plus
+  /// slack); after that nothing is shown.
+  static const presenceValid = Duration(minutes: 20);
+
+  /// Turns presence in [g] on or off. Off stops further updates; what was
+  /// sent last fades out for the others after [presenceValid].
+  Future<void> setPresence(V2Group g, bool on) async {
+    g.presence = on;
+    if (on) g.presenceAt = 0; // say so on the next sync
+    await _save();
+    notifyListeners();
+  }
+
+  /// On a sync, if presence is on here: "active" while the app is open
+  /// (repeated every 15 minutes so it does not fade), "away" once after.
+  void _sendPresence(V2Group g) {
+    final room = _rooms[g.id];
+    if (!g.presence || g.joining || room == null) return;
+    final now = clock();
+    if (now - g.presenceAt < presenceEvery.inMilliseconds) return;
+    final state = appActive() ? 'active' : 'away';
+    if (state == 'away' && g.presenceSent != 'active') return;
+    g.presenceAt = now;
+    g.presenceSent = state;
+    unawaited(_save());
+    unawaited(
+      room
+          .sendHidden(MsgType.presence, {'s': state, 'at': now})
+          .catchError((Object e) => debugPrint('[v2] presence not sent')),
+    );
+  }
+
   bool _keysStale(V2Group g) =>
       clock() - g.keysAt > keysEvery.inMilliseconds ||
       g.sentSinceKeys >= keysAfterMessages;
@@ -624,6 +687,7 @@ class V2Groups extends ChangeNotifier {
         }
       }
       _greetNewcomers(g);
+      if (info(g)['removed'] != true) _sendPresence(g);
       g.problem = null;
     } on Object catch (e) {
       g.problem = '$e';

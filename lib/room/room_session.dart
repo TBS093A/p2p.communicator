@@ -1265,6 +1265,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       case MsgType.reaction:
       case MsgType.profile:
       case MsgType.meta:
+      case MsgType.presence:
         return 'text/plain';
     }
   }
