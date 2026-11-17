@@ -12,7 +12,9 @@ use openmls::prelude::{
     *,
 };
 use openmls_basic_credential::SignatureKeyPair;
-use openmls_traits::{random::OpenMlsRand, types::SignatureScheme, OpenMlsProvider};
+use openmls_traits::{
+    random::OpenMlsRand, signatures::Signer as _, types::SignatureScheme, OpenMlsProvider,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::dht::{Dht, RecordId};
@@ -108,6 +110,28 @@ impl Invite {
 struct JoinRequest {
     key_package: Vec<u8>,
     outbox: RecordId,
+    /// DM started from a shared group (§B10): who the joiner is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proof: Option<DmProof>,
+}
+
+/// §B10: the joiner's `CIK` in the shared group and its signature over
+/// (`"p2pc2-dm-join"`, rendezvous record key, the joiner's new `CIK`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DmProof {
+    pub cik: String,
+    pub sig: String,
+}
+
+/// What a DM join proof signs (§B10), with separators so no field can
+/// shift into another.
+fn dm_join_payload(rendezvous: &str, new_cik: &str) -> Vec<u8> {
+    let mut p = b"p2pc2-dm-join".to_vec();
+    p.push(0);
+    p.extend_from_slice(rendezvous.as_bytes());
+    p.push(0);
+    p.extend_from_slice(new_cik.as_bytes());
+    p
 }
 
 /// Welcome plus what the joiner needs to find the group, written by the
@@ -255,6 +279,10 @@ pub struct State {
     control_owner: Option<Vec<u8>>,
     pub pending: Option<Pending>,
     invites: BTreeMap<RecordId, Vec<u8>>,
+    /// DM invites (§B10): rendezvous -> the `CIK` in the shared group whose
+    /// signed proof a join request must carry (F25).
+    #[serde(default)]
+    invite_for: BTreeMap<RecordId, String>,
     // Own outbox.
     my_outbox: Option<(RecordId, Vec<u8>)>,
     my_count: u32,
@@ -411,6 +439,7 @@ impl Member {
                 control_owner: None,
                 pending: None,
                 invites: BTreeMap::new(),
+                invite_for: BTreeMap::new(),
                 my_outbox: None,
                 my_count: 0,
                 my_seq: 0,
@@ -596,13 +625,43 @@ impl Member {
 
     /// Admin: a one-time invite with its own rendezvous record.
     pub fn create_invite(&mut self, dht: &mut dyn Dht) -> Result<Invite, PocError> {
+        self.create_invite_for(dht, None)
+    }
+
+    /// Admin: a one-time invite; with `for_cik` (a DM started from a
+    /// shared group, §B10) only a join request proven by that `CIK` in the
+    /// shared group is admitted (F25).
+    pub fn create_invite_for(
+        &mut self,
+        dht: &mut dyn Dht,
+        for_cik: Option<&str>,
+    ) -> Result<Invite, PocError> {
+        if for_cik.is_some_and(|c| c.len() != 64 || wire::unhex_opt(c).is_none()) {
+            return Err(PocError::Rejected("not a member key".into()));
+        }
         let (rendezvous, owner, slot) =
             dht.create_rendezvous(REQUEST_FIRST..=REQUEST_FIRST + REQUEST_SUBKEYS - 1)?;
         self.st.invites.insert(rendezvous.clone(), owner);
+        if let Some(c) = for_cik {
+            self.st.invite_for.insert(rendezvous.clone(), c.to_string());
+        }
         Ok(Invite {
             rendezvous,
             slot,
             admin_cik: self.st.cik.clone(),
+        })
+    }
+
+    /// In the shared group: signs that the new identity `new_cik` asking to
+    /// join through `rendezvous` is this member (§B10).
+    pub fn sign_dm_join(&self, rendezvous: &str, new_cik: &str) -> Result<DmProof, PocError> {
+        let sig = self
+            .signer
+            .sign(&dm_join_payload(rendezvous, new_cik))
+            .map_err(mls)?;
+        Ok(DmProof {
+            cik: self.st.cik.clone(),
+            sig: wire::hex(&sig),
         })
     }
 
@@ -614,6 +673,17 @@ impl Member {
         dht: &mut dyn Dht,
         invite: &Invite,
         verified_admin: &str,
+    ) -> Result<usize, PocError> {
+        self.request_join_with(dht, invite, verified_admin, None)
+    }
+
+    /// Like [`Member::request_join`], with a DM proof (§B10).
+    pub fn request_join_with(
+        &mut self,
+        dht: &mut dyn Dht,
+        invite: &Invite,
+        verified_admin: &str,
+        proof: Option<DmProof>,
     ) -> Result<usize, PocError> {
         if verified_admin != invite.admin_cik {
             return Err(PocError::Rejected(
@@ -631,6 +701,7 @@ impl Member {
         let req = serde_json::to_vec(&JoinRequest {
             key_package: kp_bytes.clone(),
             outbox,
+            proof,
         })
         .expect("request serializes");
         let chunks = wire::chunk(Kind::KeyPackage, &req);
@@ -749,6 +820,30 @@ impl Member {
             return Err(PocError::Rejected(
                 "credential does not match its key".into(),
             ));
+        }
+        // §B10, F25: a DM invite admits only the member it was meant for.
+        if let Some(expected) = self.st.invite_for.get(rendezvous) {
+            let ok = req.proof.as_ref().is_some_and(|p| {
+                p.cik == *expected
+                    && match (wire::unhex_opt(&p.cik), wire::unhex_opt(&p.sig)) {
+                        (Some(pk), Some(sig)) => self
+                            .provider
+                            .crypto()
+                            .verify_signature(
+                                SignatureScheme::ED25519,
+                                &dm_join_payload(rendezvous, &joiner_cik),
+                                &pk,
+                                &sig,
+                            )
+                            .is_ok(),
+                        _ => false,
+                    }
+            });
+            if !ok {
+                return Err(PocError::Rejected(
+                    "join request not from the invited member".into(),
+                ));
+            }
         }
         Ok((
             kp,
@@ -1078,6 +1173,7 @@ impl Member {
                             }
                             // One-time invite.
                             self.st.invites.remove(&j.rendezvous);
+                            self.st.invite_for.remove(&j.rendezvous);
                         }
                     }
                     PendingKind::Remove {
@@ -1123,6 +1219,7 @@ impl Member {
                         self.st.successors.retain(|s| s != to);
                         self.st.proposal_copies.clear();
                         self.st.invites.clear();
+                        self.st.invite_for.clear();
                         self.st.events.push("admin role handed over".into());
                     }
                 }

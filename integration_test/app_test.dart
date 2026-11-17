@@ -734,6 +734,42 @@ void main() {
     await settle(t);
     await shot(t, '11_v2_admin');
 
+    // A DM from the shared group (phase 4b, PROTOCOL §B10): the admin
+    // starts one with Kasia; her copy of the group gets the offer, she
+    // accepts it with a fresh identity and the admin's DM lets her in.
+    await openMenu(t, 'Osoby');
+    await tapKey(t, 'v2-member-dm-Kasia z v2');
+    await pumpUntil(t, find.textContaining('rozmowy prywatnej'));
+    await settle(t);
+    for (var i = 0; i < 3; i++) {
+      await t.pageBack(); // the DM, the member list, the group
+      await settle(t);
+    }
+    final accept = find.byWidgetPredicate(
+      (w) =>
+          w.key is ValueKey<String> &&
+          (w.key! as ValueKey<String>).value.startsWith('v2-dm-accept-'),
+    );
+    await pumpUntil(t, accept);
+    await settle(t);
+    await shot(t, '11b_v2_dm_offer');
+    await t.tap(accept.first);
+    await pumpUntil(t, find.text('osób: 2'));
+    await send(t, 'prywatnie w v2');
+    await hideKeyboard(t);
+    await t.pageBack();
+    await settle(t);
+    // The admin's DM is named after Kasia and shows her message.
+    await t.tap(find.byKey(const ValueKey('v2-group-Kasia z v2')).first);
+    await pumpUntil(t, find.text('prywatnie w v2'));
+    await settle(t);
+    await shot(t, '11c_v2_dm');
+    await t.pageBack();
+    await settle(t);
+    await t.tap(tiles.first);
+    await pumpUntil(t, find.text('cześć z grupy v2'));
+    await settle(t);
+
     // Membership (phase 3): the admin makes Kasia its successor, hands the
     // admin role over to her, and Kasia, now the admin, removes it; the old
     // admin's copy of the group says so.

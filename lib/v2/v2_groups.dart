@@ -38,6 +38,28 @@ class V2Invite {
   }
 }
 
+/// A DM invite from another member of a shared group (PROTOCOL §B10): an
+/// MLS message from [from] (their key in that group), meant for us.
+class V2DmOffer {
+  V2DmOffer({required this.from, required this.code, required this.id});
+
+  final String from;
+  final String code;
+
+  /// The message it came in (so it is offered once).
+  final String id;
+
+  Map<String, dynamic> toJson() => {'from': from, 'code': code, 'id': id};
+
+  static V2DmOffer? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final from = j['from'], code = j['code'], id = j['id'];
+    if (from is! String || code is! String || id is! String) return null;
+    if (V2Invite.tryParse(code) == null) return null;
+    return V2DmOffer(from: from, code: code, id: id);
+  }
+}
+
 /// A conversation identity key for people to compare, in 16 groups of 4.
 String v2Fingerprint(String cik) {
   final s = cik.toUpperCase();
@@ -60,7 +82,18 @@ class V2Group {
     this.legacy,
     this.keysAt = 0,
     this.sentSinceKeys = 0,
-  }) : openInvites = openInvites ?? [];
+    List<V2DmOffer>? dmOffers,
+    this.dm = false,
+  }) : openInvites = openInvites ?? [],
+       dmOffers = dmOffers ?? [];
+
+  /// A private conversation (PROTOCOL §B10): each side names it after the
+  /// other person, so the room look never renames it.
+  final bool dm;
+
+  /// DM invites other members of this group sent us (PROTOCOL §B10), not
+  /// accepted or declined yet.
+  final List<V2DmOffer> dmOffers;
 
   /// When our leaf key was last refreshed (ms), and messages sent since:
   /// PROTOCOL §B5.1 asks for an Update every 7 days or 500 messages.
@@ -110,6 +143,8 @@ class V2Group {
     'members': membersSeen,
     'keysAt': keysAt,
     'sentSinceKeys': sentSinceKeys,
+    if (dmOffers.isNotEmpty) 'dmOffers': [for (final o in dmOffers) o.toJson()],
+    if (dm) 'dm': true,
   };
 
   static V2Group fromJson(Map<String, dynamic> j) => V2Group(
@@ -124,6 +159,11 @@ class V2Group {
     membersSeen: j['members'] as int? ?? 0,
     keysAt: j['keysAt'] as int? ?? 0,
     sentSinceKeys: j['sentSinceKeys'] as int? ?? 0,
+    dm: j['dm'] == true,
+    dmOffers: [
+      for (final o in (j['dmOffers'] as List?) ?? const [])
+        ?V2DmOffer.fromJson(o),
+    ],
     legacy: (j['msgs'] as List?)
         ?.map((m) => (m as Map).cast<String, dynamic>())
         .toList(),
@@ -351,6 +391,109 @@ class V2Groups extends ChangeNotifier {
         return g;
       });
 
+  // ------------------------------------------------- DMs (PROTOCOL §B10)
+
+  /// Starts a DM with [peerCik], a member of [via]: a new two-member group
+  /// with our own fresh identity, whose invite goes to them inside [via]
+  /// and admits only a join request they signed there (F25).
+  Future<V2Group> startDm(V2Group via, String peerCik, String peerName) async {
+    final dm = await _serial(() async {
+      final s = CoreSession.create('me');
+      final g = V2Group(
+        id: _newId(),
+        name: peerName.trim(),
+        me: via.me,
+        state: s.save(),
+        membersSeen: 1,
+        keysAt: clock(),
+        dm: true,
+      );
+      _sessions[g.id] = s;
+      try {
+        await _run(g, {'op': 'create_group'});
+        final code =
+            await _run(g, {'op': 'create_invite', 'for_cik': peerCik})
+                as String;
+        g.openInvites.add(inviteRendezvous(code));
+        await _attach(g);
+        await _save();
+        notifyListeners();
+        return (g, code);
+      } on Object {
+        _sessions.remove(g.id)?.close();
+        rethrow;
+      }
+    });
+    // Outside the queue: sending goes through it.
+    await roomOf(via).sendHidden(MsgType.dmInvite, {
+      'v2': {'i': dm.$2, 'to': peerCik},
+    });
+    return dm.$1;
+  }
+
+  /// A DM invite for us arrived in [via] from [from] (MLS proved who sent
+  /// it). Kept until accepted or declined.
+  void offerDm(V2Group via, String from, String code, String id) {
+    if (V2Invite.tryParse(code) == null) return;
+    if (via.dmOffers.any((o) => o.id == id || o.code == code)) return;
+    if (groups.any((g) => g.joinInvite == code)) return;
+    via.dmOffers.add(V2DmOffer(from: from, code: code, id: id));
+    unawaited(_save());
+    notifyListeners();
+  }
+
+  /// Every DM offer with the group it came through.
+  List<(V2Group, V2DmOffer)> get dmOffers => [
+    for (final g in groups)
+      for (final o in g.dmOffers) (g, o),
+  ];
+
+  /// Accepts [offer]: joins the DM with a fresh identity, proving with our
+  /// key in [via] that we are the member it was meant for. No fingerprint
+  /// check: the invite came from [V2DmOffer.from] through [via]'s MLS.
+  Future<V2Group> acceptDm(V2Group via, V2DmOffer offer) => _serial(() async {
+    final invite = V2Invite.tryParse(offer.code);
+    if (invite == null) throw StateError('Zaproszenie jest uszkodzone');
+    final s = CoreSession.create('me');
+    final newCik = s.info()['cik'] as String;
+    final proof = await _run(via, {
+      'op': 'sign_dm_join',
+      'rendezvous': invite.rendezvous,
+      'new_cik': newCik,
+    });
+    final g = V2Group(
+      id: _newId(),
+      name: roomOf(via).nameOf(offer.from),
+      me: via.me,
+      state: s.save(),
+      joinInvite: offer.code,
+      dm: true,
+    );
+    _sessions[g.id] = s;
+    try {
+      await _run(g, {
+        'op': 'request_join',
+        'invite': offer.code,
+        'verified_admin': invite.adminCik,
+        'proof': proof,
+      });
+      await _attach(g);
+    } on Object {
+      _sessions.remove(g.id)?.close();
+      rethrow;
+    }
+    via.dmOffers.remove(offer);
+    await _save();
+    notifyListeners();
+    return g;
+  });
+
+  Future<void> declineDm(V2Group via, V2DmOffer offer) async {
+    via.dmOffers.remove(offer);
+    await _save();
+    notifyListeners();
+  }
+
   /// Sends one application payload (a v1 wire message as JSON) to [g].
   Future<void> sendPayload(V2Group g, String payload) => _serial(() async {
     if (g.joining) throw StateError('Admin jeszcze cię nie wpuścił');
@@ -542,9 +685,12 @@ class V2Groups extends ChangeNotifier {
       try {
         await _run(g, {'op': 'stage_add', 'rendezvous': rv});
       } on CoreError catch (e) {
+        // A DM invite stays open when someone else tried it (F25): the
+        // member it is meant for may still come.
         final waiting =
             e.message.contains('no join request yet') ||
-            e.message.contains('join request incomplete');
+            e.message.contains('join request incomplete') ||
+            e.message.contains('not from the invited member');
         if (waiting) continue;
         // Never the error text: it may quote what the joiner sent.
         debugPrint('[v2] a join request was refused or already used');
@@ -594,7 +740,7 @@ class V2Groups extends ChangeNotifier {
     unawaited(_save());
     unawaited(
       room
-          .announce(withMeta: isAdmin(g))
+          .announce(withMeta: isAdmin(g) && !g.dm)
           .catchError((Object e) => debugPrint('[v2] announce failed')),
     );
   }
