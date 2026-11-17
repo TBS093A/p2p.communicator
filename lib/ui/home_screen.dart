@@ -192,9 +192,11 @@ class _HomeScreenState extends State<HomeScreen> {
           // read (tests of the old paths turn writes back on).
           floatingActionButton: FloatingActionButton.extended(
             key: const ValueKey('new-room'),
-            onPressed: RoomSession.legacyWrites
-                ? () => _push(NewRoomScreen(app: app, initialKind: _tab))
-                : _openV2,
+            // Decided at the tap: tests switch legacyWrites while this
+            // screen stays built underneath.
+            onPressed: () => RoomSession.legacyWrites
+                ? _push(NewRoomScreen(app: app, initialKind: _tab))
+                : _openV2(),
             icon: const Icon(Icons.add_comment_outlined),
             label: const Text('Nowa'),
           ),
