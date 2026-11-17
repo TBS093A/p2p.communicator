@@ -2,6 +2,9 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:p2p_communicator/room/message.dart';
+import 'package:p2p_communicator/room/room_session.dart';
+import 'package:p2p_communicator/room/room_style.dart';
+import 'package:p2p_communicator/vault/room_secrets.dart';
 import 'package:p2p_communicator/v2/private_v2.dart';
 import 'package:p2p_communicator/v2/v2_groups.dart';
 import 'package:p2p_communicator/v2/v2_room_session.dart';
@@ -21,6 +24,26 @@ class TestRoom extends V2RoomSession {
 
   @override
   Future<Uint8List?> readCache() async => cache;
+
+  @override
+  Future<void> close() async {}
+
+  /// What the composer does while typing (throttling aside).
+  Future<void> typeNow() =>
+      sendTypingStamp(DateTime.now().millisecondsSinceEpoch);
+}
+
+/// A v1 room as this phone has it, filled by the test.
+class V1Room extends RoomSession {
+  V1Room(super.room);
+
+  void put(ChatMessage m) => receive(m);
+
+  @override
+  Future<void> writeCache(Uint8List data) async {}
+
+  @override
+  Future<Uint8List?> readCache() async => null;
 
   @override
   Future<void> close() async {}
@@ -543,4 +566,178 @@ void main() {
       await bob.close();
     },
   );
+
+  group('v1 parity', () {
+    Future<(V2Groups, V2Group, V2Groups, V2Group)> pair(MemoryDht dht) async {
+      final alice = phone(dht);
+      final bob = phone(dht);
+      final ga = await alice.create('Rada', 'Ala');
+      final code = await alice.createInvite(ga);
+      final gb = await bob.join(V2Invite.tryParse(code)!, 'Rada', 'Bob');
+      await rounds([(alice, ga), (bob, gb)], times: 4);
+      return (alice, ga, bob, gb);
+    }
+
+    test('a long message goes in parts and arrives once, whole', () async {
+      final dht = MemoryDht();
+      final (alice, ga, bob, gb) = await pair(dht);
+      // The composer allows 3000 characters: in Polish up to ~6 KB.
+      // (Ends in a word: sending trims the text.)
+      final long = '${'Zażółć gęślą jaźń "cytat" \\ ' * 110}koniec';
+      expect(long.length, lessThanOrEqualTo(3100));
+      expect(V2RoomSession.fitsInline(long), isFalse);
+      final parts = V2RoomSession.split('id', long);
+      expect(parts.length, greaterThan(1));
+      expect(parts.join(), long);
+
+      await alice.roomOf(ga).sendText(long);
+      // Parts still on their way are shown as incoming; then one message.
+      await rounds([(bob, gb), (alice, ga)], times: 3);
+      final got = bob.roomOf(gb).messages.where((m) => m.text == long);
+      expect(got, hasLength(1));
+      expect(got.single.author, alice.myCik(ga));
+      expect(bob.roomOf(gb).incomingCount, 0);
+      expect(gb.partials, isEmpty);
+      await alice.close();
+      await bob.close();
+    });
+
+    test('an unfinished split message survives a restart', () {
+      final g = V2Group(
+        id: 'g',
+        name: 'x',
+        me: 'y',
+        state: Uint8List(0),
+        partials: {
+          'a|m1': {
+            'n': 3,
+            'p': {'0': 'ab', '2': 'ef'},
+          },
+        },
+      );
+      final back = V2Group.fromJson(g.toJson());
+      expect(back.partials['a|m1']!['n'], 3);
+      expect((back.partials['a|m1']!['p'] as Map).length, 2);
+    });
+
+    test(
+      'a rich room look (many emoji, background) reaches everyone',
+      () async {
+        final dht = MemoryDht();
+        final (alice, ga, bob, gb) = await pair(dht);
+        MediaRef ref(int i) => MediaRef(
+          mime: 'image/webp',
+          size: 1000 + i,
+          hash: 'h' * 64,
+          records: ['VLD0:${'r' * 43}$i'],
+          chunkSize: 32000,
+          chunksPerRecord: 30,
+          key: 'VLD0:${'k' * 43}',
+        );
+        await alice
+            .roomOf(ga)
+            .editMeta(
+              (m) => m.copyWith(
+                background: 0xFF112233,
+                bubble: 0xFF445566,
+                backgroundImage: ref(99),
+                emoji: {for (var i = 0; i < 30; i++) 'e$i': ref(i)},
+              ),
+            );
+        await rounds([(bob, gb), (alice, ga)], times: 3);
+        final seen = bob.roomOf(gb).meta;
+        expect(seen.emoji, hasLength(30));
+        expect(seen.bubble, 0xFF445566);
+        expect(seen.backgroundImage?.size, 1099);
+        await alice.close();
+        await bob.close();
+      },
+    );
+
+    test('"is typing" works in v2, as an ephemeral message', () async {
+      final dht = MemoryDht();
+      final (alice, ga, bob, gb) = await pair(dht);
+      expect(alice.roomOf(ga).typingSupported, isTrue);
+      await (alice.roomOf(ga) as TestRoom).typeNow();
+      await rounds([(bob, gb)], times: 2);
+      expect(bob.roomOf(gb).typingNames, ['Ala']);
+      expect(
+        bob.roomOf(gb).messages.where((m) => m.type == MsgType.typing),
+        isEmpty,
+        reason: 'never listed',
+      );
+      await alice.close();
+      await bob.close();
+    });
+
+    test('moving imports the v1 conversation, people and look', () async {
+      final dht = MemoryDht();
+      final alice = phone(dht);
+      final v1 = V1Room(
+        UnlockedRoom(
+          'v1',
+          SharedSecret(
+            kind: cryptoKindVLD0,
+            value: BareSharedSecret.fromBytes(Uint8List(32)),
+          ),
+          RoomSecrets(
+            roomName: 'Wyprawa',
+            rosterKey: 'VLD0:roster',
+            rosterWriter: 'VLD0:w',
+            myName: 'Ala',
+            outboxKey: 'VLD0:ala',
+            outboxWriter: 'VLD0:aw',
+            rosterSlot: 1,
+          ),
+        ),
+      );
+      v1.profiles['VLD0:ala'] = const MemberProfile(name: 'Ala', color: 7);
+      v1.profiles['VLD0:ola'] = const MemberProfile(name: 'Ola', color: 3);
+      v1.meta = v1.meta.copyWith(name: 'Wyprawa', bubble: 0xFF00AA00);
+      final first = ChatMessage(
+        id: 'm1',
+        author: 'VLD0:ola',
+        ts: 1000,
+        seq: 0,
+        type: MsgType.text,
+        text: 'jedziemy?',
+      );
+      v1.put(first);
+      v1.put(
+        ChatMessage(
+          id: 'm2',
+          author: 'VLD0:ala',
+          ts: 2000,
+          seq: 0,
+          type: MsgType.text,
+          text: 'jasne',
+          replyTo: ReplyRef.of(first),
+        ),
+      );
+      v1.put(
+        ChatMessage(
+          id: 'm3',
+          author: 'VLD0:ola',
+          ts: 3000,
+          seq: 1,
+          type: MsgType.reaction,
+          extra: {'to': 'm2', 'e': 'party'},
+        ),
+      );
+
+      final g = await alice.create('Wyprawa', 'Ala');
+      final room = alice.roomOf(g);
+      room.importFromV1(v1);
+      final texts = [for (final m in room.messages) m.text];
+      expect(texts, containsAllInOrder(['jedziemy?', 'jasne']));
+      final mine = room.messages.firstWhere((m) => m.text == 'jasne');
+      expect(mine.author, room.myOutbox, reason: 'our v1 messages stay ours');
+      expect(mine.replyTo?.id, 'm1');
+      expect(room.nameOf('VLD0:ola'), 'Ola');
+      expect(room.myProfile.color, 7);
+      expect(room.meta.bubble, 0xFF00AA00);
+      expect(room.reactions.toJson()['m2'], contains('VLD0:ola'));
+      await alice.close();
+    });
+  });
 }

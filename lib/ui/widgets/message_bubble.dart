@@ -23,7 +23,8 @@ String replyPreviewText(ReplyRef r) => switch (r.type) {
   MsgType.reaction ||
   MsgType.profile ||
   MsgType.meta ||
-  MsgType.presence => '',
+  MsgType.presence ||
+  MsgType.typing => '',
 };
 
 /// A quote: a bar, the original's author and one line of its content. Used
@@ -440,6 +441,7 @@ class _MessageBubbleState extends State<MessageBubble>
       case MsgType.profile:
       case MsgType.meta:
       case MsgType.presence:
+      case MsgType.typing:
         return const SizedBox.shrink(); // never listed; see RoomSession
       case MsgType.text:
         return EmojiText(

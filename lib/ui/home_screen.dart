@@ -632,6 +632,7 @@ class _RoomTile extends StatelessWidget {
       MsgType.profile ||
       MsgType.meta => '',
       MsgType.presence => '',
+      MsgType.typing => '',
     };
     final who = m.author == s.myOutbox
         ? 'Ty'

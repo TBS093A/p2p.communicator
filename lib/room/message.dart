@@ -26,14 +26,20 @@ enum MsgType {
   /// Hidden, v2 groups only, opt-in per conversation (PROTOCOL §B8): the
   /// author's coarse presence, `x: {s: 'active' | 'away'}`, at most once
   /// every 15 minutes.
-  presence;
+  presence,
+
+  /// Hidden, v2 groups only, opt-in per conversation (PROTOCOL §B8): the
+  /// author is typing, `x: {ty: <ms>}`, at most every 8 s (v1 puts the
+  /// same stamp in the outbox head).
+  typing;
 
   bool get hidden =>
       this == MsgType.dmInvite ||
       this == MsgType.reaction ||
       this == MsgType.profile ||
       this == MsgType.meta ||
-      this == MsgType.presence;
+      this == MsgType.presence ||
+      this == MsgType.typing;
 }
 
 enum MsgStatus { sending, sent, failed }

@@ -726,9 +726,25 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   }
 
   /// A member's head was read: update who is typing.
-  void _noteTyping(String outbox, Map<String, dynamic> head) {
-    if (_typing.note(outbox, head['ty'])) _typingChanged();
+  void _noteTyping(String outbox, Map<String, dynamic> head) =>
+      noteTypingStamp(outbox, head['ty']);
+
+  /// [author]'s "is typing" stamp ([ty], ms) arrived (v1: in their head;
+  /// v2: as an ephemeral message).
+  @protected
+  void noteTypingStamp(String author, Object? ty) {
+    if (_typing.note(author, ty)) _typingChanged();
   }
+
+  /// Sends our "is typing" stamp [ts]. v1 writes it into our outbox head.
+  @protected
+  Future<void> sendTypingStamp(int ts) =>
+      Dht.setJsonSoon(_outboxKey, 0, _head(_myCount, ty: ts));
+
+  /// Lists a message carried over from elsewhere (a v1 room moved to v2):
+  /// shown like any other, never sent. Returns whether it was new.
+  @protected
+  bool insertImported(ChatMessage m) => _insert(m);
 
   /// Redraws now and again when the next typing stamp runs out.
   void _typingChanged() {
@@ -752,11 +768,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       return;
     }
     final job = _sendChain.then(
-      (_) => Dht.setJsonSoon(
-        _outboxKey,
-        0,
-        _head(_myCount, ty: DateTime.now().millisecondsSinceEpoch),
-      ),
+      (_) => sendTypingStamp(DateTime.now().millisecondsSinceEpoch),
     );
     _sendChain = job.catchError((Object e) => debugPrint('typing: $e'));
   }
@@ -1305,6 +1317,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       case MsgType.profile:
       case MsgType.meta:
       case MsgType.presence:
+      case MsgType.typing:
         return 'text/plain';
     }
   }

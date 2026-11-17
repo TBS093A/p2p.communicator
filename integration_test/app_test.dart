@@ -665,7 +665,13 @@ void main() {
     await tapKey(t, 'v1-move-confirm');
     await pumpUntil(t, find.text('Utworzono grupę v2 i wysłano zaproszenia'));
     await pumpUntil(t, find.text('osób: 1'));
+    // Nothing reset: the v1 conversation came along, the reply with its
+    // quote included, under the room's name.
+    await pumpUntil(t, find.text(answer));
+    expect(find.text(question), findsWidgets);
+    expect(find.text('Wyprawa w Tatry'), findsWidgets);
     await settle(t);
+    await shot(t, '07c_v2_moved_history');
     await t.pageBack();
     await settle(t);
 

@@ -156,8 +156,14 @@ class V2Group {
     this.presence = false,
     this.presenceAt = 0,
     this.presenceSent,
+    Map<String, Map<String, dynamic>>? partials,
   }) : openInvites = openInvites ?? [],
-       dmOffers = dmOffers ?? [];
+       dmOffers = dmOffers ?? [],
+       partials = partials ?? {};
+
+  /// Split messages still arriving: "author|id" -> {n, p: {index: text}}
+  /// (see V2RoomSession.appendMessage). Saved, so a restart loses nothing.
+  final Map<String, Map<String, dynamic>> partials;
 
   /// A private conversation (PROTOCOL §B10): each side names it after the
   /// other person, so the room look never renames it.
@@ -233,6 +239,7 @@ class V2Group {
     if (presence) 'presence': true,
     if (presenceAt > 0) 'presenceAt': presenceAt,
     'presenceSent': ?presenceSent,
+    if (partials.isNotEmpty) 'parts': partials,
   };
 
   static V2Group fromJson(Map<String, dynamic> j) => V2Group(
@@ -252,6 +259,11 @@ class V2Group {
     presence: j['presence'] == true,
     presenceAt: j['presenceAt'] as int? ?? 0,
     presenceSent: j['presenceSent'] as String?,
+    partials: {
+      for (final e in ((j['parts'] as Map?) ?? const {}).entries)
+        if (e.key is String && e.value is Map)
+          e.key as String: (e.value as Map).cast<String, dynamic>(),
+    },
     dmOffers: [
       for (final o in (j['dmOffers'] as List?) ?? const [])
         ?V2DmOffer.fromJson(o),
