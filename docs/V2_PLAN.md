@@ -78,8 +78,8 @@ key in the next round.
 ### Phase 4: media, identities, metadata
 
 * Encrypted media before chunking (§B9).
-* One identity per conversation by default; global profile as an opt-in
-  link (§B10); DMs as two-member groups, started from a shared group with a
+* One identity per conversation, never linked to the global profile
+  (§B10); DMs as two-member groups, started from a shared group with a
   join request signed by the recipient's `CIK` there (§B10, F25).
 * Presence opt-in, coarse (§B8).
 
@@ -102,13 +102,16 @@ These were listed as "open before v2 ships". The owner decided on
 **after** v2 became the default, and the risk they describe is accepted
 until they are closed:
 
-* Crypto provider without RUSTSEC-2026-0387 (§B7, upstream).
-* Independent audit of the protocol and the core (THREAT_MODEL, AUDIT plan).
+* Crypto provider without RUSTSEC-2026-0387 (§B7, upstream; re-checked
+  17 Nov 2026, still blocked).
+* Independent audit of the protocol and the core (THREAT_MODEL,
+  [AUDIT_PLAN.md](AUDIT_PLAN.md)).
 * ~~Control-log write repair by the admin~~ (F16, done 17 Nov 2026).
 
-Also not done yet: private conversations in v2 (§B11.1, proposed), the
-opt-in link to the global profile (§B10), and a run of the bench APK on a
-physical phone (§B13).
+Done since: private conversations in v2 (§B11.1). Dropped: the opt-in link
+to the global profile (§B10, decided 17 Nov 2026: conversations stay
+separate). Still to do: a run of the bench APK on a physical phone
+(§B13).
 
 ## What I need decided now
 
