@@ -586,6 +586,47 @@ fn f16_lost_writes() {
     assert_eq!(g[1].real_gaps(), 0);
 }
 
+// F16, the control log: a dropped log value or header is never accepted
+// silently (members wait), and the admin writes it again with the same
+// bytes on its next sync, after which members continue.
+#[test]
+fn f16_lost_control_log_writes_are_repaired_by_the_admin() {
+    let (mut dht, mut g) = group(&["alice", "bob"]);
+    let control = g[0].st.control.clone().unwrap();
+    let epoch = g[1].st.epoch;
+
+    // A commit whose first log value (the commit itself) is dropped. The
+    // publication writes it twice (phases 0 and 2, same bytes): both lost.
+    let next = g[0].st.log_count + 1;
+    dht.lose_next_writes(&control, next, 2);
+    g[0].stage_commit_proposals().unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    g[1].sync(&mut dht).unwrap();
+    assert_eq!(g[1].st.epoch, epoch, "nothing applied from a broken log");
+    g[0].sync(&mut dht).unwrap();
+    assert!(has_event(&g[0], "re-wrote lost control log values"));
+    g[1].sync(&mut dht).unwrap();
+    assert_eq!(g[1].st.epoch, epoch + 1, "{:?}", g[1].st.events);
+    assert_same_epoch(&[&g[0], &g[1]]);
+
+    // The header of the next commit is dropped: members see the old one.
+    dht.lose_next_writes(&control, 0, 1);
+    g[0].stage_commit_proposals().unwrap();
+    g[0].publish_pending(&mut dht).unwrap();
+    g[1].sync(&mut dht).unwrap();
+    assert_eq!(g[1].st.epoch, epoch + 1);
+    g[0].sync(&mut dht).unwrap();
+    g[1].sync(&mut dht).unwrap();
+    assert_eq!(g[1].st.epoch, epoch + 2);
+    assert_same_epoch(&[&g[0], &g[1]]);
+
+    // Once everything is confirmed, a sync has nothing to repair.
+    let writes = dht.writes;
+    g[0].sync(&mut dht).unwrap();
+    g[0].sync(&mut dht).unwrap();
+    assert_eq!(dht.writes, writes, "no needless rewrites");
+}
+
 // F17: a Welcome for a large group spans several subkeys.
 #[test]
 fn f17_oversized_welcome() {
