@@ -838,6 +838,37 @@ void main() {
     await settle(t);
     await shot(t, '11d_v2_media');
 
+    // Swipe to reply, as in v1: someone else's message to the right, our
+    // own to the left; past the threshold the reply bar opens.
+    for (final (text, dx) in [
+      ('cześć z grupy v2', 140.0), // Kasia's
+      ('piękny widok', -140.0), // ours
+    ]) {
+      final bubble = find.ancestor(
+        of: find.text(text).last,
+        matching: find.byType(MessageBubble),
+      );
+      await t.ensureVisible(bubble.first); // older ones scrolled up
+      await settle(t);
+      await t.timedDrag(
+        bubble.first,
+        Offset(dx, 0),
+        const Duration(milliseconds: 400),
+      );
+      await settle(t);
+      await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('reply-bar')),
+          matching: find.textContaining(text),
+        ),
+        findsWidgets,
+      );
+      await tapKey(t, 'reply-cancel');
+      await settle(t);
+      expect(find.byKey(const ValueKey('reply-bar')), findsNothing);
+    }
+
     // A DM from the shared group (phase 4b, PROTOCOL §B10): the admin
     // starts one with Kasia; her copy of the group gets the offer, she
     // accepts it with a fresh identity and the admin's DM lets her in.
