@@ -690,9 +690,39 @@ fingerprint and the admin approves each request after comparing the
 joiner's (§B4 step 4). The announcement is the only write a v2 app still
 makes in a v1 room; the global profile's `seen` is no longer written.
 
-Private rooms open read-only by password as before. A private room's
-password slot pointing to a v2 group, and new private rooms in v2, are not
-implemented yet.
+### B11.1 Private conversations in v2 (proposed 17 Nov 2026)
+
+A private conversation is a v2 group (this protocol, unchanged on the
+wire) whose **local** state is kept in a password slot of the PIN vault
+(§A6) instead of the app slot, so the app, unlocked with its PIN, does
+not know it exists:
+
+* **Slot content.** The password slot holds the group's core state, its
+  conversation cache and media keys, and (for a moved room) the v1
+  room's secrets, read-only. The app slot holds nothing about it; slot
+  files stay padded to the same size and decoys stay as in §A6.
+* **Opening.** Private mode with the password opens the slot and the
+  conversation. It is synced only while it is open: no background sync,
+  so nothing on the network or on the phone shows activity for it while
+  it is closed. Membership work the admin does on sync (approving join
+  requests, committing Updates, moves) happens while the admin has it
+  open.
+* **Creating.** "New private conversation" asks for a new password and
+  creates the group in a new slot; joining a private conversation uses
+  a `p2pc2.` invite (§B4) with the same fingerprint check and approval,
+  and stores it in a new slot under a password the joiner chooses.
+* **Identity.** As every v2 conversation: its own `CIK`, no global
+  profile and no `link` (§B10) is offered there.
+* **Moving a v1 private room.** "Przenieś do v2" inside an opened v1
+  private room works as for other rooms (one invite per member announced
+  in the v1 room, approval), and the new group is stored in **the same
+  password slot**: the password then opens the v2 conversation, with the
+  old v1 history reachable from it, read-only.
+* **Forgetting.** Removing the conversation wipes its slot (a decoy takes
+  its place), as for v1 private rooms.
+
+Not changed: what storage nodes and members see is exactly a v2 group;
+the privacy here is against someone holding the unlocked phone.
 
 ## B12. Failure scenarios
 
@@ -718,7 +748,7 @@ added after the first PoC round and is covered by
 | F13 | **Concurrent proposals** from two members | The admin commits them in one order; all members end in the same epoch | Yes |
 | F14 | **Fork**: admin returns after a takeover | Members on the new generation ignore the old one; a member on the fork detects it and is re-added as a new identity (§B5.4) | Yes |
 | F15 | **Removed member keeps writing** its old outbox | Ignored: not a member of epoch `e + 1`, and the old outbox is no longer watched | Yes |
-| F16 | **Storage node drops writes** | Detected via `prev` chain, `logHash` and log counts; never silently accepted. A lost outbox write is re-sent by its writer; a lost control-log write is only waited for (repair by the admin: before v2.0) | Partly |
+| F16 | **Storage node drops writes** | Detected via `prev` chain, `logHash` and log counts; never silently accepted. A lost outbox write is re-sent by its writer; a lost control-log value or header is re-written with the same bytes by the admin, who reads back what it wrote until it sees it on the network; members only wait | Yes |
 | F17 | **Oversized MLS message** (Welcome for a large group) | Split across subkeys and reassembled (§B3, chunking) | Yes |
 | F18 | **Malformed data** from a member or node: invites, heads, commits, messages, chunk headers | Rejected without crashing or changing state (fuzz tests of every parser) | Yes |
 | F19 | **Diverging histories**: the admin rewrites a log position after some members read it | Members compare `ctl` in messages (§B5.2 r6); a mismatch stops new commits and shows a warning | Yes |
