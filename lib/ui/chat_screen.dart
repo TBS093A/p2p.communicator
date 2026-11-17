@@ -678,20 +678,27 @@ class _ChatScreenState extends State<ChatScreen> {
           PopupMenuButton<String>(
             onSelected: _menu,
             itemBuilder: (_) => [
-              // In a v2 group only the admin can let people in.
-              if (widget.v2 == null ||
-                  widget.v2!.isAdmin((_session as V2RoomSession).group))
+              // In a v2 group only the admin can let people in; a read-only
+              // v1 room takes no one new and changes nothing (§B11).
+              if (!_session.readOnly &&
+                  (widget.v2 == null ||
+                      widget.v2!.isAdmin((_session as V2RoomSession).group)))
                 const PopupMenuItem(
                   key: ValueKey('menu-invite'),
                   value: 'invite',
                   child: Text('Zaproś'),
                 ),
               const PopupMenuItem(value: 'members', child: Text('Osoby')),
-              const PopupMenuItem(value: 'profile', child: Text('Mój profil')),
-              const PopupMenuItem(
-                value: 'settings',
-                child: Text('Ustawienia pokoju'),
-              ),
+              if (!_session.readOnly) ...[
+                const PopupMenuItem(
+                  value: 'profile',
+                  child: Text('Mój profil'),
+                ),
+                const PopupMenuItem(
+                  value: 'settings',
+                  child: Text('Ustawienia pokoju'),
+                ),
+              ],
               // PROTOCOL §B8: opt-in, only for this conversation.
               if (_session is V2RoomSession)
                 CheckedPopupMenuItem(
@@ -769,7 +776,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       controller: _scroll,
                       entrances: _entrances,
                       itemKeys: _itemKeys,
-                      onReply: _startReply,
+                      // Read-only v1 rooms: no replies or reactions.
+                      onReply: _session.readOnly ? null : _startReply,
                       onQuoteTap: _goToOriginal,
                       highlight: _highlight,
                       onAvatarTap: (outbox) => _open(
@@ -789,7 +797,9 @@ class _ChatScreenState extends State<ChatScreen> {
               // chat's color themselves (see _barAccent).
               KeyedSubtree(
                 key: const ValueKey('chat-bottom-bar'),
-                child: _composer(context),
+                child: _session.readOnly
+                    ? _readOnlyBar(context)
+                    : _composer(context),
               ),
             ],
           );
@@ -820,6 +830,43 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           );
         },
+      ),
+    );
+  }
+
+  /// PROTOCOL §B11: a v1 room in a v2 app only reads. Instead of the
+  /// composer: what it is, and (in public rooms) the move to v2.
+  Widget _readOnlyBar(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      child: Container(
+        key: const ValueKey('v1-readonly'),
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.history),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Stary protokół: tylko do odczytu. Nowe wiadomości piszecie '
+                'w grupie v2.',
+              ),
+            ),
+            if (widget.app != null)
+              TextButton(
+                key: const ValueKey('v1-readonly-move'),
+                onPressed: _moveToV2,
+                child: const Text('Przenieś do v2'),
+              ),
+          ],
+        ),
       ),
     );
   }

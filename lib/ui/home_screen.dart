@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../app_state/app_session.dart';
 import '../app_state/global_profile.dart';
-import '../core/ui_prefs.dart';
 import '../room/message.dart';
 import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
@@ -54,6 +53,9 @@ class _HomeScreenState extends State<HomeScreen> {
   void _toast(String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
 
+  Future<void> _openV2() =>
+      _push(V2HomeScreen(groups: app.v2, myName: app.myGlobal.name));
+
   // --------------------------------------------------------- private mode
 
   Future<void> _privateMode() async {
@@ -63,6 +65,14 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     if (password == null || !mounted) return;
     if (password == '\u0000new') {
+      if (!RoomSession.legacyWrites) {
+        // PROTOCOL §B11: no new v1 rooms, private ones included.
+        _toast(
+          'Nowe pokoje prywatne nie są jeszcze dostępne w v2. Istniejące '
+          'otworzysz hasłem (tylko do odczytu).',
+        );
+        return;
+      }
       await _push(NewRoomScreen(app: app, initialKind: RoomKind.private));
       return;
     }
@@ -102,16 +112,24 @@ class _HomeScreenState extends State<HomeScreen> {
                   Text(p.name, style: Theme.of(context).textTheme.titleLarge),
                   Text(p.presence.label),
                   const SizedBox(height: 20),
-                  FilledButton.icon(
-                    key: const ValueKey('user-dm'),
-                    onPressed: () => Navigator.pop(context, true),
-                    icon: const Icon(Icons.chat_bubble_outline),
-                    label: Text(
-                      app.dmWith(key) == null
-                          ? 'Zaproś do rozmowy'
-                          : 'Otwórz rozmowę',
+                  // PROTOCOL §B10, §B11: new DMs start in a shared v2 group.
+                  if (!RoomSession.legacyWrites && app.dmWith(key) == null)
+                    const Text(
+                      'Nowe rozmowy prywatne zaczniesz z grupy v2 '
+                      '(Osoby → Napisz prywatnie).',
+                      textAlign: TextAlign.center,
+                    )
+                  else
+                    FilledButton.icon(
+                      key: const ValueKey('user-dm'),
+                      onPressed: () => Navigator.pop(context, true),
+                      icon: const Icon(Icons.chat_bubble_outline),
+                      label: Text(
+                        app.dmWith(key) == null
+                            ? 'Zaproś do rozmowy'
+                            : 'Otwórz rozmowę',
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -151,21 +169,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             title: const Text('Rozmowy'),
             actions: [
-              ValueListenableBuilder<bool>(
-                valueListenable: UiPrefs.instance.experimentalV2,
-                builder: (context, on, _) => on
-                    ? IconButton(
-                        key: const ValueKey('v2-home'),
-                        tooltip: 'Grupy v2 (eksperymentalne)',
-                        icon: const Icon(Icons.science_outlined),
-                        onPressed: () => _push(
-                          V2HomeScreen(
-                            groups: app.v2,
-                            myName: app.myGlobal.name,
-                          ),
-                        ),
-                      )
-                    : const SizedBox.shrink(),
+              IconButton(
+                key: const ValueKey('v2-home'),
+                tooltip: 'Grupy v2',
+                icon: const Icon(Icons.forum_outlined),
+                onPressed: _openV2,
               ),
               IconButton(
                 key: const ValueKey('private-mode'),
@@ -180,17 +188,34 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
+          // PROTOCOL §B11: new conversations are v2 groups; v1 rooms only
+          // read (tests of the old paths turn writes back on).
           floatingActionButton: FloatingActionButton.extended(
             key: const ValueKey('new-room'),
-            onPressed: () => _push(NewRoomScreen(app: app, initialKind: _tab)),
+            onPressed: RoomSession.legacyWrites
+                ? () => _push(NewRoomScreen(app: app, initialKind: _tab))
+                : _openV2,
             icon: const Icon(Icons.add_comment_outlined),
             label: const Text('Nowa'),
           ),
           body: Column(
             children: [
               UpdateBanner(onOpen: () => _push(const UpdateScreen())),
-              for (final inv in app.pendingInvites)
-                _InviteBanner(app: app, invite: inv, onOpen: _openChat),
+              if (!RoomSession.legacyWrites)
+                ListTile(
+                  key: const ValueKey('home-v2-groups'),
+                  leading: const Icon(Icons.forum_outlined),
+                  title: Text('Grupy v2 (${app.v2.groups.length})'),
+                  subtitle: const Text(
+                    'Szyfrowanie MLS. Rozmowy poniżej to stary protokół, '
+                    'tylko do odczytu.',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _openV2,
+                ),
+              if (RoomSession.legacyWrites)
+                for (final inv in app.pendingInvites)
+                  _InviteBanner(app: app, invite: inv, onOpen: _openChat),
               if (others.isNotEmpty)
                 SizedBox(
                   height: 100,

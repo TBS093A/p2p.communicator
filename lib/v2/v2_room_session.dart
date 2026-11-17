@@ -44,6 +44,10 @@ class V2RoomSession extends RoomSession {
   @override
   bool get typingSupported => false;
 
+  // v2 conversations are the ones that write (PROTOCOL §B11).
+  @override
+  bool get readOnly => false;
+
   @override
   void userTyping() {}
 

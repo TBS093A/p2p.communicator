@@ -183,6 +183,8 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
   /// see us as offline.
   Future<void> _beat() async {
     if (_closed || _me.status == UserStatus.invisible) return;
+    // PROTOCOL §B10: no global `seen` in v2; v1 rooms only read now.
+    if (!RoomSession.legacyWrites) return;
     _me = _me.copyWith(seen: DateTime.now().millisecondsSinceEpoch);
     directory.setMine(_me);
     await Dht.setJsonSoon(_profileRecord, 0, _me.toJson());
