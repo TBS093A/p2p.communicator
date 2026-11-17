@@ -104,11 +104,11 @@ until they are closed:
 
 * Crypto provider without RUSTSEC-2026-0387 (§B7, upstream).
 * Independent audit of the protocol and the core (THREAT_MODEL, AUDIT plan).
-* Control-log write repair by the admin (F16 is "partly").
+* ~~Control-log write repair by the admin~~ (F16, done 17 Nov 2026).
 
-Also not done yet: new private rooms in v2 (and a private room's slot
-pointing to a v2 group, §B11), the opt-in link to the global profile
-(§B10), and a run of the bench APK on a physical phone (§B13).
+Also not done yet: private conversations in v2 (§B11.1, proposed), the
+opt-in link to the global profile (§B10), and a run of the bench APK on a
+physical phone (§B13).
 
 ## What I need decided now
 
