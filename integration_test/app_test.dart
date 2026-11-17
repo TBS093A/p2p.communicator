@@ -758,7 +758,11 @@ void main() {
     await send(t, 'prywatnie w v2');
     await hideKeyboard(t);
     // Phase 4c (PROTOCOL §B8): Kasia shares her presence in this DM only.
-    await openMenu(t, 'Pokazuj, że jestem aktywny');
+    // (A checked menu item ignores pointers on its text: tap the item.)
+    await t.tap(find.byType(PopupMenuButton<String>));
+    await pumpUntil(t, find.byKey(const ValueKey('menu-share-presence')));
+    await settle(t);
+    await tapKey(t, 'menu-share-presence');
     await pumpUntil(t, find.textContaining('zobaczą, kiedy jesteś aktywny'));
     await settle(t);
     await t.pageBack();
