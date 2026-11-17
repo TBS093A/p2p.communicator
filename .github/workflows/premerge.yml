@@ -31,6 +31,9 @@ jobs:
           filters: |
             app:
               - 'lib/**'
+              # The v2 core is built into the app (packages/p2pc_core).
+              - 'native/**'
+              - 'packages/**'
               - 'android/**'
               - 'pubspec.yaml'
               - 'pubspec.lock'
