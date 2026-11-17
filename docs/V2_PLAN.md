@@ -90,11 +90,25 @@ key in the next round.
   hint; joining still requires the fingerprint check.
 * v2 becomes the default; the switch from phase 2 goes away.
 
-## Open before v2 ships (not blocking phase 1)
+## Status (17 Nov 2026)
+
+All five phases are in the app (PRs #34–#52). Phase 5 made v2 the default
+and v1 read-only.
+
+## Still open
+
+These were listed as "open before v2 ships". The owner decided on
+17 Nov 2026 to ship phase 5 without waiting for them, so they remain open
+**after** v2 became the default, and the risk they describe is accepted
+until they are closed:
 
 * Crypto provider without RUSTSEC-2026-0387 (§B7, upstream).
 * Independent audit of the protocol and the core (THREAT_MODEL, AUDIT plan).
 * Control-log write repair by the admin (F16 is "partly").
+
+Also not done yet: new private rooms in v2 (and a private room's slot
+pointing to a v2 group, §B11), the opt-in link to the global profile
+(§B10), and a run of the bench APK on a physical phone (§B13).
 
 ## What I need decided now
 
