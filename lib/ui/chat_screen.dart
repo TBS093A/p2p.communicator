@@ -388,131 +388,6 @@ class _ChatScreenState extends State<ChatScreen> {
     };
   }
 
-  /// PROTOCOL §B11: a new v2 group with us as its admin, one invite per
-  /// other member, announced here. Old apps just show the text.
-  /// A v1 room that can still move to v2: public ones into the app's v2
-  /// groups, a private one into its own password slot (§B11.1).
-  bool get _canMove =>
-      widget.v2 == null &&
-      (widget.app != null ||
-          (widget.privateSlot != null && !widget.privateSlot!.hasV2));
-
-  /// Where a moved or joined group goes: the app's v2 groups, or a private
-  /// conversation in this room's slot (closed with the returned callback).
-  Future<(V2Groups, Future<void> Function()?)> _moveTarget() async {
-    final app = widget.app;
-    if (app != null) return (app.v2, null);
-    final pv = await PrivateV2.inSlot(widget.privateSlot!);
-    return (pv.groups, pv.close);
-  }
-
-  /// After a private v1 room moved or joined: the password now opens the
-  /// v2 conversation (§B11.1), the v1 room stays readable from it.
-  Future<void> _privateMoved() async {
-    final slot = widget.privateSlot;
-    if (slot != null) await PinVault.instance.markMovedToV2(slot);
-  }
-
-  /// Joins the group a v1 move announcement invites us to.
-  Future<void> _joinMove(V1Move move) async {
-    final (groups, close) = await _moveTarget();
-    if (!mounted) {
-      await close?.call();
-      return;
-    }
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => V2JoinScreen(
-          groups: groups,
-          myName: _session.nameOf(_session.myOutbox),
-          code: move.code,
-          groupName: move.name,
-          onClose: close,
-          onJoined: (g) async {
-            // The v1 history, people and look come along (§B11).
-            groups.roomOf(g).importFromV1(_session);
-            if (widget.app == null) await _privateMoved();
-          },
-        ),
-      ),
-    );
-  }
-
-  Future<void> _moveToV2() async {
-    final yes = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Przenieść rozmowę do v2?'),
-        content: const Text(
-          'Powstanie nowa grupa v2 (szyfrowanie MLS), a ty zostaniesz jej '
-          'adminem. Tutaj wyślesz każdej osobie jej zaproszenie. Każdy, kto '
-          'dołącza, porówna z tobą odcisk klucza, a ty zatwierdzisz jego '
-          'prośbę po sprawdzeniu jego klucza.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Anuluj'),
-          ),
-          FilledButton(
-            key: const ValueKey('v1-move-confirm'),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Przenieś'),
-          ),
-        ],
-      ),
-    );
-    if (yes != true || !mounted) return;
-    final V2Group g;
-    final (groups, close) = await _moveTarget();
-    try {
-      final others = _session.memberOutboxes
-          .where((o) => o != _session.myOutbox)
-          .toList();
-      final (group, invites) = await groups.createForMove(
-        _session.roomName,
-        _session.nameOf(_session.myOutbox),
-        others,
-      );
-      g = group;
-      // Nothing is reset: the v1 history, people, room look and our
-      // profile come along; the look and profile go to the new members.
-      final room = groups.roomOf(g);
-      room.importFromV1(_session);
-      await room.shareImported();
-      final entries = invites.entries.toList();
-      for (var i = 0; i < entries.length; i += V1Move.invitesPerMessage) {
-        final part = entries.skip(i).take(V1Move.invitesPerMessage);
-        await _session.sendText(
-          'Przenoszę tę rozmowę do grupy v2 (szyfrowanie MLS). Zaktualizuj '
-          'aplikację i dołącz z karty nad rozmową. Przed dołączeniem '
-          'porównaj ze mną odcisk mojego klucza.',
-          extra: V1Move.extra(_session.roomName, Map.fromEntries(part)),
-        );
-      }
-      await _privateMoved();
-    } on Object catch (e) {
-      await close?.call();
-      _toast('Nie udało się przenieść: $e');
-      return;
-    }
-    if (!mounted) {
-      await close?.call();
-      return;
-    }
-    _toast('Utworzono grupę v2 i wysłano zaproszenia');
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ChatScreen.v2(
-          session: groups.roomOf(g),
-          v2: groups,
-          privateSlot: widget.privateSlot,
-          onClose: close,
-        ),
-      ),
-    );
-  }
-
   Future<void> _menu(String action) async {
     final v2 = widget.v2;
     final group = v2 == null ? null : (_session as V2RoomSession).group;
@@ -608,16 +483,6 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       case 'settings':
         await _open(RoomSettingsScreen(session: _session));
-      case 'move-v2':
-        await _moveToV2();
-      case 'old-v1':
-        final slot = widget.privateSlot!;
-        await _open(
-          ChatScreen.private(
-            session: RoomSession(UnlockedRoom(slot.slotId, slot.key, slot.v1!)),
-            privateSlot: slot,
-          ),
-        );
       case 'presence' when v2 != null:
         final on = !group!.presence;
         await v2.setPresence(group, on);
@@ -880,20 +745,6 @@ class _ChatScreenState extends State<ChatScreen> {
                   checked: _session.shareTyping,
                   child: const Text('Pokazuj, że piszę'),
                 ),
-              // §B11.1: a moved private room keeps its v1 history.
-              if (widget.v2 != null && widget.privateSlot?.v1 != null)
-                const PopupMenuItem(
-                  key: ValueKey('menu-old-v1'),
-                  value: 'old-v1',
-                  child: Text('Stara rozmowa (v1)'),
-                ),
-              // PROTOCOL §B11: a v1 conversation moves to a new v2 group.
-              if (_canMove)
-                const PopupMenuItem(
-                  key: ValueKey('menu-move-v2'),
-                  value: 'move-v2',
-                  child: Text('Przenieś do v2'),
-                ),
               const PopupMenuItem(
                 value: 'forget',
                 child: Text('Usuń z telefonu'),
@@ -930,13 +781,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 _V2Banners(
                   groups: widget.v2!,
                   group: (_session as V2RoomSession).group,
-                ),
-              if (_canMove)
-                _V1MoveBanner(
-                  session: _session,
-                  joined: (code) => widget.app?.v2.joinedWith(code) ?? false,
-                  onJoin: _joinMove,
-                  listen: widget.app?.v2,
                 ),
               Expanded(
                 child: ListenableBuilder(
@@ -1040,16 +884,10 @@ class _ChatScreenState extends State<ChatScreen> {
             const SizedBox(width: 12),
             const Expanded(
               child: Text(
-                'Stary protokół: tylko do odczytu. Nowe wiadomości piszecie '
-                'w grupie v2.',
+                'Stara wersja: tylko do odczytu. Ta rozmowa przenosi się '
+                'do nowej wersji sama.',
               ),
             ),
-            if (_canMove)
-              TextButton(
-                key: const ValueKey('v1-readonly-move'),
-                onPressed: _moveToV2,
-                child: const Text('Przenieś do v2'),
-              ),
           ],
         ),
       ),
@@ -1215,52 +1053,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
   static String _fmt(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
-}
-
-/// In a v1 room: someone moved the conversation to v2 and left an invite
-/// for us (PROTOCOL §B11). Joining goes through the regular join screen,
-/// with the admin's fingerprint still to be checked.
-class _V1MoveBanner extends StatelessWidget {
-  const _V1MoveBanner({
-    required this.session,
-    required this.joined,
-    required this.onJoin,
-    this.listen,
-  });
-
-  final RoomSession session;
-
-  /// Whether we already used this invite (public rooms: the app's groups;
-  /// a private room that moved no longer shows this banner at all).
-  final bool Function(String code) joined;
-  final Future<void> Function(V1Move move) onJoin;
-  final Listenable? listen;
-
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([session, ?listen]),
-    builder: (context, _) {
-      final move = V1Move.find(session.messages, session.myOutbox);
-      if (move == null || joined(move.code)) {
-        return const SizedBox.shrink();
-      }
-      return MaterialBanner(
-        key: const ValueKey('v1-move-banner'),
-        leading: const Icon(Icons.move_up),
-        content: Text(
-          '${session.nameOf(move.from)} przenosi tę rozmowę do grupy v2 '
-          '„${move.name}”.',
-        ),
-        actions: [
-          FilledButton(
-            key: const ValueKey('v1-move-join'),
-            onPressed: () => onJoin(move),
-            child: const Text('Dołącz do v2'),
-          ),
-        ],
-      );
-    },
-  );
 }
 
 /// v2 group state above the conversation: waiting to be let in, and the

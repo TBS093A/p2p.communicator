@@ -262,6 +262,10 @@ class RoomSession extends ChangeNotifier implements MediaSource {
   // v1 talks through DHT records (roster + outboxes); a v2 group overrides
   // these to carry the same messages inside MLS (lib/v2/v2_room_session).
 
+  /// v1: the room was read from the network at least once since it opened
+  /// (so a move to v2 announced in it is known, PROTOCOL §B11.2).
+  bool syncedOnce = false;
+
   /// Starts receiving. v1: opens the records, watches and polls them.
   @protected
   Future<void> connectTransport() => _connect();
@@ -396,6 +400,8 @@ class RoomSession extends ChangeNotifier implements MediaSource {
 
         await _sync(roster: true);
         if (_closed) return;
+        syncedOnce = true;
+        notifyListeners();
         _poll = Timer.periodic(const Duration(seconds: 20), (_) {
           // Watches can lapse; a slow poll is the safety net.
           _pollTick++;

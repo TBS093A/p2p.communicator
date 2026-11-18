@@ -6,6 +6,7 @@ import 'package:p2p_communicator/room/room_session.dart';
 import 'package:p2p_communicator/room/room_style.dart';
 import 'package:p2p_communicator/vault/room_secrets.dart';
 import 'package:p2p_communicator/v2/private_v2.dart';
+import 'package:p2p_communicator/v2/v1_mover.dart';
 import 'package:p2p_communicator/v2/v2_groups.dart';
 import 'package:p2p_communicator/v2/v2_room_session.dart';
 import 'package:p2p_communicator/vault/pin_vault.dart';
@@ -40,11 +41,39 @@ class TestRoom extends V2RoomSession {
       sendTypingStamp(DateTime.now().millisecondsSinceEpoch);
 }
 
+/// The v1 network of one room for several test phones: what one sends,
+/// the others get on [deliver].
+class V1Net {
+  final rooms = <V1Room>[];
+  final _pending = <ChatMessage>[];
+
+  void deliver() {
+    for (final m in _pending) {
+      for (final r in rooms) {
+        if (r.myOutbox != m.author) r.put(ChatMessage.fromCache(m.toCache()));
+      }
+    }
+    _pending.clear();
+  }
+}
+
 /// A v1 room as this phone has it, filled by the test.
 class V1Room extends RoomSession {
-  V1Room(super.room);
+  V1Room(super.room, {this.net}) {
+    net?.rooms.add(this);
+    syncedOnce = true;
+  }
+
+  final V1Net? net;
 
   void put(ChatMessage m) => receive(m);
+
+  @override
+  Future<void> appendMessage(ChatMessage msg) async {
+    final net = this.net;
+    if (net == null) return super.appendMessage(msg);
+    net._pending.add(msg);
+  }
 
   @override
   Future<void> writeCache(Uint8List data) async {}
@@ -884,6 +913,155 @@ void main() {
       }
       await a.close();
       await b.close();
+    });
+  });
+
+  group('every v1 room moves by itself (§B11.2)', () {
+    const people = {'VLD0:a': 'Ala', 'VLD0:b': 'Bob', 'VLD0:c': 'Ola'};
+
+    V1Room v1Of(
+      String me,
+      V1Net net, {
+      RoomKind kind = RoomKind.group,
+      Iterable<String> members = const ['VLD0:a', 'VLD0:b', 'VLD0:c'],
+    }) {
+      final r = V1Room(
+        UnlockedRoom(
+          'v1-$me',
+          SharedSecret(
+            kind: cryptoKindVLD0,
+            value: BareSharedSecret.fromBytes(Uint8List(32)),
+          ),
+          RoomSecrets(
+            roomName: 'Wyprawa',
+            rosterKey: 'VLD0:roster',
+            rosterWriter: 'VLD0:w',
+            myName: people[me]!,
+            outboxKey: me,
+            outboxWriter: 'VLD0:ow',
+            rosterSlot: 1,
+            kind: kind,
+          ),
+        ),
+        net: net,
+      );
+      for (final m in members) {
+        r.profiles[m] = MemberProfile(name: people[m]!);
+      }
+      r.meta = r.meta.copyWith(name: 'Wyprawa');
+      r.put(
+        ChatMessage(
+          id: 'old',
+          author: 'VLD0:b',
+          ts: 1000,
+          seq: 0,
+          type: MsgType.text,
+          text: 'stara wiadomość',
+        ),
+      );
+      return r;
+    }
+
+    test('the leader moves a group; the others join and are let in', () async {
+      final dht = MemoryDht();
+      final net = V1Net();
+      final (alice, bob, carol) = (phone(dht), phone(dht), phone(dht));
+      final va = v1Of('VLD0:a', net);
+      final vb = v1Of('VLD0:b', net);
+      final vc = v1Of('VLD0:c', net);
+      int clock() => testClock;
+      final ma = V1Mover(alice, clock: clock);
+      final mb = V1Mover(bob, clock: clock);
+      final mc = V1Mover(carol, clock: clock);
+
+      // Bob is not the leader (Ala has the lowest v1 outbox): he waits.
+      expect(await mb.step(vb), isNull);
+      expect(bob.groups, isEmpty);
+
+      final ga = (await ma.step(va))!;
+      expect(ga.fromV1, 'VLD0:roster');
+      expect(ga.moveInvites, hasLength(2));
+      expect(ma.doneWith(ga), isFalse, reason: 'Bob and Ola not in yet');
+      net.deliver();
+      final gb = (await mb.step(vb))!;
+      final gc = (await mc.step(vc))!;
+      expect(gb.joining, isTrue);
+      // No approval by hand: the admin's app lets in the move invites.
+      await rounds(
+        [(alice, ga), (bob, gb), (carol, gc)],
+        times: 4,
+        approve: false,
+      );
+      expect(gb.joining, isFalse);
+      expect(gc.joining, isFalse);
+      expect(alice.roomOf(ga).memberOutboxes, hasLength(3));
+      expect(texts(bob.roomOf(gb)), contains('stara wiadomość'));
+      expect(bob.roomOf(gb).roomName, 'Wyprawa');
+      expect(ma.doneWith(ga), isTrue);
+      expect(mb.doneWith(gb), isTrue);
+      // Asked again, the same group.
+      expect(await mb.step(vb), gb);
+      for (final p in [alice, bob, carol]) {
+        await p.close();
+      }
+    });
+
+    test('a member moves it after 2 days without the leader', () async {
+      final dht = MemoryDht();
+      final net = V1Net();
+      final bob = phone(dht);
+      final vb = v1Of('VLD0:b', net);
+      final mb = V1Mover(bob, clock: () => testClock);
+      expect(await mb.step(vb), isNull);
+      testClock += const Duration(days: 3).inMilliseconds;
+      final g = await mb.step(vb);
+      expect(g, isNotNull);
+      expect(mb.waiting, isEmpty);
+      await bob.close();
+    });
+
+    test('a DM moves as a DM, named after the other person', () async {
+      final dht = MemoryDht();
+      final net = V1Net();
+      final (alice, bob) = (phone(dht), phone(dht));
+      const two = ['VLD0:a', 'VLD0:b'];
+      final va = v1Of('VLD0:a', net, kind: RoomKind.dm, members: two);
+      final vb = v1Of('VLD0:b', net, kind: RoomKind.dm, members: two);
+      final ga = (await V1Mover(alice).step(va))!;
+      net.deliver();
+      final gb = (await V1Mover(bob).step(vb))!;
+      await rounds([(alice, ga), (bob, gb)], times: 4, approve: false);
+      expect(ga.dm, isTrue);
+      expect(gb.dm, isTrue);
+      expect(gb.joining, isFalse);
+      expect(alice.roomOf(ga).roomName, 'Bob');
+      expect(bob.roomOf(gb).roomName, 'Ala');
+      await alice.close();
+      await bob.close();
+    });
+
+    test('two moves at once: the earliest announcement wins', () async {
+      final dht = MemoryDht();
+      final net = V1Net();
+      final (alice, bob) = (phone(dht), phone(dht));
+      const two = ['VLD0:a', 'VLD0:b'];
+      final va = v1Of('VLD0:a', net, members: two);
+      final vb = v1Of('VLD0:b', net, members: two);
+      final ma = V1Mover(alice);
+      final mb = V1Mover(bob, leaderFirst: false);
+      final ga = (await ma.step(va))!;
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      final own = (await mb.step(vb))!; // before seeing Ala's
+      net.deliver();
+      expect(await ma.step(va), ga, reason: "Ala's was first");
+      final gb = (await mb.step(vb))!;
+      expect(gb, isNot(own));
+      expect(bob.groups, [gb], reason: 'his own move is gone');
+      await rounds([(alice, ga), (bob, gb)], times: 4, approve: false);
+      expect(gb.joining, isFalse);
+      expect(alice.roomOf(ga).memberOutboxes, hasLength(2));
+      await alice.close();
+      await bob.close();
     });
   });
 }

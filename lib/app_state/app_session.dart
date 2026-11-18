@@ -16,6 +16,7 @@ import '../room/room_protocol.dart';
 import '../room/room_session.dart';
 import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
+import '../v2/v1_mover.dart';
 import '../v2/v2_groups.dart';
 import '../v2/v2_room_session.dart';
 import '../v2/veilid_core_dht.dart';
@@ -72,6 +73,15 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     },
   );
   final _v2Dht = VeilidCoreDht();
+
+  /// PROTOCOL §B11.2: moves every v1 room to v2 by itself.
+  late final V1Mover mover = V1Mover(v2, waiting: _v1Waiting);
+  final Map<String, int> _v1Waiting = {};
+  Timer? _moveTimer;
+  bool _moving = false;
+
+  /// Tests: move rooms on every tick, not only after a delay.
+  static Duration moveEvery = const Duration(seconds: 20);
 
   late GlobalProfile _me;
   final List<PublicRoom> rooms = [];
@@ -157,6 +167,12 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     }
     await v2.load(data['v2'] as List?);
     v2.start();
+    for (final e in ((data['v1wait'] as Map?) ?? const {}).entries) {
+      if (e.key is String && e.value is int) {
+        _v1Waiting[e.key as String] = e.value as int;
+      }
+    }
+    _moveTimer = Timer.periodic(moveEvery, (_) => unawaited(moveRooms()));
     unawaited(_connectProfile());
     _heartbeat = Timer.periodic(GlobalProfile.heartbeat, (_) => _beat());
   }
@@ -194,6 +210,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
     if (_closed) return;
     _closed = true;
     _heartbeat?.cancel();
+    _moveTimer?.cancel();
     _saveTimer?.cancel();
     await v2.close();
     await _v2Dht.close();
@@ -263,9 +280,33 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
   Future<void> leave(PublicRoom room) async {
     rooms.remove(room);
     room.session.removeListener(notifyListeners);
-    await room.session.close();
+    await room.session.close(erase: true);
     await _save();
     notifyListeners();
+  }
+
+  /// v1 rooms still on this phone (none are listed: each one moves to v2
+  /// by itself and is deleted here once its conversation is there).
+  bool get moving => rooms.isNotEmpty;
+
+  /// One pass of the move to v2 over every v1 room (PROTOCOL §B11.2).
+  Future<void> moveRooms() async {
+    if (_moving || _closed) return;
+    _moving = true;
+    try {
+      for (final r in rooms.toList()) {
+        if (_closed) return;
+        try {
+          final g = await mover.step(r.session);
+          if (g != null && mover.doneWith(g)) await leave(r);
+        } on Object catch (e) {
+          debugPrint('[v1→v2] a room did not move yet (${e.runtimeType})');
+        }
+      }
+      _scheduleSave();
+    } finally {
+      _moving = false;
+    }
   }
 
   /// The DM with [peer], if we have one.
@@ -549,6 +590,7 @@ class AppSession extends ChangeNotifier implements AppLink, MediaSource {
           {'secrets': r.session.room.secrets.toJson(), 'peer': ?r.peer},
       ],
       'handled': _handledInvites.toList(),
+      if (_v1Waiting.isNotEmpty) 'v1wait': _v1Waiting,
     });
     await PinVault.instance.writeData(_unlocked, utf8.encode(json));
   }

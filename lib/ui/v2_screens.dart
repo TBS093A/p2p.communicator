@@ -45,23 +45,196 @@ Future<void> openV2Chat(BuildContext context, V2Groups groups, V2Group g) =>
       ),
     );
 
-class V2HomeScreen extends StatelessWidget {
-  const V2HomeScreen({super.key, required this.groups, required this.myName});
+/// "Nowa": a group, a 1:1 conversation with a QR code, or joining with an
+/// invite. [myName] is suggested as our name in it (it can be changed;
+/// conversations do not show the global profile).
+Future<void> newV2Conversation(
+  BuildContext context,
+  V2Groups groups,
+  String myName,
+) async {
+  final what = await showModalBottomSheet<String>(
+    context: context,
+    showDragHandle: true,
+    builder: (context) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            key: const ValueKey('v2-new'),
+            leading: const Icon(Icons.group_add_outlined),
+            title: const Text('Nowa grupa'),
+            onTap: () => Navigator.pop(context, 'group'),
+          ),
+          ListTile(
+            key: const ValueKey('v2-new-dm'),
+            leading: const Icon(Icons.person_add_alt_outlined),
+            title: const Text('Rozmowa 1:1'),
+            subtitle: const Text('Druga osoba zeskanuje kod QR'),
+            onTap: () => Navigator.pop(context, 'dm'),
+          ),
+          ListTile(
+            key: const ValueKey('v2-join'),
+            leading: const Icon(Icons.qr_code_scanner),
+            title: const Text('Dołącz z zaproszenia'),
+            onTap: () => Navigator.pop(context, 'join'),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (what == null || !context.mounted) return;
+  if (what == 'join') {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => V2JoinScreen(groups: groups, myName: myName),
+      ),
+    );
+    return;
+  }
+  final dm = what == 'dm';
+  final names = await showDialog<(String, String)>(
+    context: context,
+    builder: (_) => _NewGroupDialog(myName: myName, dm: dm),
+  );
+  if (names == null || !context.mounted) return;
+  try {
+    final g = await groups.create(names.$1, names.$2, dm: dm);
+    if (!context.mounted) return;
+    if (dm) {
+      // Straight to the QR code for the other person.
+      final code = await groups.createInvite(g);
+      if (!context.mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => V2InviteScreen(code: code, adminCik: groups.myCik(g)),
+        ),
+      );
+      if (!context.mounted) return;
+    }
+    await openV2Chat(context, groups, g);
+  } on Object catch (e) {
+    if (context.mounted) _toast(context, 'Nie udało się: ${_plain(e)}');
+  }
+}
+
+/// The conversations of one kind (1:1 or groups), newest first, with DM
+/// offers on top of the 1:1 list. The home screen shows it.
+class V2ConversationList extends StatelessWidget {
+  const V2ConversationList({super.key, required this.groups, required this.dm});
 
   final V2Groups groups;
+  final bool dm;
 
-  /// Suggested name in a new group (it can be changed; v2 groups do not
-  /// show the global profile).
-  final String myName;
+  static int _last(V2Groups groups, V2Group g) {
+    final m = groups.roomOf(g).messages;
+    return m.isEmpty ? 0 : m.last.ts;
+  }
 
-  Future<void> _create(BuildContext context) async {
-    final names = await showDialog<(String, String)>(
-      context: context,
-      builder: (_) => _NewGroupDialog(myName: myName),
+  /// Conversations of the kind, newest first.
+  static List<V2Group> of(V2Groups groups, {required bool dm}) =>
+      groups.groups.where((g) => g.dm == dm).toList()
+        ..sort((a, b) => _last(groups, b).compareTo(_last(groups, a)));
+
+  @override
+  Widget build(BuildContext context) {
+    final list = of(groups, dm: dm);
+    final offers = dm ? groups.dmOffers : const <(V2Group, V2DmOffer)>[];
+    if (list.isEmpty && offers.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(
+            dm
+                ? 'Brak rozmów. Stuknij osobę u góry albo „Nowa”, by '
+                      'zaprosić kogoś kodem QR.'
+                : 'Brak grup. Utwórz grupę albo dołącz z zaproszenia '
+                      'przyciskiem „Nowa”.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 88),
+      children: [
+        for (final (via, offer) in offers)
+          _DmOfferTile(groups: groups, via: via, offer: offer),
+        for (final g in list) _GroupTile(groups: groups, group: g),
+      ],
     );
-    if (names == null || !context.mounted) return;
+  }
+}
+
+/// A person we share a group with (no global profile in v2: what they
+/// show in that group).
+class V2Person {
+  const V2Person(this.via, this.cik, this.name);
+  final V2Group via;
+  final String cik;
+  final String name;
+}
+
+/// People from our groups, one per name, for the bar on the home screen.
+List<V2Person> v2People(V2Groups groups) {
+  final seen = <String>{};
+  final out = <V2Person>[];
+  for (final g in groups.groups) {
+    if (g.dm || g.joining) continue;
+    final room = groups.roomOf(g);
+    for (final m in room.memberOutboxes) {
+      if (m == room.myOutbox) continue;
+      final name = room.nameOf(m);
+      if (seen.add(name)) out.add(V2Person(g, m, name));
+    }
+  }
+  return out;
+}
+
+/// The 1:1 conversation named after [name], if we have one.
+V2Group? v2DmWith(V2Groups groups, String name) => groups.groups
+    .where((g) => g.dm && groups.roomOf(g).roomName == name)
+    .firstOrNull;
+
+/// A person's picture and name in the bar; tapping it opens (or starts)
+/// the 1:1 conversation with them.
+class V2PersonChip extends StatelessWidget {
+  const V2PersonChip({super.key, required this.groups, required this.person});
+
+  final V2Groups groups;
+  final V2Person person;
+
+  Future<void> _open(BuildContext context) async {
+    final existing = v2DmWith(groups, person.name);
+    if (existing != null) return openV2Chat(context, groups, existing);
+    final yes = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Avatar.member(groups.roomOf(person.via), person.cik, radius: 44),
+              const SizedBox(height: 12),
+              Text(person.name, style: Theme.of(context).textTheme.titleLarge),
+              Text('z grupy ${groups.roomOf(person.via).roomName}'),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                key: const ValueKey('user-dm'),
+                onPressed: () => Navigator.pop(context, true),
+                icon: const Icon(Icons.chat_bubble_outline),
+                label: const Text('Napisz prywatnie'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (yes != true || !context.mounted) return;
     try {
-      final g = await groups.create(names.$1, names.$2);
+      final g = await groups.startDm(person.via, person.cik, person.name);
       if (context.mounted) await openV2Chat(context, groups, g);
     } on Object catch (e) {
       if (context.mounted) _toast(context, 'Nie udało się: ${_plain(e)}');
@@ -70,52 +243,22 @@ class V2HomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: groups,
-      builder: (context, _) {
-        showDeletedByAdmin(context, groups);
-        return _list(context);
-      },
-    );
-  }
-
-  Widget _list(BuildContext context) {
-    return Builder(
-      builder: (context) => Scaffold(
-        appBar: AppBar(title: const Text('Grupy v2')),
-        floatingActionButton: FloatingActionButton.extended(
-          key: const ValueKey('v2-new'),
-          onPressed: () => _create(context),
-          icon: const Icon(Icons.group_add_outlined),
-          label: const Text('Nowa grupa'),
-        ),
-        body: ListView(
-          padding: const EdgeInsets.only(bottom: 88),
+    return InkWell(
+      key: ValueKey('person-${person.name}'),
+      borderRadius: BorderRadius.circular(12),
+      onTap: () => _open(context),
+      child: SizedBox(
+        width: 64,
+        child: Column(
           children: [
-            ListTile(
-              key: const ValueKey('v2-join'),
-              leading: const Icon(Icons.qr_code_scanner),
-              title: const Text('Dołącz z zaproszenia'),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => V2JoinScreen(groups: groups, myName: myName),
-                ),
-              ),
+            Avatar.member(groups.roomOf(person.via), person.cik, radius: 26),
+            const SizedBox(height: 6),
+            Text(
+              person.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall,
             ),
-            for (final (via, offer) in groups.dmOffers)
-              _DmOfferTile(groups: groups, via: via, offer: offer),
-            const Divider(),
-            if (groups.groups.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(32),
-                child: Text(
-                  'Brak grup v2. Utwórz grupę albo dołącz z zaproszenia. '
-                  'Grupy v2 są szyfrowane protokołem MLS i nie łączą się '
-                  'z twoim profilem globalnym.',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            for (final g in groups.groups) _GroupTile(groups: groups, group: g),
           ],
         ),
       ),
@@ -188,7 +331,9 @@ class _GroupTile extends StatelessWidget {
     final last = room.messages.isEmpty ? null : room.messages.last;
     final String subtitle;
     if (group.joining) {
-      subtitle = 'Czeka, aż admin cię wpuści';
+      subtitle = group.fromV1 != null
+          ? 'Przenoszę ze starej wersji…'
+          : 'Czeka, aż admin cię wpuści';
     } else if (last == null) {
       subtitle = 'Brak wiadomości';
     } else {
@@ -201,24 +346,43 @@ class _GroupTile extends StatelessWidget {
       };
       final who = last.author == room.myOutbox
           ? 'Ty'
-          : room.nameOf(last.author);
-      subtitle = '$who: $what';
+          : (group.dm ? null : room.nameOf(last.author));
+      subtitle = who == null ? what : '$who: $what';
     }
+    final other = group.dm
+        ? room.memberOutboxes.where((m) => m != room.myOutbox).firstOrNull
+        : null;
     return ListTile(
       key: ValueKey('v2-group-${room.roomName}'),
-      leading: Avatar.room(room, radius: 24),
+      leading: other != null
+          ? Avatar.member(room, other, radius: 24)
+          : Avatar.room(room, radius: 24),
       title: Text(room.roomName, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: last == null ? null : Text(_time(last.ts)),
       onTap: () => openV2Chat(context, groups, group),
     );
+  }
+
+  static String _time(int ts) {
+    final t = DateTime.fromMillisecondsSinceEpoch(ts);
+    final now = DateTime.now();
+    if (t.year == now.year && t.month == now.month && t.day == now.day) {
+      return '${t.hour.toString().padLeft(2, '0')}:'
+          '${t.minute.toString().padLeft(2, '0')}';
+    }
+    return '${t.day}.${t.month.toString().padLeft(2, '0')}';
   }
 }
 
 /// Group name and our name in it.
 class _NewGroupDialog extends StatefulWidget {
-  const _NewGroupDialog({required this.myName});
+  const _NewGroupDialog({required this.myName, this.dm = false});
 
   final String myName;
+
+  /// A 1:1 conversation: it is named after the other person.
+  final bool dm;
 
   @override
   State<_NewGroupDialog> createState() => _NewGroupDialogState();
@@ -242,7 +406,7 @@ class _NewGroupDialogState extends State<_NewGroupDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Nowa grupa v2'),
+    title: Text(widget.dm ? 'Rozmowa 1:1' : 'Nowa grupa'),
     content: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -251,15 +415,19 @@ class _NewGroupDialogState extends State<_NewGroupDialog> {
           controller: _name,
           autofocus: true,
           maxLength: 40,
-          decoration: const InputDecoration(labelText: 'Nazwa grupy'),
+          decoration: InputDecoration(
+            labelText: widget.dm ? 'Imię tej osoby' : 'Nazwa grupy',
+          ),
         ),
         TextField(
           key: const ValueKey('v2-my-name'),
           controller: _me,
           maxLength: 40,
-          decoration: const InputDecoration(
-            labelText: 'Twoja nazwa w tej grupie',
-            helperText: 'Grupa nie widzi twojego profilu globalnego',
+          decoration: InputDecoration(
+            labelText: widget.dm
+                ? 'Twoje imię w tej rozmowie'
+                : 'Twoja nazwa w tej grupie',
+            helperText: 'Rozmowa nie widzi twojego profilu globalnego',
           ),
           onSubmitted: (_) => _done(),
         ),
@@ -494,9 +662,13 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
               key: const ValueKey('v2-join-name'),
               controller: _name,
               maxLength: 40,
-              decoration: const InputDecoration(
-                labelText: 'Nazwa grupy',
-                helperText: 'Do czasu, aż admin pokaże jej nazwę',
+              decoration: InputDecoration(
+                labelText: invite?.isDm == true
+                    ? 'Imię osoby, która cię zaprasza'
+                    : 'Nazwa grupy',
+                helperText: invite?.isDm == true
+                    ? 'Tak nazwiesz tę rozmowę u siebie'
+                    : 'Do czasu, aż admin pokaże jej nazwę',
               ),
             ),
             TextField(
