@@ -852,8 +852,12 @@ void main() {
       // list, away from the composer and the sticky day header.
       await Scrollable.ensureVisible(t.element(bubble.first), alignment: 0.5);
       await settle(t);
-      await t.timedDrag(
-        bubble.first,
+      // Start on the text itself: the row is wider than the bubble, so the
+      // row's middle can be empty space beside a short bubble.
+      await t.timedDragFrom(
+        t.getCenter(
+          find.descendant(of: bubble.first, matching: find.text(text)).last,
+        ),
         Offset(dx, 0),
         const Duration(milliseconds: 400),
       );
