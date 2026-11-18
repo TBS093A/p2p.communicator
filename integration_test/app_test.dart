@@ -922,7 +922,8 @@ void main() {
     await t.pageBack();
     await settle(t);
     await t.tap(tiles.first);
-    await pumpUntil(t, find.text('cześć z grupy v2'));
+    // Back in the group (its newest message; older ones are scrolled away).
+    await pumpUntil(t, find.text('piękny widok'));
     await settle(t);
 
     // Membership (phase 3): the admin makes Kasia its successor, hands the
