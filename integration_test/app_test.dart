@@ -919,8 +919,29 @@ void main() {
     // Kasia's newest message, swiped to the right.
     await swipeToReply('prywatnie w v2', 140);
     await shot(t, '11c_v2_dm');
-    await t.pageBack();
+    // PROTOCOL §B5.5: the admin, who started this DM, deletes it for both.
+    // Its chat closes now; Kasia's copy goes at her next sync, and the
+    // list says so once.
+    final v2Groups = t.widget<ChatScreen>(find.byType(ChatScreen).last).v2!;
+    final groupsBefore = v2Groups.groups.length;
+    await t.tap(find.byType(PopupMenuButton<String>));
+    await pumpUntil(t, find.byKey(const ValueKey('menu-delete-all')));
     await settle(t);
+    await t.ensureVisible(find.byKey(const ValueKey('menu-delete-all')));
+    await settle(t);
+    await tapKey(t, 'menu-delete-all');
+    await pumpUntil(t, find.byKey(const ValueKey('delete-all-confirm')));
+    await settle(t);
+    await tapKey(t, 'delete-all-confirm');
+    await pumpUntil(
+      t,
+      find.textContaining('Admin usunął rozmowę'),
+      timeout: const Duration(minutes: 2),
+    );
+    expect(v2Groups.groups.length, groupsBefore - 2);
+    expect(find.byKey(const ValueKey('v2-group-Kasia z v2')), findsNothing);
+    await settle(t);
+    await shot(t, '11e_v2_dm_deleted');
     await t.tap(tiles.first);
     // Back in the group (its newest message; older ones are scrolled away).
     await pumpUntil(t, find.text('piękny widok'));

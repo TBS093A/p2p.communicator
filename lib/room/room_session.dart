@@ -413,7 +413,9 @@ class RoomSession extends ChangeNotifier implements MediaSource {
     if (!_disposed) networkError.value = message;
   }
 
-  Future<void> close() async {
+  /// Stops the room. With [erase] (the conversation was deleted) its
+  /// history and media on this phone are deleted instead of saved.
+  Future<void> close({bool erase = false}) async {
     if (_closed) return;
     _closed = true;
     _poll?.cancel();
@@ -443,7 +445,12 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       _sendChain.catchError((Object _) {}),
       Future<void>.delayed(const Duration(seconds: 20)),
     ]);
-    await _saveCache();
+    if (erase) {
+      messages.clear();
+      await writeCache(utf8.encode('{}'));
+    } else {
+      await _saveCache();
+    }
     if (_connected) {
       await Dht.close(_rosterKey);
       await Dht.close(_outboxKey);
@@ -451,7 +458,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
         await Dht.close(k);
       }
     }
-    await _media.close();
+    await (erase ? _media.wipe() : _media.close());
   }
 
   // -------------------------------------------------------------- receive
@@ -1318,6 +1325,7 @@ class RoomSession extends ChangeNotifier implements MediaSource {
       case MsgType.meta:
       case MsgType.presence:
       case MsgType.typing:
+      case MsgType.closed:
         return 'text/plain';
     }
   }

@@ -341,6 +341,12 @@ class V2RoomSession extends RoomSession {
         if (v['to'] != myOutbox || code is! String) return;
         groups.offerDm(group, msg.author, code, msg.id);
         return;
+      // PROTOCOL §B5.5: only the group's admin can delete it for everyone.
+      case MsgType.closed:
+        final admin = groups.info(group)['admin'];
+        if (msg.author == myOutbox || msg.author != admin) return;
+        group.closedByAdmin = true;
+        return;
       case MsgType.typing:
         if (msg.author != myOutbox) noteTypingStamp(msg.author, x['ty']);
         return;

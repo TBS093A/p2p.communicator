@@ -118,6 +118,12 @@ class MediaCache {
     if (await _tmp.exists()) await _tmp.delete(recursive: true);
   }
 
+  /// Deletes every stored file of the room (it was deleted).
+  Future<void> wipe() async {
+    await close();
+    if (await _dir.exists()) await _dir.delete(recursive: true);
+  }
+
   static String _ext(String mime) => switch (mime) {
     'image/gif' => '.gif',
     'image/png' => '.png',
