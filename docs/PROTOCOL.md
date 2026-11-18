@@ -515,6 +515,27 @@ Each remaining member (a persisted state machine, every step idempotent):
 * **No successor configured:** messaging continues, but membership is
   frozen; the members have to create a new group.
 
+### B5.5 Deleting a conversation for everyone
+
+* The admin may delete a group, a DM or a private conversation (§B11.1)
+  for everyone. It sends a `closed` application message (`{at}`, hidden)
+  to the group, then deletes the group on its own phone: core state,
+  history, media cache. In a DM the admin is the member who started it
+  (§B10).
+* A member acts on `closed` only if MLS shows it comes from the current
+  admin (the admin as the member's own state knows it when reading it).
+  It is ignored from anyone else, including a former admin after a
+  handover (§B5.4).
+* On a valid `closed`, the member deletes the group the same way at the end
+  of that sync and tells the user once which conversation the admin
+  deleted. The decision is saved first, so a restart in between still
+  deletes it. A private conversation also forgets its password slot
+  (§B11.1): the password then opens nothing.
+* This is a request the members' apps honour, not a cryptographic erasure.
+  A modified client can keep what it already received, and a member that
+  never syncs again never reads `closed`. The group's records are not
+  refreshed by anyone afterwards, so the DHT drops them once they expire.
+
 ## B6. Identity verification and key changes
 
 * Every member has a **fingerprint** per conversation: a short code

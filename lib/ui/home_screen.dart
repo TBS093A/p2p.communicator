@@ -229,8 +229,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([app, app.directory]),
+      listenable: Listenable.merge([app, app.directory, app.v2]),
       builder: (context, _) {
+        showDeletedByAdmin(context, app.v2);
         final me = app.myGlobal;
         final others = app.directory.others;
         final rooms = app.roomsOf(_tab);
@@ -633,6 +634,7 @@ class _RoomTile extends StatelessWidget {
       MsgType.meta => '',
       MsgType.presence => '',
       MsgType.typing => '',
+      MsgType.closed => '',
     };
     final who = m.author == s.myOutbox
         ? 'Ty'

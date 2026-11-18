@@ -25,8 +25,15 @@ class TestRoom extends V2RoomSession {
   @override
   Future<Uint8List?> readCache() async => cache;
 
+  /// Whether the room was closed, and with its history deleted.
+  bool closed = false;
+  bool erased = false;
+
   @override
-  Future<void> close() async {}
+  Future<void> close({bool erase = false}) async {
+    closed = true;
+    erased = erase;
+  }
 
   /// What the composer does while typing (throttling aside).
   Future<void> typeNow() =>
@@ -46,7 +53,7 @@ class V1Room extends RoomSession {
   Future<Uint8List?> readCache() async => null;
 
   @override
-  Future<void> close() async {}
+  Future<void> close({bool erase = false}) async {}
 }
 
 /// Test time for every phone (ms), moved forward by the tests.
@@ -738,6 +745,145 @@ void main() {
       expect(room.meta.bubble, 0xFF00AA00);
       expect(room.reactions.toJson()['m2'], contains('VLD0:ola'));
       await alice.close();
+    });
+  });
+
+  group('deleting a conversation (§B5.5)', () {
+    test('the admin deletes a group for everyone; a member cannot', () async {
+      final dht = MemoryDht();
+      final alice = phone(dht);
+      final bob = phone(dht);
+      final carol = phone(dht);
+
+      Future<V2Group> joinAs(V2Groups p, V2Group admin, String me) async {
+        final code = await alice.createInvite(admin);
+        final g = await p.join(V2Invite.tryParse(code)!, 'Grupa', me);
+        await rounds([(p, g), (alice, admin)], times: 4);
+        expect(g.joining, isFalse);
+        return g;
+      }
+
+      final ga = await alice.create('Rada', 'Ala');
+      final gb = await joinAs(bob, ga, 'Bob');
+      final gc = await joinAs(carol, ga, 'Karola');
+      final all = [(alice, ga), (bob, gb), (carol, gc)];
+      await rounds(all, times: 3);
+      await alice.roomOf(ga).sendText('witajcie');
+      await rounds(all, times: 2);
+      expect(texts(carol.roomOf(gc)), contains('witajcie'));
+
+      // Bob is not the admin: the menu does not offer it, the call refuses,
+      // and a "closed" he sends anyway is ignored by everyone.
+      expect(() => bob.deleteForAll(gb), throwsStateError);
+      await bob.roomOf(gb).sendHidden(MsgType.closed, {'at': 1});
+      await rounds(all, times: 2);
+      expect(alice.groups, [ga]);
+      expect(carol.groups, [gc]);
+      expect(carol.deletedByAdmin, isEmpty);
+
+      // The admin deletes it: gone from its phone now, history included.
+      final roomA = alice.roomOf(ga) as TestRoom;
+      final roomB = bob.roomOf(gb) as TestRoom;
+      final roomC = carol.roomOf(gc) as TestRoom;
+      await alice.deleteForAll(ga);
+      expect(alice.groups, isEmpty);
+      expect(roomA.erased, isTrue);
+      expect(alice.deletedByAdmin, isEmpty, reason: 'it did it itself');
+
+      // Each member deletes it at its next sync and is told once.
+      await rounds([(bob, gb), (carol, gc)], times: 2);
+      for (final (p, room) in [(bob, roomB), (carol, roomC)]) {
+        expect(p.groups, isEmpty);
+        expect(p.deletedByAdmin, ['Rada']);
+        expect(room.erased, isTrue);
+      }
+      await alice.close();
+      await bob.close();
+      await carol.close();
+    });
+
+    test('the one who started a DM deletes it for both', () async {
+      final dht = MemoryDht();
+      final alice = phone(dht);
+      final bob = phone(dht);
+      final ga = await alice.create('Rada', 'Ala');
+      final code = await alice.createInvite(ga);
+      final gb = await bob.join(V2Invite.tryParse(code)!, 'Rada', 'Bob');
+      await rounds([(alice, ga), (bob, gb)], times: 4);
+
+      final dmA = await alice.startDm(ga, bob.myCik(gb), 'Bob');
+      await rounds([(alice, ga), (bob, gb)], times: 2);
+      final dmB = await bob.acceptDm(gb, bob.dmOffers.single.$2);
+      final dm = [(alice, dmA), (bob, dmB)];
+      await rounds(dm, times: 4);
+      expect(bob.isAdmin(dmB), isFalse);
+      expect(alice.isAdmin(dmA), isTrue);
+
+      await alice.deleteForAll(dmA);
+      await rounds([(bob, dmB)], times: 2);
+      expect(bob.groups, [gb], reason: 'only the DM goes');
+      expect(bob.deletedByAdmin, ['Ala']);
+      expect(alice.groups, [ga]);
+      await alice.close();
+      await bob.close();
+    });
+
+    test('read but not yet deleted: done after a restart', () {
+      final g = V2Group(id: 'g', name: 'Rada', me: 'Ja', state: Uint8List(1))
+        ..closedByAdmin = true;
+      expect(V2Group.fromJson(g.toJson()).closedByAdmin, isTrue);
+      expect(
+        V2Group.fromJson(
+          V2Group(id: 'g', name: 'R', me: 'J', state: Uint8List(1)).toJson(),
+        ).closedByAdmin,
+        isFalse,
+      );
+    });
+
+    test('a private conversation deleted by its admin', () async {
+      final dht = MemoryDht();
+      Uint8List? savedA;
+      Uint8List? savedB;
+      Future<PrivateV2> open(void Function(Uint8List) keep, Uint8List? from) =>
+          PrivateV2.open(
+            dht: dht,
+            read: () async => from,
+            write: (d) async => keep(d),
+            clock: () => testClock,
+            openRoom: (groups, group, secrets) async => TestRoom(
+              groups,
+              group,
+              UnlockedRoom(
+                'p-${group.id}',
+                SharedSecret(
+                  kind: cryptoKindVLD0,
+                  value: BareSharedSecret.fromBytes(Uint8List(32)),
+                ),
+                secrets,
+              ),
+            ),
+          );
+      final a = await open((d) => savedA = d, null);
+      final b = await open((d) => savedB = d, null);
+      final ga = await a.groups.create('Sekret', 'Ala');
+      final code = await a.groups.createInvite(ga);
+      final gb = await b.groups.join(V2Invite.tryParse(code)!, 'Sekret', 'Bob');
+      await rounds([(a.groups, ga), (b.groups, gb)], times: 4);
+      expect(b.group, gb);
+
+      await a.groups.deleteForAll(ga);
+      expect(a.group, isNull);
+      await rounds([(b.groups, gb)], times: 2);
+      expect(b.group, isNull);
+      expect(b.groups.deletedByAdmin, ['Sekret']);
+      // What each slot keeps no longer holds the conversation.
+      for (final saved in [savedA, savedB]) {
+        final reopened = await open((_) {}, saved);
+        expect(reopened.group, isNull);
+        await reopened.close();
+      }
+      await a.close();
+      await b.close();
     });
   });
 }

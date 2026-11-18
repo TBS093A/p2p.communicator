@@ -110,6 +110,7 @@ class _ChatScreenState extends State<ChatScreen> {
         const Duration(seconds: 4),
         (_) => unawaited(v2.sync(group)),
       );
+      v2.addListener(_v2Changed);
     }
     _text.addListener(() {
       setState(() {});
@@ -124,6 +125,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _v2Timer?.cancel();
+    widget.v2?.removeListener(_v2Changed);
     _highlightTimer?.cancel();
     _scroll.dispose();
     _textFocus.dispose();
@@ -132,8 +134,46 @@ class _ChatScreenState extends State<ChatScreen> {
     _text.dispose();
     if (widget.ownsSession) _session.dispose();
     final close = widget.onClose;
-    if (close != null) unawaited(close());
+    // A private v2 conversation that was deleted takes its password slot
+    // with it (§B11.1): the password no longer opens anything.
+    final slot = widget.privateSlot;
+    final gone = _v2Gone && slot != null;
+    final groupId = _v2Gone ? (_session as V2RoomSession).group.id : '';
+    if (close != null || gone) {
+      unawaited(() async {
+        if (close != null) await close();
+        if (gone) {
+          await PinVault.instance.forgetPrivate(slot, [
+            PrivateV2.stateLabel,
+            PrivateV2.roomLabel(groupId),
+          ]);
+        }
+      }());
+    }
     super.dispose();
+  }
+
+  /// v2: the conversation is no longer on this phone (deleted here, or by
+  /// its admin for everyone).
+  bool _v2Gone = false;
+
+  void _v2Changed() {
+    final v2 = widget.v2!;
+    if (_v2Gone || v2.groups.contains((_session as V2RoomSession).group)) {
+      return;
+    }
+    _v2Gone = true;
+    if (!mounted) return;
+    if (v2.deletedByAdmin.isNotEmpty) {
+      final names = v2.deletedByAdmin.toList();
+      v2.deletedByAdmin.clear();
+      _toast(deletedByAdminText(names));
+    }
+    // Pops only this chat (a dialog over it, if any, goes with the route).
+    final route = ModalRoute.of(context);
+    if (route != null && route.isActive) {
+      Navigator.of(context).removeRoute(route);
+    }
   }
 
   void _toast(String msg) =>
@@ -507,8 +547,47 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         );
         if (yes != true) return;
+        _v2Gone = true;
         if (mounted) Navigator.of(context).pop();
         await v2.leave(group!);
+      // PROTOCOL §B5.5: the admin deletes the conversation for everyone.
+      case 'delete-all' when v2 != null:
+        final what = group!.dm ? 'rozmowę' : 'grupę';
+        final yes = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Usunąć $what dla wszystkich?'),
+            content: Text(
+              'Każdy członek straci ją ze swojego telefonu razem z historią '
+              'i zdjęciami, gdy jego aplikacja to odczyta. Nie da się tego '
+              'cofnąć.'
+              '${widget.privateSlot != null ? ' Hasło tej rozmowy przestanie '
+                        'cokolwiek otwierać.' : ''}',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Anuluj'),
+              ),
+              FilledButton(
+                key: const ValueKey('delete-all-confirm'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Usuń dla wszystkich'),
+              ),
+            ],
+          ),
+        );
+        if (yes != true || !mounted) return;
+        try {
+          await v2.deleteForAll(group);
+          if (mounted) _toast('Usunięto dla wszystkich');
+        } on Object catch (e) {
+          if (mounted) _toast('Nie udało się: $e');
+        }
       case 'invite':
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
@@ -819,6 +898,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 value: 'forget',
                 child: Text('Usuń z telefonu'),
               ),
+              if (widget.v2 != null &&
+                  widget.v2!.isAdmin((_session as V2RoomSession).group))
+                const PopupMenuItem(
+                  key: ValueKey('menu-delete-all'),
+                  value: 'delete-all',
+                  child: Text('Usuń dla wszystkich'),
+                ),
             ],
           ),
         ],

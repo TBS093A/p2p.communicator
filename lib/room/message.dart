@@ -31,7 +31,12 @@ enum MsgType {
   /// Hidden, v2 groups only, opt-in per conversation (PROTOCOL §B8): the
   /// author is typing, `x: {ty: <ms>}`, at most every 8 s (v1 puts the
   /// same stamp in the outbox head).
-  typing;
+  typing,
+
+  /// Hidden, v2 groups only (PROTOCOL §B5.5): the admin deleted the
+  /// conversation for everyone, `x: {}`. Taken only from the group's admin;
+  /// each member then deletes it on their phone.
+  closed;
 
   bool get hidden =>
       this == MsgType.dmInvite ||
@@ -39,7 +44,8 @@ enum MsgType {
       this == MsgType.profile ||
       this == MsgType.meta ||
       this == MsgType.presence ||
-      this == MsgType.typing;
+      this == MsgType.typing ||
+      this == MsgType.closed;
 }
 
 enum MsgStatus { sending, sent, failed }

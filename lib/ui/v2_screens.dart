@@ -17,6 +17,24 @@ import 'widgets/avatar.dart';
 void _toast(BuildContext context, String msg) =>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
 
+/// What a member sees once their phone read that the admin deleted
+/// conversations for everyone (PROTOCOL §B5.5).
+String deletedByAdminText(List<String> names) => names.length == 1
+    ? 'Admin usunął rozmowę „${names.single}”'
+    : 'Admini usunęli rozmowy: ${names.map((n) => '„$n”').join(', ')}';
+
+/// Says once (on [context]'s screen) which conversations their admins
+/// deleted since the last time.
+void showDeletedByAdmin(BuildContext context, V2Groups groups) {
+  if (groups.deletedByAdmin.isEmpty) return;
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!context.mounted || groups.deletedByAdmin.isEmpty) return;
+    final names = groups.deletedByAdmin.toList();
+    groups.deletedByAdmin.clear();
+    _toast(context, deletedByAdminText(names));
+  });
+}
+
 String _plain(Object e) =>
     '$e'.replaceFirst('Bad state: ', '').replaceFirst('core: ', '');
 
@@ -54,7 +72,16 @@ class V2HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: groups,
-      builder: (context, _) => Scaffold(
+      builder: (context, _) {
+        showDeletedByAdmin(context, groups);
+        return _list(context);
+      },
+    );
+  }
+
+  Widget _list(BuildContext context) {
+    return Builder(
+      builder: (context) => Scaffold(
         appBar: AppBar(title: const Text('Grupy v2')),
         floatingActionButton: FloatingActionButton.extended(
           key: const ValueKey('v2-new'),

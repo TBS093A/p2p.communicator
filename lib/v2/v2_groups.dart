@@ -161,6 +161,10 @@ class V2Group {
        dmOffers = dmOffers ?? [],
        partials = partials ?? {};
 
+  /// The admin deleted this conversation for everyone (PROTOCOL §B5.5);
+  /// it is deleted here at the end of the sync that read it.
+  bool closedByAdmin = false;
+
   /// Split messages still arriving: "author|id" -> {n, p: {index: text}}
   /// (see V2RoomSession.appendMessage). Saved, so a restart loses nothing.
   final Map<String, Map<String, dynamic>> partials;
@@ -240,6 +244,7 @@ class V2Group {
     if (presenceAt > 0) 'presenceAt': presenceAt,
     'presenceSent': ?presenceSent,
     if (partials.isNotEmpty) 'parts': partials,
+    if (closedByAdmin) 'closed': true,
   };
 
   static V2Group fromJson(Map<String, dynamic> j) => V2Group(
@@ -271,7 +276,7 @@ class V2Group {
     legacy: (j['msgs'] as List?)
         ?.map((m) => (m as Map).cast<String, dynamic>())
         .toList(),
-  );
+  )..closedByAdmin = j['closed'] == true;
 }
 
 /// Opens the chat session of [group]: its encrypted cache and media live in
@@ -323,6 +328,11 @@ class V2Groups extends ChangeNotifier {
   final V2RoomOpener _openRoom;
 
   final List<V2Group> groups = [];
+
+  /// Names of conversations their admin deleted for everyone since the user
+  /// last looked; the screen showing the list says so once and clears it.
+  final List<String> deletedByAdmin = [];
+
   final _sessions = <String, CoreSession>{};
   final _rooms = <String, V2RoomSession>{};
   Timer? _timer;
@@ -751,17 +761,40 @@ class V2Groups extends ChangeNotifier {
     }
   }
 
-  Future<void> leave(V2Group g) => _serial(() async {
-    groups.remove(g);
+  /// Deletes [g] from this phone: its keys, history and media. The other
+  /// members still see us in it.
+  Future<void> leave(V2Group g) => _serial(() => _drop(g));
+
+  /// Admin: deletes [g] for everyone (PROTOCOL §B5.5). The members are told
+  /// inside the group (only the admin's word counts) and each phone deletes
+  /// it at its next sync; this phone deletes it now.
+  Future<void> deleteForAll(V2Group g) async {
+    if (!isAdmin(g)) {
+      throw StateError('Tylko admin może usunąć rozmowę dla wszystkich');
+    }
+    // Outside the queue: the message itself goes through it.
+    await roomOf(g).sendHidden(MsgType.closed, {'at': clock()});
+    await _serial(() => _drop(g));
+  }
+
+  /// The admin deleted [g] for everyone: it goes from this phone too, and
+  /// the list says so once.
+  Future<void> _deletedByAdmin(V2Group g) async {
+    deletedByAdmin.add(_rooms[g.id]?.meta.name ?? g.name);
+    await _drop(g);
+  }
+
+  Future<void> _drop(V2Group g) async {
+    if (!groups.remove(g)) return;
     final room = _rooms.remove(g.id);
     if (room != null) {
       room.removeListener(notifyListeners);
-      await room.close();
+      await room.close(erase: true);
     }
     _sessions.remove(g.id)?.close();
     await _save();
     notifyListeners();
-  });
+  }
 
   // ---------------------------------------------------------------- sync
 
@@ -783,6 +816,7 @@ class V2Groups extends ChangeNotifier {
   Future<void> sync(V2Group g) => _serial(() async {
     if (_closed || !groups.contains(g)) return;
     try {
+      if (g.closedByAdmin) return await _deletedByAdmin(g);
       if (g.joining) {
         final done = await _run(g, {
           'op': 'complete_join',
@@ -795,6 +829,7 @@ class V2Groups extends ChangeNotifier {
       }
       await _run(g, {'op': 'sync'});
       _pull(g);
+      if (g.closedByAdmin) return await _deletedByAdmin(g);
       if (info(g)['removed'] != true) {
         if (isAdmin(g)) {
           await _adminDuties(g);
