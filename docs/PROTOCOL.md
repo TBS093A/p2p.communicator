@@ -756,6 +756,35 @@ not know it exists:
 Not changed: what storage nodes and members see is exactly a v2 group;
 the privacy here is against someone holding the unlocked phone.
 
+### B11.2 Every v1 room moves by itself (18 Nov 2026)
+
+The app has only v2 conversations: v1 rooms are not listed and cannot be
+created. Each v1 room left on the phone moves to v2 with nobody tapping
+anything, and its history, people and look come along. This replaces the
+manual move and approval of B11 items 2–3 for rooms that existed before.
+
+* **Who moves it.** The member with the lowest v1 outbox key. Another
+  member moves it only if no move appeared after 2 days. If two moves are
+  announced, the earliest (by message time, then outbox key) wins: whoever
+  made a later one deletes its group for everyone (§B5.5) and joins the
+  earliest. A private v1 room (opened only with its password) moves at
+  once when opened, into the same password slot (§B11.1).
+* **Announcement.** As in B11: one invite per other member, keyed by their
+  v1 outbox, in a v1 text message. A v1 DM becomes a v2 DM (its invites
+  carry `kind: dm`), named after the other person on each side.
+* **Joining and admission.** Each member's app joins the earliest move
+  with an invite for it, without the fingerprint check. The admin's app
+  lets in whoever uses one of these invites without approval. **This
+  keeps the trust the v1 room had:** anyone who could read the v1 room
+  could take one of these invites. It adds no outsider, but a v1 member
+  could take another member's invite. Fingerprints can be compared later
+  in "Osoby"; this is a recorded deviation from B11 item 3, chosen so the
+  move needs no one's attention.
+* **After the move.** A joiner deletes the v1 room from the phone once
+  admitted. The mover keeps it, read-only and not listed, until every
+  invite was used or 14 days passed, so late members still find the
+  announcement.
+
 ## B12. Failure scenarios
 
 Each row is expected behaviour, tested by the PoC on a mocked DHT (column

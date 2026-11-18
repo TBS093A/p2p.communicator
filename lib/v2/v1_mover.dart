@@ -117,8 +117,8 @@ class V1Mover {
       for (var i = 0; i < entries.length; i += V1Move.invitesPerMessage) {
         final part = entries.skip(i).take(V1Move.invitesPerMessage);
         await v1.sendText(
-          'Ta rozmowa przeniosła się do v2 (szyfrowanie MLS). Zaktualizuj '
-          'aplikację: przeniesie cię sama.',
+          'Ta rozmowa przeniosła się do nowej wersji (szyfrowanie MLS). '
+          'Zaktualizuj aplikację: przeniesie cię sama.',
           extra: V1Move.extra(v1.roomName, Map.fromEntries(part)),
         );
       }

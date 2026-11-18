@@ -352,6 +352,19 @@ class _GroupTile extends StatelessWidget {
     final other = group.dm
         ? room.memberOutboxes.where((m) => m != room.myOutbox).firstOrNull
         : null;
+    return KeyedSubtree(
+      key: ValueKey('v2-tile-${group.id}'),
+      child: _tile(context, room, other, subtitle, last),
+    );
+  }
+
+  Widget _tile(
+    BuildContext context,
+    V2RoomSession room,
+    String? other,
+    String subtitle,
+    ChatMessage? last,
+  ) {
     return ListTile(
       key: ValueKey('v2-group-${room.roomName}'),
       leading: other != null
@@ -480,7 +493,7 @@ class V2InviteScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Zaproszenie v2')),
+    appBar: AppBar(title: const Text('Zaproszenie')),
     body: ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -567,9 +580,7 @@ class V2JoinScreen extends StatefulWidget {
 
 class _V2JoinScreenState extends State<V2JoinScreen> {
   late final _code = TextEditingController(text: widget.code ?? '');
-  late final _name = TextEditingController(
-    text: widget.groupName ?? 'Grupa v2',
-  );
+  late final _name = TextEditingController(text: widget.groupName ?? 'Grupa');
   late final _me = TextEditingController(text: widget.myName);
   bool _checked = false;
   bool _busy = false;
@@ -597,7 +608,7 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
     final raw = await Navigator.of(context).push<String>(
       MaterialPageRoute(
         builder: (_) => ScanScreen(
-          title: 'Zeskanuj zaproszenie v2',
+          title: 'Zeskanuj zaproszenie',
           accept: (s) => V2Invite.tryParse(s) != null,
         ),
       ),
@@ -634,7 +645,7 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
   Widget build(BuildContext context) {
     final invite = V2Invite.tryParse(_code.text);
     return Scaffold(
-      appBar: AppBar(title: const Text('Dołącz do grupy v2')),
+      appBar: AppBar(title: const Text('Dołącz z zaproszenia')),
       body: AbsorbPointer(
         absorbing: _busy,
         child: ListView(
@@ -648,7 +659,7 @@ class _V2JoinScreenState extends State<V2JoinScreen> {
               decoration: InputDecoration(
                 labelText: 'Zaproszenie (p2pc2.…)',
                 errorText: _code.text.isNotEmpty && invite == null
-                    ? 'To nie jest zaproszenie v2'
+                    ? 'To nie jest zaproszenie'
                     : null,
                 suffixIcon: IconButton(
                   tooltip: 'Skanuj kod QR',

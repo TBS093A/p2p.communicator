@@ -98,11 +98,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 const SizedBox(height: 16),
                 TextField(
+                  key: const ValueKey('room-nick'),
                   controller: _name,
                   maxLength: 40,
                   decoration: InputDecoration(
                     labelText: 'Pseudonim w tym pokoju',
                     suffixIcon: IconButton(
+                      key: const ValueKey('room-nick-save'),
                       tooltip: 'Zapisz nazwę',
                       icon: const Icon(Icons.check),
                       onPressed: () =>

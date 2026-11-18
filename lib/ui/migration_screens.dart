@@ -72,14 +72,14 @@ class _MigrationSendScreenState extends State<MigrationSendScreen> {
     );
     if (password == null || password.isEmpty || !mounted) return;
     try {
-      final room = await PinVault.instance.unlock(password);
+      final room = await PrivateRoomToMove.open(password);
       if (!mounted) return;
       if (room == null) {
         _toast('Nieprawidłowe hasło');
-      } else if (_private.any((r) => r.room.slotId == room.slotId)) {
+      } else if (_private.any((r) => r.slot.slotId == room.slot.slotId)) {
         _toast('Ten pokój jest już na liście');
       } else {
-        setState(() => _private.add(PrivateRoomToMove(password, room)));
+        setState(() => _private.add(room));
       }
     } on VaultLockedOut catch (e) {
       _toast('Za dużo prób. Spróbuj za ${e.remaining.inSeconds + 1} s');
@@ -245,7 +245,7 @@ class _MigrationSendScreenState extends State<MigrationSendScreen> {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.vpn_key_outlined),
-                  title: Text(r.room.secrets.roomName),
+                  title: Text(r.name),
                   trailing: IconButton(
                     tooltip: 'Nie zabieraj',
                     icon: const Icon(Icons.close),
