@@ -24,6 +24,7 @@ import 'package:p2p_communicator/ui/chat_screen.dart';
 import 'package:p2p_communicator/ui/home_screen.dart';
 import 'package:p2p_communicator/ui/invite_screen.dart';
 import 'package:p2p_communicator/ui/members_screen.dart';
+import 'package:p2p_communicator/room/message.dart';
 import 'package:p2p_communicator/room/room_session.dart';
 import 'package:p2p_communicator/ui/my_profile_screen.dart';
 import 'package:p2p_communicator/ui/new_room_screen.dart';
@@ -665,7 +666,13 @@ void main() {
     await tapKey(t, 'v1-move-confirm');
     await pumpUntil(t, find.text('Utworzono grupę v2 i wysłano zaproszenia'));
     await pumpUntil(t, find.text('osób: 1'));
+    // Nothing reset: the v1 conversation came along, the reply with its
+    // quote included, under the room's name.
+    await pumpUntil(t, find.text(answer));
+    expect(find.text(question), findsWidgets);
+    expect(find.text('Wyprawa w Tatry'), findsWidgets);
     await settle(t);
+    await shot(t, '07c_v2_moved_history');
     await t.pageBack();
     await settle(t);
 
@@ -776,6 +783,100 @@ void main() {
     await settle(t);
     await shot(t, '11_v2_admin');
 
+    // The same message kinds as v1, in the v2 group: a photo from the
+    // gallery, a voice note, an emoji on its own (shown large), and a reply
+    // quoting the photo (the quote shows the picture itself).
+    gallery.queue.add(roomPicture);
+    await t.tap(find.byTooltip('Załącz'));
+    await pumpUntil(t, find.text('Zdjęcie z galerii'));
+    await settle(t);
+    await t.tap(find.text('Zdjęcie z galerii'));
+    final photo = find.descendant(
+      of: find.byWidgetPredicate(
+        (w) => w is MessageBubble && w.message.type == MsgType.image,
+      ),
+      matching: find.byType(Image),
+    );
+    await pumpUntil(t, photo, timeout: const Duration(minutes: 2));
+    // A voice note through the session (the CI emulator has no reliable
+    // microphone; recording itself is the v1 composer code).
+    final v2Session = t
+        .widget<ChatScreen>(find.byType(ChatScreen).last)
+        .session;
+    final voiceFile = File('${Directory.systemTemp.path}/dast_voice.m4a')
+      ..writeAsBytesSync(List.filled(4000, 7));
+    await v2Session.sendFile(voiceFile, MsgType.voice, durationMs: 2300);
+    await pumpUntil(
+      t,
+      find.byWidgetPredicate(
+        (w) =>
+            w is MessageBubble &&
+            w.message.type == MsgType.voice &&
+            w.message.status == MsgStatus.sent,
+      ),
+      timeout: const Duration(minutes: 2),
+    );
+    await send(t, '🎉');
+    await pumpUntil(t, find.text('🎉'));
+    await hideKeyboard(t);
+    await settle(t);
+    await t.longPress(photo.last);
+    await settle(t);
+    await pumpUntil(t, find.byKey(const ValueKey('msg-reply')));
+    await tapKey(t, 'msg-reply');
+    await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
+    await send(t, 'piękny widok');
+    await hideKeyboard(t);
+    await pumpUntil(
+      t,
+      find.descendant(
+        of: find.byType(QuotedBubble),
+        matching: find.byType(Image),
+      ),
+      timeout: const Duration(minutes: 1),
+    );
+    await settle(t);
+    await shot(t, '11d_v2_media');
+
+    // Swipe to reply, as in v1: past the threshold the reply bar opens with
+    // the swiped message. The gesture both ways is covered by
+    // test/message_bubble_test.dart; here on fresh messages mid-screen (an
+    // old one at the top sits under the sticky day header): our own to the
+    // left now, someone else's to the right in the DM below.
+    Future<void> swipeToReply(String text, double dx) async {
+      final bubble = find.ancestor(
+        of: find.text(text).last,
+        matching: find.byType(MessageBubble),
+      );
+      // A bubble with a quoted photo is tall: bring its middle into the
+      // list, away from the composer and the sticky day header.
+      await Scrollable.ensureVisible(t.element(bubble.first), alignment: 0.5);
+      await settle(t);
+      // Start on the text itself: the row is wider than the bubble, so the
+      // row's middle can be empty space beside a short bubble.
+      await t.timedDragFrom(
+        t.getCenter(
+          find.descendant(of: bubble.first, matching: find.text(text)).last,
+        ),
+        Offset(dx, 0),
+        const Duration(milliseconds: 400),
+      );
+      await settle(t);
+      await pumpUntil(t, find.byKey(const ValueKey('reply-bar')));
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('reply-bar')),
+          matching: find.textContaining(text),
+        ),
+        findsWidgets,
+      );
+      await tapKey(t, 'reply-cancel');
+      await settle(t);
+      expect(find.byKey(const ValueKey('reply-bar')), findsNothing);
+    }
+
+    await swipeToReply('piękny widok', -140);
+
     // A DM from the shared group (phase 4b, PROTOCOL §B10): the admin
     // starts one with Kasia; her copy of the group gets the offer, she
     // accepts it with a fresh identity and the admin's DM lets her in.
@@ -815,11 +916,14 @@ void main() {
     await pumpUntil(t, find.text('prywatnie w v2'));
     await pumpUntil(t, find.text('aktywny teraz'));
     await settle(t);
+    // Kasia's newest message, swiped to the right.
+    await swipeToReply('prywatnie w v2', 140);
     await shot(t, '11c_v2_dm');
     await t.pageBack();
     await settle(t);
     await t.tap(tiles.first);
-    await pumpUntil(t, find.text('cześć z grupy v2'));
+    // Back in the group (its newest message; older ones are scrolled away).
+    await pumpUntil(t, find.text('piękny widok'));
     await settle(t);
 
     // Membership (phase 3): the admin makes Kasia its successor, hands the

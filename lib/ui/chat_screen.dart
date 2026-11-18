@@ -388,7 +388,11 @@ class _ChatScreenState extends State<ChatScreen> {
           code: move.code,
           groupName: move.name,
           onClose: close,
-          onJoined: widget.app == null ? (_) => _privateMoved() : null,
+          onJoined: (g) async {
+            // The v1 history, people and look come along (§B11).
+            groups.roomOf(g).importFromV1(_session);
+            if (widget.app == null) await _privateMoved();
+          },
         ),
       ),
     );
@@ -431,6 +435,11 @@ class _ChatScreenState extends State<ChatScreen> {
         others,
       );
       g = group;
+      // Nothing is reset: the v1 history, people, room look and our
+      // profile come along; the look and profile go to the new members.
+      final room = groups.roomOf(g);
+      room.importFromV1(_session);
+      await room.shareImported();
       final entries = invites.entries.toList();
       for (var i = 0; i < entries.length; i += V1Move.invitesPerMessage) {
         final part = entries.skip(i).take(V1Move.invitesPerMessage);
