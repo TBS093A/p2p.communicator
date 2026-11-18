@@ -2,24 +2,21 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../app_state/app_session.dart';
-import '../app_state/global_profile.dart';
-import '../room/message.dart';
-import '../room/room_session.dart';
 import '../v2/private_v2.dart';
 import '../vault/pin_vault.dart';
-import '../vault/room_secrets.dart';
 import 'chat_screen.dart';
 import 'my_profile_screen.dart';
 import '../update/update_service.dart';
-import 'new_room_screen.dart';
 import 'update_screen.dart';
+import 'v1_move_screen.dart';
 import 'v2_screens.dart';
 import 'widgets/avatar.dart';
 import 'widgets/network_dot.dart';
 
-/// After the app PIN: people with their status, then DMs and groups.
-/// Private rooms never appear here; they open from private mode with their
-/// password.
+/// After the app PIN: people from our groups, then 1:1 conversations and
+/// groups (all MLS, PROTOCOL part B). Private conversations never appear
+/// here; they open from private mode with their password. Old v1 rooms are
+/// not listed: each moves to v2 by itself (§B11.2).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.app});
 
@@ -30,7 +27,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  RoomKind _tab = RoomKind.dm;
+  bool _dm = true;
 
   AppSession get app => widget.app;
 
@@ -41,21 +38,12 @@ class _HomeScreenState extends State<HomeScreen> {
     UpdateService.instance.autoCheck();
   }
 
-  Future<void> _openChat(RoomSession session) => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (_) => ChatScreen(session: session, app: app),
-    ),
-  );
-
   Future<void> _push(Widget screen) => Navigator.of(
     context,
   ).push(MaterialPageRoute<void>(builder: (_) => screen));
 
   void _toast(String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-
-  Future<void> _openV2() =>
-      _push(V2HomeScreen(groups: app.v2, myName: app.myGlobal.name));
 
   // --------------------------------------------------------- private mode
 
@@ -66,11 +54,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     if (password == null || !mounted) return;
     if (password == '\u0000new' || password == '\u0000join') {
-      if (RoomSession.legacyWrites && password == '\u0000new') {
-        // Tests of the old paths: a v1 private room.
-        await _push(NewRoomScreen(app: app, initialKind: RoomKind.private));
-        return;
-      }
       await _newPrivate(join: password == '\u0000join');
       return;
     }
@@ -86,14 +69,8 @@ class _HomeScreenState extends State<HomeScreen> {
         await _openPrivateV2(slot);
         return;
       }
-      final v1 = slot.v1;
-      if (v1 == null) return;
-      await _push(
-        ChatScreen.private(
-          session: RoomSession(UnlockedRoom(slot.slotId, slot.key, v1)),
-          privateSlot: slot,
-        ),
-      );
+      // An old private room: it moves to v2 now, in its own slot (§B11.2).
+      if (slot.v1 != null) await _push(PrivateMoveScreen(slot: slot));
     } on VaultLockedOut catch (e) {
       _toast('Za dużo prób. Spróbuj za ${e.remaining.inSeconds + 1} s');
     }
@@ -168,73 +145,19 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ---------------------------------------------------------------- users
-
-  Future<void> _userSheet(String key) async {
-    final dm = await showModalBottomSheet<bool>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => ListenableBuilder(
-        listenable: app.directory,
-        builder: (context, _) {
-          final p = app.directory[key];
-          if (p == null) return const SizedBox(height: 120);
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Avatar.global(app, p, radius: 44),
-                  const SizedBox(height: 12),
-                  Text(p.name, style: Theme.of(context).textTheme.titleLarge),
-                  Text(p.presence.label),
-                  const SizedBox(height: 20),
-                  // PROTOCOL §B10, §B11: new DMs start in a shared v2 group.
-                  if (!RoomSession.legacyWrites && app.dmWith(key) == null)
-                    const Text(
-                      'Nowe rozmowy prywatne zaczniesz z grupy v2 '
-                      '(Osoby → Napisz prywatnie).',
-                      textAlign: TextAlign.center,
-                    )
-                  else
-                    FilledButton.icon(
-                      key: const ValueKey('user-dm'),
-                      onPressed: () => Navigator.pop(context, true),
-                      icon: const Icon(Icons.chat_bubble_outline),
-                      label: Text(
-                        app.dmWith(key) == null
-                            ? 'Zaproś do rozmowy'
-                            : 'Otwórz rozmowę',
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-    if (dm != true || !mounted) return;
-    try {
-      final room = await app.startDm(key);
-      if (mounted) await _openChat(room.session);
-    } on Object catch (e) {
-      _toast('$e'.replaceFirst('Bad state: ', ''));
-    }
-  }
-
   // ---------------------------------------------------------------- build
 
   @override
   Widget build(BuildContext context) {
+    final groups = app.v2;
     return ListenableBuilder(
-      listenable: Listenable.merge([app, app.directory, app.v2]),
+      listenable: Listenable.merge([app, groups]),
       builder: (context, _) {
-        showDeletedByAdmin(context, app.v2);
+        showDeletedByAdmin(context, groups);
         final me = app.myGlobal;
-        final others = app.directory.others;
-        final rooms = app.roomsOf(_tab);
+        final people = v2People(groups);
+        final dms = V2ConversationList.of(groups, dm: true).length;
+        final rooms = V2ConversationList.of(groups, dm: false).length;
         return Scaffold(
           appBar: AppBar(
             leading: Padding(
@@ -249,12 +172,6 @@ class _HomeScreenState extends State<HomeScreen> {
             title: const Text('Rozmowy'),
             actions: [
               IconButton(
-                key: const ValueKey('v2-home'),
-                tooltip: 'Grupy v2',
-                icon: const Icon(Icons.forum_outlined),
-                onPressed: _openV2,
-              ),
-              IconButton(
                 key: const ValueKey('private-mode'),
                 tooltip: 'Tryb prywatny',
                 icon: const Icon(Icons.vpn_key_outlined),
@@ -267,37 +184,34 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
-          // PROTOCOL §B11: new conversations are v2 groups; v1 rooms only
-          // read (tests of the old paths turn writes back on).
           floatingActionButton: FloatingActionButton.extended(
             key: const ValueKey('new-room'),
-            // Decided at the tap: tests switch legacyWrites while this
-            // screen stays built underneath.
-            onPressed: () => RoomSession.legacyWrites
-                ? _push(NewRoomScreen(app: app, initialKind: _tab))
-                : _openV2(),
+            onPressed: () => newV2Conversation(context, groups, me.name),
             icon: const Icon(Icons.add_comment_outlined),
             label: const Text('Nowa'),
           ),
           body: Column(
             children: [
               UpdateBanner(onOpen: () => _push(const UpdateScreen())),
-              if (!RoomSession.legacyWrites)
+              // PROTOCOL §B11.2: old rooms move by themselves.
+              if (app.moving)
                 ListTile(
-                  key: const ValueKey('home-v2-groups'),
-                  leading: const Icon(Icons.forum_outlined),
-                  title: Text('Grupy v2 (${app.v2.groups.length})'),
-                  subtitle: const Text(
-                    'Szyfrowanie MLS. Rozmowy poniżej to stary protokół, '
-                    'tylko do odczytu.',
+                  key: const ValueKey('v1-moving'),
+                  dense: true,
+                  leading: const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: _openV2,
+                  title: Text(
+                    'Przenoszę rozmowy ze starej wersji '
+                    '(${app.rooms.length})…',
+                  ),
+                  subtitle: const Text(
+                    'Pojawią się poniżej z całą historią, gdy pozostali '
+                    'też zaktualizują aplikację.',
+                  ),
                 ),
-              if (RoomSession.legacyWrites)
-                for (final inv in app.pendingInvites)
-                  _InviteBanner(app: app, invite: inv, onOpen: _openChat),
-              if (others.isNotEmpty)
+              if (people.isNotEmpty)
                 SizedBox(
                   height: 100,
                   child: ListView.separated(
@@ -307,63 +221,33 @@ class _HomeScreenState extends State<HomeScreen> {
                       horizontal: 12,
                       vertical: 8,
                     ),
-                    itemCount: others.length,
+                    itemCount: people.length,
                     separatorBuilder: (_, _) => const SizedBox(width: 12),
-                    itemBuilder: (context, i) {
-                      final e = others[i];
-                      return _UserChip(
-                        app: app,
-                        profile: e.value,
-                        onTap: () => _userSheet(e.key),
-                      );
-                    },
+                    itemBuilder: (context, i) =>
+                        V2PersonChip(groups: groups, person: people[i]),
                   ),
                 ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                child: SegmentedButton<RoomKind>(
+                child: SegmentedButton<bool>(
                   segments: [
                     ButtonSegment(
-                      value: RoomKind.dm,
+                      value: true,
                       icon: const Icon(Icons.person_outline),
-                      label: Text('DM (${app.roomsOf(RoomKind.dm).length})'),
+                      label: Text('DM ($dms)'),
                     ),
                     ButtonSegment(
-                      value: RoomKind.group,
+                      value: false,
                       icon: const Icon(Icons.groups_outlined),
-                      label: Text(
-                        'Grupy (${app.roomsOf(RoomKind.group).length})',
-                      ),
+                      label: Text('Grupy ($rooms)'),
                     ),
                   ],
-                  selected: {_tab},
-                  onSelectionChanged: (s) => setState(() => _tab = s.first),
+                  selected: {_dm},
+                  onSelectionChanged: (s) => setState(() => _dm = s.first),
                 ),
               ),
               Expanded(
-                child: rooms.isEmpty
-                    ? Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(32),
-                          child: Text(
-                            _tab == RoomKind.dm
-                                ? 'Brak rozmów. Stuknij osobę u góry albo '
-                                      '„Nowa”, by zaprosić kogoś kodem QR.'
-                                : 'Brak grup. Utwórz grupę albo dołącz z '
-                                      'zaproszenia przyciskiem „Nowa”.',
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.only(bottom: 88),
-                        itemCount: rooms.length,
-                        itemBuilder: (context, i) => _RoomTile(
-                          app: app,
-                          room: rooms[i],
-                          onTap: () => _openChat(rooms[i].session),
-                        ),
-                      ),
+                child: V2ConversationList(groups: groups, dm: _dm),
               ),
               const Padding(
                 padding: EdgeInsets.only(bottom: 4),
@@ -550,162 +434,6 @@ class _NewPrivateDialogState extends State<_NewPrivateDialog> {
           child: Text(widget.join ? 'Dalej' : 'Utwórz'),
         ),
       ],
-    );
-  }
-}
-
-class _UserChip extends StatelessWidget {
-  const _UserChip({
-    required this.app,
-    required this.profile,
-    required this.onTap,
-  });
-
-  final AppSession app;
-  final GlobalProfile profile;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: SizedBox(
-        width: 64,
-        child: Column(
-          children: [
-            Avatar.global(app, profile, radius: 26),
-            const SizedBox(height: 6),
-            Text(
-              profile.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _RoomTile extends StatelessWidget {
-  const _RoomTile({required this.app, required this.room, required this.onTap});
-
-  final AppSession app;
-  final PublicRoom room;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final s = room.session;
-    final peer = app.peerOf(s);
-    final last = s.messages.isEmpty ? null : s.messages.last;
-    final title = peer?.name ?? s.roomName;
-    return ListTile(
-      key: ValueKey('room-${s.room.secrets.rosterKey}'),
-      leading: peer != null
-          ? Avatar.global(app, peer, radius: 24)
-          : Avatar.room(s, radius: 24),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: last == null
-          ? const Text('Brak wiadomości')
-          : Text(
-              _preview(s, last),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-      trailing: last == null ? null : Text(_time(last.ts)),
-      onTap: onTap,
-    );
-  }
-
-  String _preview(RoomSession s, ChatMessage m) {
-    final what = switch (m.type) {
-      MsgType.text => m.text ?? '',
-      MsgType.image => '📷 Zdjęcie',
-      MsgType.video => '🎥 Wideo',
-      MsgType.voice => '🎤 Głosówka',
-      // Hidden types never reach the message list (reactions are shown
-      // under their message), so never the preview either.
-      MsgType.dmInvite ||
-      MsgType.reaction ||
-      MsgType.profile ||
-      MsgType.meta => '',
-      MsgType.presence => '',
-      MsgType.typing => '',
-      MsgType.closed => '',
-    };
-    final who = m.author == s.myOutbox
-        ? 'Ty'
-        : (room.kind == RoomKind.group ? s.nameOf(m.author) : null);
-    return who == null ? what : '$who: $what';
-  }
-
-  static String _time(int ts) {
-    final t = DateTime.fromMillisecondsSinceEpoch(ts);
-    final now = DateTime.now();
-    if (t.year == now.year && t.month == now.month && t.day == now.day) {
-      return '${t.hour.toString().padLeft(2, '0')}:'
-          '${t.minute.toString().padLeft(2, '0')}';
-    }
-    return '${t.day}.${t.month.toString().padLeft(2, '0')}';
-  }
-}
-
-class _InviteBanner extends StatelessWidget {
-  const _InviteBanner({
-    required this.app,
-    required this.invite,
-    required this.onOpen,
-  });
-
-  final AppSession app;
-  final PendingInvite invite;
-  final Future<void> Function(RoomSession) onOpen;
-
-  @override
-  Widget build(BuildContext context) {
-    final from = app.directory[invite.fromKey];
-    return Card(
-      key: ValueKey('invite-${invite.id}'),
-      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            if (from != null) Avatar.global(app, from, radius: 22),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                '${from?.name ?? 'Ktoś'} zaprasza cię do rozmowy',
-                style: Theme.of(context).textTheme.bodyLarge,
-              ),
-            ),
-            TextButton(
-              key: const ValueKey('invite-decline'),
-              onPressed: () => app.declineInvite(invite),
-              child: const Text('Odrzuć'),
-            ),
-            FilledButton(
-              key: const ValueKey('invite-accept'),
-              onPressed: () async {
-                try {
-                  final room = await app.acceptInvite(invite);
-                  await onOpen(room.session);
-                } on Object catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Nie udało się dołączyć: $e')),
-                    );
-                  }
-                }
-              },
-              child: const Text('Akceptuj'),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

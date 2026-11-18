@@ -6,6 +6,7 @@ import 'package:veilid/veilid.dart';
 
 import '../app_state/app_session.dart';
 import '../core/media_cache.dart';
+import '../v2/private_v2.dart';
 import '../vault/pin_vault.dart';
 import '../vault/room_secrets.dart';
 import 'migration_archive.dart';
@@ -14,9 +15,51 @@ import 'migration_archive.dart';
 /// the new phone (slots are bound to each phone's Keystore pepper, so they
 /// cannot simply be copied).
 class PrivateRoomToMove {
-  PrivateRoomToMove(this.password, this.room);
+  PrivateRoomToMove(this.password, this.slot, this.name, {this.room});
   final String password;
-  final UnlockedRoom room;
+  final PrivateSlot slot;
+
+  /// What the list shows.
+  final String name;
+
+  /// An old v1 room in the slot (it moves to v2 when next opened).
+  final UnlockedRoom? room;
+
+  /// Opens [password]'s slot for the move, or null for a wrong password.
+  static Future<PrivateRoomToMove?> open(String password) async {
+    final vault = PinVault.instance;
+    final slot = await vault.openPrivate(password);
+    if (slot == null) return null;
+    final v1 = slot.v1;
+    var name = v1?.roomName ?? 'Rozmowa prywatna';
+    if (slot.hasV2) {
+      final ids = await _v2Groups(slot);
+      if (ids.isNotEmpty) name = ids.first.$2;
+    }
+    return PrivateRoomToMove(
+      password,
+      slot,
+      name,
+      room: v1 == null ? null : UnlockedRoom(slot.slotId, slot.key, v1),
+    );
+  }
+}
+
+/// The v2 conversation(s) in a private slot (§B11.1): (id, name).
+Future<List<(String, String)>> _v2Groups(PrivateSlot slot) async {
+  final vault = PinVault.instance;
+  final raw = await vault.readData(
+    await vault.derivedDataArea(slot, PrivateV2.stateLabel),
+  );
+  if (raw == null) return const [];
+  try {
+    return [
+      for (final g in jsonDecode(utf8.decode(raw)) as List)
+        ((g as Map)['id'] as String, g['name'] as String? ?? ''),
+    ];
+  } on Object {
+    return const [];
+  }
 }
 
 /// Packs everything into a migration file sealed to the new phone, and
@@ -65,12 +108,40 @@ class MigrationService {
 
       for (final (i, p) in privateRooms.indexed) {
         onProgress?.call('Pokój prywatny ${i + 1}/${privateRooms.length}');
-        await w.addJson('priv/$i/secrets', {
+        final v1 = p.room;
+        if (v1 != null) {
+          await w.addJson('priv/$i/secrets', {
+            'password': p.password,
+            'secrets': v1.secrets.toJson(),
+            if (p.slot.hasV2) 'v2': true,
+          });
+          await w.add('priv/$i/cache', await vault.readData(v1) ?? const []);
+          await _media(w, 'priv/$i', v1);
+        }
+        if (!p.slot.hasV2) continue;
+        // §B11.1: the v2 conversation's core state and, per group, its
+        // conversation cache and media, all derived from the slot.
+        await w.addJson('pv2/$i/secrets', {
           'password': p.password,
-          'secrets': p.room.secrets.toJson(),
+          'v1': v1 != null,
         });
-        await w.add('priv/$i/cache', await vault.readData(p.room) ?? const []);
-        await _media(w, 'priv/$i', p.room);
+        final state = await vault.derivedDataArea(p.slot, PrivateV2.stateLabel);
+        await w.add('pv2/$i/cache', await vault.readData(state) ?? const []);
+        for (final (j, (id, _)) in (await _v2Groups(p.slot)).indexed) {
+          final area = await vault.derivedDataArea(
+            p.slot,
+            PrivateV2.roomLabel(id),
+          );
+          await w.addJson('pr2/$i-$j/secrets', {
+            'slot': i,
+            'label': PrivateV2.roomLabel(id),
+          });
+          await w.add(
+            'pr2/$i-$j/cache',
+            await vault.readData(area) ?? const [],
+          );
+          await _media(w, 'pr2/$i-$j', area);
+        }
       }
       onProgress?.call('Zamykam plik');
     } finally {
@@ -112,6 +183,7 @@ class MigrationService {
     UnlockedApp? app;
     final areas = <String, VaultArea>{};
     final caches = <String, MediaCache>{};
+    final slots = <String, PrivateSlot>{};
     var count = 0;
 
     Future<MediaCache> cacheFor(String prefix) async => caches[prefix] ??=
@@ -135,6 +207,28 @@ class MigrationService {
             areas[prefix] = await vault.publicRoomArea(
               app,
               RoomSecrets.fromJson(j),
+            );
+          } else if (parts[0] == 'pv2') {
+            // A private v2 conversation: its slot (with the v1 room the
+            // `priv` entry already stored, if any), then its state.
+            final password = j['password'] as String;
+            var slot = j['v1'] == true
+                ? await vault.openPrivate(password)
+                : null;
+            slot = slot == null
+                ? await vault.storePrivateV2(password)
+                : await vault.markMovedToV2(slot);
+            slots[parts[1]] = slot;
+            areas[prefix] = await vault.derivedDataArea(
+              slot,
+              PrivateV2.stateLabel,
+            );
+          } else if (parts[0] == 'pr2') {
+            final slot = slots['${j['slot']}'];
+            if (slot == null) continue;
+            areas[prefix] = await vault.derivedDataArea(
+              slot,
+              j['label'] as String,
             );
           } else {
             final password = j['password'] as String;

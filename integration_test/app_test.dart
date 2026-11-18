@@ -6,6 +6,7 @@
 //
 //   flutter drive --driver=test_driver/integration_test.dart \
 //                 --target=integration_test/app_test.dart
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
@@ -20,15 +21,16 @@ import 'package:p2p_communicator/main.dart' as app;
 import 'package:p2pc_core/p2pc_core.dart';
 import 'package:p2p_communicator/migration/migration_archive.dart';
 import 'package:share_plus_platform_interface/share_plus_platform_interface.dart';
+import 'package:p2p_communicator/app_state/app_session.dart';
 import 'package:p2p_communicator/ui/chat_screen.dart';
 import 'package:p2p_communicator/ui/home_screen.dart';
-import 'package:p2p_communicator/ui/invite_screen.dart';
-import 'package:p2p_communicator/ui/members_screen.dart';
 import 'package:p2p_communicator/room/message.dart';
 import 'package:p2p_communicator/room/room_session.dart';
 import 'package:p2p_communicator/ui/my_profile_screen.dart';
-import 'package:p2p_communicator/ui/new_room_screen.dart';
 import 'package:p2p_communicator/ui/pin_screen.dart';
+import 'package:p2p_communicator/ui/profile_screen.dart';
+import 'package:p2p_communicator/v2/v2_groups.dart';
+import 'package:p2p_communicator/vault/room_secrets.dart';
 import 'package:p2p_communicator/ui/room_settings_screen.dart';
 import 'package:p2p_communicator/ui/setup_screen.dart';
 import 'package:p2p_communicator/ui/update_screen.dart';
@@ -149,23 +151,49 @@ void main() {
     expect(current(), text, reason: 'IME reverted $key');
   }
 
-  /// From the home screen: "Nowa" → pick [mode] → fill → create.
-  Future<void> newRoom(
-    WidgetTester t, {
-    required String mode,
-    Map<String, String> fields = const {},
+  /// From the home screen: "Nowa" → [item] (a group or a 1:1
+  /// conversation) → its name → create.
+  Future<void> newConversation(
+    WidgetTester t,
+    String name, {
+    String item = 'v2-new',
   }) async {
     await tapKey(t, 'new-room');
-    await pumpUntil(t, find.byType(NewRoomScreen));
     await settle(t);
-    await t.tap(find.text(mode));
+    await tapKey(t, item);
     await settle(t);
-    for (final e in fields.entries) {
-      await fill(t, e.key, e.value);
-    }
+    await typeKey(t, 'v2-name', name);
+    await tapKey(t, 'v2-create');
     await hideKeyboard(t);
-    await tapKey(t, 'new-room-submit');
-    await pumpUntil(t, find.byType(ChatScreen));
+  }
+
+  /// From the home screen: "Nowa" → "Dołącz z zaproszenia".
+  Future<void> openJoin(WidgetTester t) async {
+    await tapKey(t, 'new-room');
+    await settle(t);
+    await tapKey(t, 'v2-join');
+    await settle(t);
+  }
+
+  /// Waits for [ok] while the app keeps running.
+  Future<void> waitFor(
+    WidgetTester t,
+    bool Function() ok, {
+    Duration timeout = const Duration(minutes: 3),
+    String what = 'condition',
+  }) async {
+    final end = DateTime.now().add(timeout);
+    while (!ok()) {
+      if (DateTime.now().isAfter(end)) {
+        throw TestFailure('Timed out after $timeout waiting for $what');
+      }
+      await idle(t, const Duration(milliseconds: 500));
+    }
+  }
+
+  /// Shows the home screen's 1:1 or groups list.
+  Future<void> homeTab(WidgetTester t, {required bool dm}) async {
+    await t.tap(find.textContaining(dm ? 'DM (' : 'Grupy ('));
     await settle(t);
   }
 
@@ -298,13 +326,13 @@ void main() {
     await settle(t);
   }
 
-  testWidgets('app PIN, DM/groups, private rooms and screenshots', (t) async {
+  testWidgets('app PIN, conversations, private ones and screenshots', (
+    t,
+  ) async {
     // A tap that misses its widget should fail here, not minutes later.
     WidgetController.hitTestWarningShouldBeFatal = true;
-    // The v1 parts below exercise the old write paths, which a v2 app no
-    // longer uses (PROTOCOL §B11); the read-only behaviour is checked
-    // where this is switched off.
-    RoomSession.legacyWrites = true;
+    // Old v1 rooms are moved by hand below, when the test wants it.
+    AppSession.moveEvery = const Duration(days: 1);
     // "Gallery" picks return generated images through the app's normal
     // ImagePicker calls.
     final gallery = FakeImagePicker();
@@ -340,9 +368,46 @@ void main() {
     await t.tap(find.text('Zaczynamy'));
     await pumpUntil(t, find.byType(HomeScreen));
     await settle(t);
+    final session = t.widget<HomeScreen>(find.byType(HomeScreen)).app;
+
+    // PROTOCOL §B11.2: a room an earlier (v1) app version left behind moves
+    // to v2 by itself, with its history; nothing to tap. (Made here through
+    // the old code, which only the move still reads.)
+    RoomSession.legacyWrites = true;
+    final old = await session.createRoom(
+      kind: RoomKind.group,
+      name: 'Stara grupa',
+    );
+    const oldText = 'Napisane jeszcze w starej wersji';
+    await old.session.sendText(oldText);
+    await waitFor(
+      t,
+      () => old.session.messages.any(
+        (m) => m.text == oldText && m.status == MsgStatus.sent,
+      ),
+      what: 'the v1 message to be sent',
+    );
+    RoomSession.legacyWrites = false;
+    await pumpUntil(t, find.byKey(const ValueKey('v1-moving')));
+    await shot(t, '02a_v1_moving');
+    await waitFor(t, () {
+      unawaited(session.moveRooms());
+      return session.rooms.isEmpty;
+    }, what: 'the v1 room to move');
+    await settle(t);
+    expect(find.byKey(const ValueKey('v1-moving')), findsNothing);
+    await homeTab(t, dm: false);
+    await pumpUntil(t, find.text('Stara grupa'));
+    await t.tap(find.text('Stara grupa'));
+    await pumpUntil(t, find.text(oldText));
+    await settle(t);
+    await shot(t, '02b_v1_moved');
+    await backToHome(t);
 
     // A group: send a message, show the invite.
-    await newRoom(t, mode: 'Grupa', fields: {'Nazwa grupy': 'Wyprawa w Tatry'});
+    await newConversation(t, 'Wyprawa w Tatry');
+    await pumpUntil(t, find.byType(ChatScreen));
+    await pumpUntil(t, find.text('osób: 1'));
     await pumpUntil(t, find.text('Wyprawa w Tatry'));
     const hello = 'Jutro o 6:00 pod schroniskiem. Kto jedzie? 🏔️';
     await send(t, hello);
@@ -356,14 +421,15 @@ void main() {
     await shot(t, '03_chat');
 
     await openMenu(t, 'Zaproś');
-    await pumpUntil(t, find.byType(InviteScreen));
+    await pumpUntil(t, find.byKey(const ValueKey('v2-invite-copy')));
+    await settle(t);
     await shot(t, '04_invite');
     await t.pageBack();
     await settle(t);
 
-    // Customization. Room picture, background and emoji are shared through
-    // the roster; my picture and bubble color through my outbox head; the
-    // images themselves are uploaded to the DHT like any media.
+    // Customization. Room picture, background, bubbles and emoji go to the
+    // members inside the group (in parts if large); the images themselves
+    // are sealed and uploaded to the DHT like any media.
     await openMenu(t, 'Ustawienia pokoju');
     await pumpUntil(t, find.byType(RoomSettingsScreen));
     await settle(t);
@@ -419,34 +485,15 @@ void main() {
     await t.pageBack();
     await settle(t);
 
-    // In a public room "my profile" is the one global profile: picture,
-    // status, bubble color.
+    // "My profile" in a conversation is how the others there see me: its
+    // own picture and name (no global profile is shown in v2, §B10).
     await openMenu(t, 'Mój profil');
-    await pumpUntil(t, find.byType(MyProfileScreen));
+    await pumpUntil(t, find.byType(ProfileScreen));
     await settle(t);
     gallery.queue.add(myPicture);
     await tapKey(t, 'profile-avatar-upload');
     await waitSaved(t);
     await topAvatarShows(t);
-    await tapKey(t, 'status-away');
-    await waitSaved(t);
-    // Opened from the group, it also takes a picture and a nickname for
-    // this group only.
-    await t.drag(find.byType(ListView).first, const Offset(0, 1500));
-    await settle(t);
-    gallery.queue.add(roomPicture);
-    await tapKey(t, 'room-avatar-pick');
-    await waitSaved(t);
-    await pumpUntil(t, find.text('Teraz: osobne zdjęcie w tej grupie'));
-    expect(find.byKey(const ValueKey('room-avatar-clear')), findsOneWidget);
-    await pumpUntil(
-      t,
-      find.descendant(
-        of: find.byKey(const ValueKey('room-avatar-preview')),
-        matching: find.byType(Image),
-      ),
-      timeout: const Duration(seconds: 30),
-    );
     final nick = find.byKey(const ValueKey('room-nick'));
     await pumpUntil(t, nick);
     for (var attempt = 1; attempt <= 3; attempt++) {
@@ -457,10 +504,8 @@ void main() {
     await tapKey(t, 'room-nick-save');
     await waitSaved(t);
     await hideKeyboard(t);
-    await pumpUntil(t, find.text('Teraz: „Marta z Tatr”'));
-    await t.drag(find.byType(ListView).first, const Offset(0, 1500));
     await settle(t);
-    await shot(t, '08_profile_status');
+    await shot(t, '08_profile');
     await t.pageBack();
     await settle(t);
 
@@ -639,47 +684,18 @@ void main() {
     await settle(t);
 
     await openMenu(t, 'Osoby');
-    await pumpUntil(t, find.byType(MembersScreen));
-    // The group nickname, with the global name behind it.
-    await pumpUntil(t, find.text('Marta z Tatr (ty)'));
-    expect(find.textContaining('globalnie: Marta'), findsOneWidget);
+    await pumpUntil(t, find.text('Osoby (1)'));
+    // The name chosen for this group.
+    await pumpUntil(t, find.byKey(const ValueKey('v2-member-Marta z Tatr')));
+    await settle(t);
     await shot(t, '07_members');
-    await t.pageBack();
-    await settle(t);
-
-    // Phase 5 (PROTOCOL §B11): as in a real v2 app, v1 rooms only read
-    // now. The room has no composer, only the "old protocol" bar, and it
-    // moves to a new v2 group with us as its admin. (Alone in this room
-    // here, so no invites go out; announcing them is covered by unit
-    // tests.)
-    RoomSession.legacyWrites = false;
-    await backToHome(t);
-    await pumpUntil(t, find.byKey(const ValueKey('home-v2-groups')));
-    await t.tap(find.textContaining('Grupy ('));
-    await settle(t);
-    await t.tap(find.text('Wyprawa w Tatry'));
-    await pumpUntil(t, find.byKey(const ValueKey('v1-readonly')));
-    expect(find.byKey(const ValueKey('composer-field')), findsNothing);
-    await settle(t);
-    await shot(t, '07b_v1_read_only');
-    await tapKey(t, 'v1-readonly-move');
-    await tapKey(t, 'v1-move-confirm');
-    await pumpUntil(t, find.text('Utworzono grupę v2 i wysłano zaproszenia'));
-    await pumpUntil(t, find.text('osób: 1'));
-    // Nothing reset: the v1 conversation came along, the reply with its
-    // quote included, under the room's name.
-    await pumpUntil(t, find.text(answer));
-    expect(find.text(question), findsWidgets);
-    expect(find.text('Wyprawa w Tatry'), findsWidgets);
-    await settle(t);
-    await shot(t, '07c_v2_moved_history');
     await t.pageBack();
     await settle(t);
 
     // v2 on the real network: two core members on this device's Veilid
     // node, join with a checked fingerprint, messages both ways.
-    final v2 = await v2OverVeilid();
-    debugPrint('[v2] ${v2.join(', ')}');
+    final scenario = await v2OverVeilid();
+    debugPrint('[v2] ${scenario.join(', ')}');
     // v2 media (§B9): sealed per file before chunking, nothing in clear.
     final media = await encryptedMediaOverVeilid();
     debugPrint('[v2] ${media.join(', ')}');
@@ -688,13 +704,7 @@ void main() {
     // switch): create a v2 group, invite, join it (as a second member on
     // this phone) with the admin's fingerprint checked, and talk.
     await backToHome(t);
-    await tapKey(t, 'v2-home');
-    await settle(t);
-    await tapKey(t, 'v2-new');
-    await settle(t);
-    await typeKey(t, 'v2-name', 'Test v2');
-    await tapKey(t, 'v2-create');
-    await hideKeyboard(t);
+    await newConversation(t, 'Test v2');
     // The v2 group opens in the regular chat screen.
     await pumpUntil(t, find.byType(ChatScreen));
     await pumpUntil(t, find.text('osób: 1'));
@@ -715,8 +725,7 @@ void main() {
       ..pop()
       ..pop();
     await settle(t);
-    await tapKey(t, 'v2-join');
-    await settle(t);
+    await openJoin(t);
     await typeKey(t, 'v2-invite-code', v2Code);
     await typeKey(t, 'v2-join-name', 'Dołączona');
     // Its own name in this group, not the global profile.
@@ -745,6 +754,7 @@ void main() {
     // key, and lets her in after comparing it.
     await t.pageBack();
     await settle(t);
+    await homeTab(t, dm: false);
     await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).first);
     await pumpUntil(t, find.byKey(const ValueKey('v2-approve-Kasia z v2')));
     await settle(t);
@@ -756,13 +766,19 @@ void main() {
     await pumpUntil(t, find.text('osób: 2'));
     await t.pageBack();
     await settle(t);
-    // Kasia's copy (still called as she named it, or already "Test v2").
-    final kasiaTile = find.byWidgetPredicate(
-      (w) =>
-          w.key == const ValueKey('v2-group-Dołączona') ||
-          w.key == const ValueKey('v2-group-Test v2'),
+    // The list is newest first: each copy of the group by its own tile.
+    final v2 = session.v2;
+    final adminTest = v2.groups.firstWhere(
+      (g) => !g.dm && v2.isAdmin(g) && v2.roomOf(g).roomName == 'Test v2',
     );
-    await t.tap(kasiaTile.last);
+    final kasiaTest = v2.groups.firstWhere(
+      (g) => !g.dm && g.joinedWith != null && g.fromV1 == null,
+    );
+    Finder tileOf(V2Group g) => find.descendant(
+      of: find.byKey(ValueKey('v2-tile-${g.id}')),
+      matching: find.byType(ListTile),
+    );
+    await t.tap(tileOf(kasiaTest));
     await settle(t);
     await pumpUntil(t, find.text('osób: 2'));
     // The admin's greeting carries the room look: the shared name replaces
@@ -773,10 +789,9 @@ void main() {
     await shot(t, '10_v2_chat');
     await t.pageBack();
     await settle(t);
-    // Both groups are now called "Test v2"; the admin's was created first.
-    final tiles = find.byKey(const ValueKey('v2-group-Test v2'));
-    await pumpUntil(t, tiles);
-    await t.tap(tiles.first);
+    // Both groups are now called "Test v2".
+    await pumpUntil(t, find.byKey(const ValueKey('v2-group-Test v2')));
+    await t.tap(tileOf(adminTest));
     await pumpUntil(t, find.text('cześć z grupy v2'));
     // Shown with the name the sender chose for this group.
     await pumpUntil(t, find.text('Kasia z v2'));
@@ -888,6 +903,8 @@ void main() {
       await t.pageBack(); // the DM, the member list, the group
       await settle(t);
     }
+    // The offer and the DMs are on the home screen's 1:1 list.
+    await homeTab(t, dm: true);
     final accept = find.byWidgetPredicate(
       (w) =>
           w.key is ValueKey<String> &&
@@ -942,7 +959,8 @@ void main() {
     expect(find.byKey(const ValueKey('v2-group-Kasia z v2')), findsNothing);
     await settle(t);
     await shot(t, '11e_v2_dm_deleted');
-    await t.tap(tiles.first);
+    await homeTab(t, dm: false);
+    await t.tap(tileOf(adminTest));
     // Back in the group (its newest message; older ones are scrolled away).
     await pumpUntil(t, find.text('piękny widok'));
     await settle(t);
@@ -977,10 +995,9 @@ void main() {
     await settle(t);
     await t.pageBack();
     await settle(t);
-    // Kasia's group is the second "Test v2" on the list. Once her phone
-    // reads the handover she is the admin: the menu appears next to the
-    // other member, and she removes it.
-    await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).last);
+    // Kasia's copy. Once her phone reads the handover she is the admin:
+    // the menu appears next to the other member, and she removes it.
+    await t.tap(tileOf(kasiaTest));
     await settle(t);
     await openMenu(t, 'Osoby');
     final adminMenu = find.byWidgetPredicate(
@@ -1001,14 +1018,11 @@ void main() {
     await settle(t);
     await t.pageBack();
     await settle(t);
-    // The old admin's group (the first "Test v2") was removed by Kasia.
-    await t.tap(find.byKey(const ValueKey('v2-group-Test v2')).first);
+    // The old admin's copy was removed by Kasia.
+    await t.tap(tileOf(adminTest));
     await pumpUntil(t, find.text('Usunięto cię z tej grupy.'));
     await settle(t);
-    t.state<NavigatorState>(find.byType(Navigator).first)
-      ..pop()
-      ..pop();
-    await settle(t);
+    await backToHome(t);
 
     // A private v2 conversation (PROTOCOL §B11.1): created behind its own
     // password, not on any list, and opened again with that password.
@@ -1041,45 +1055,41 @@ void main() {
     await settle(t);
     await backToHome(t);
 
-    // The rest checks the old v1 paths that stay in the app for reading
-    // (DMs by QR, private rooms, profiles): writes back on for them.
-    RoomSession.legacyWrites = true;
-
-    // A DM started with a QR code, listed under "DM".
+    // A 1:1 conversation started with a QR code: named after the other
+    // person, its QR shown at once, listed under "DM".
     await backToHome(t);
-    await newRoom(t, mode: 'DM');
-    await pumpUntil(t, find.text('Rozmowa'));
-    await backToHome(t);
-    await t.tap(find.textContaining('DM ('));
+    await newConversation(t, 'Rozmowa', item: 'v2-new-dm');
+    await pumpUntil(t, find.byKey(const ValueKey('v2-invite-copy')));
     await settle(t);
+    await t.pageBack();
+    await pumpUntil(t, find.byType(ChatScreen));
+    await settle(t);
+    await backToHome(t);
+    await homeTab(t, dm: true);
     await pumpUntil(t, find.text('Rozmowa'));
 
     // The home list: groups segment, with the group's last message.
-    await t.tap(find.textContaining('Grupy ('));
-    await settle(t);
+    await homeTab(t, dm: false);
     await pumpUntil(t, find.text('Wyprawa w Tatry'));
     await shot(t, '02_home');
 
-    // A private room: created from private mode with a password, never
-    // listed, opened only by that password.
+    // Another private conversation: never listed, opened only by its
+    // password (it goes along to a new phone below).
     const secret = 'Tylko dla mnie 🤫';
     await tapKey(t, 'private-mode');
     await pumpUntil(t, find.byKey(const ValueKey('private-new')));
     await settle(t);
     await tapKey(t, 'private-new');
-    await pumpUntil(t, find.byType(NewRoomScreen));
+    await pumpUntil(t, find.byKey(const ValueKey('private-new-password')));
     await settle(t);
-    for (final e in {
-      'Nazwa pokoju': 'Pamiętnik',
-      'Twoja nazwa w tym pokoju': 'M.',
-      'Hasło do tego pokoju': 'tajne haslo',
-      'Powtórz hasło': 'tajne haslo',
-    }.entries) {
-      await fill(t, e.key, e.value);
-    }
+    await typeKey(t, 'private-new-password', 'tajne haslo');
+    await typeKey(t, 'private-new-again', 'tajne haslo');
+    await typeKey(t, 'private-new-name', 'Pamiętnik');
+    await typeKey(t, 'private-new-me', 'M.');
     await hideKeyboard(t);
-    await tapKey(t, 'new-room-submit');
+    await tapKey(t, 'private-new-go');
     await pumpUntil(t, find.byType(ChatScreen));
+    await pumpUntil(t, find.text('osób: 1'));
     await settle(t);
     await send(t, secret);
     await pumpUntil(t, find.text(secret));
@@ -1240,12 +1250,13 @@ void main() {
     )).entries()) {
       names.add(name);
     }
-    expect(names, containsAll(['app/payload', 'app/data', 'priv/0/secrets']));
+    expect(names, containsAll(['app/payload', 'app/data', 'pv2/0/secrets']));
     expect(
-      names.where((n) => n.startsWith('pub/') && n.endsWith('/secrets')),
+      names.where((n) => n.startsWith('v2/') && n.endsWith('/secrets')),
       hasLength(greaterThanOrEqualTo(2)),
-      reason: 'the group and the DM',
+      reason: 'the groups and the DM',
     );
+    expect(names.any((n) => n.startsWith('pr2/')), isTrue);
     expect(names.any((n) => n.contains('/media/')), isTrue);
     await shot(t, '10_move_send');
 

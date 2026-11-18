@@ -274,7 +274,8 @@ class V2RoomSession extends RoomSession {
         },
     });
 
-    meta = v1.meta;
+    // A DM keeps its name: the other person's.
+    meta = group.dm ? v1.meta.copyWith(name: meta.name) : v1.meta;
     notifyListeners();
     scheduleSave();
   }

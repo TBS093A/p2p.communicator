@@ -18,10 +18,20 @@ import 'v2_room_session.dart';
 
 /// The public part of a `p2pc2.` invite.
 class V2Invite {
-  V2Invite._(this.code, this.rendezvous, this.adminCik);
+  V2Invite._(this.code, this.rendezvous, this.adminCik, this.isDm);
   final String code;
   final String rendezvous;
   final String adminCik;
+
+  /// An invite to a 1:1 conversation (the app adds `kind: dm`; the core
+  /// ignores it).
+  final bool isDm;
+
+  /// [code] marked as an invite to a 1:1 conversation.
+  static String markDm(String code) {
+    final j = jsonDecode(code.substring(6)) as Map<String, dynamic>;
+    return 'p2pc2.${jsonEncode({...j, 'kind': 'dm'})}';
+  }
 
   static V2Invite? tryParse(String raw) {
     final code = raw.trim();
@@ -33,7 +43,7 @@ class V2Invite {
       final a = j['admin_cik'];
       if (r is! String || a is! String || r.isEmpty) return null;
       if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(a)) return null;
-      return V2Invite._(code, r, a);
+      return V2Invite._(code, r, a, j['kind'] == 'dm');
     } on FormatException {
       return null;
     }
@@ -71,7 +81,47 @@ class V1Move {
     required this.name,
     required this.code,
     required this.messageId,
+    this.ts = 0,
   });
+
+  /// When it was announced (ms). The earliest announcement in a room wins
+  /// (§B11.2).
+  final int ts;
+
+  /// Every move announced in [messages] with an invite for [myOutbox],
+  /// earliest first (ties: by announcer). Our own announcements are in it
+  /// too, with an empty code.
+  static List<V1Move> all(Iterable<ChatMessage> messages, String myOutbox) {
+    final found = <V1Move>[];
+    for (final m in messages) {
+      if (m.type != MsgType.text) continue;
+      final x = m.extra?[key];
+      if (x is! Map) continue;
+      final inv = x['inv'];
+      final name = x['name'];
+      if (inv is! Map) continue;
+      final own = m.author == myOutbox;
+      final code = own ? '' : inv[myOutbox];
+      if (!own && (code is! String || V2Invite.tryParse(code) == null)) {
+        continue;
+      }
+      found.add(
+        V1Move(
+          from: m.author,
+          name: name is String && name.trim().isNotEmpty
+              ? name.trim()
+              : 'Grupa v2',
+          code: code as String,
+          messageId: m.id,
+          ts: m.ts,
+        ),
+      );
+    }
+    found.sort(
+      (a, b) => a.ts != b.ts ? a.ts.compareTo(b.ts) : a.from.compareTo(b.from),
+    );
+    return found;
+  }
 
   /// v1 outbox of whoever announced it.
   final String from;
@@ -161,6 +211,21 @@ class V2Group {
        dmOffers = dmOffers ?? [],
        partials = partials ?? {};
 
+  /// Moved from v1 (PROTOCOL §B11.2): the v1 room's roster key.
+  String? fromV1;
+
+  /// Admin of a moved room: invites made for the v1 members. Whoever uses
+  /// one is let in without a fingerprint check, as in the v1 room (§B11.2).
+  final Set<String> moveInvites = {};
+
+  /// Admin of a moved room: when we announced the move (ms; the earliest
+  /// announcement in a room wins).
+  int movedAt = 0;
+
+  /// A DM started with a QR code: its joiner is approved like in a group
+  /// (fingerprint), not by a proof from a shared group.
+  bool dmQr = false;
+
   /// The admin deleted this conversation for everyone (PROTOCOL §B5.5);
   /// it is deleted here at the end of the sync that read it.
   bool closedByAdmin = false;
@@ -171,7 +236,7 @@ class V2Group {
 
   /// A private conversation (PROTOCOL §B10): each side names it after the
   /// other person, so the room look never renames it.
-  final bool dm;
+  bool dm;
 
   /// Opt-in (PROTOCOL §B8): show the members of this conversation, and
   /// only them, whether we are around. Off by default.
@@ -245,38 +310,50 @@ class V2Group {
     'presenceSent': ?presenceSent,
     if (partials.isNotEmpty) 'parts': partials,
     if (closedByAdmin) 'closed': true,
+    'fromV1': ?fromV1,
+    if (moveInvites.isNotEmpty) 'moveInvites': moveInvites.toList(),
+    if (movedAt > 0) 'movedAt': movedAt,
+    if (dmQr) 'dmQr': true,
   };
 
-  static V2Group fromJson(Map<String, dynamic> j) => V2Group(
-    id: j['id'] as String,
-    name: j['name'] as String,
-    me: j['me'] as String? ?? 'Ja',
-    state: base64.decode(j['state'] as String),
-    joinInvite: j['join'] as String?,
-    joinedWith: j['via'] as String?,
-    openInvites: ((j['invites'] as List?) ?? const []).cast<String>().toList(),
-    inboxSeen: j['seen'] as int? ?? 0,
-    metaTs: j['metaTs'] as int? ?? 0,
-    membersSeen: j['members'] as int? ?? 0,
-    keysAt: j['keysAt'] as int? ?? 0,
-    sentSinceKeys: j['sentSinceKeys'] as int? ?? 0,
-    dm: j['dm'] == true,
-    presence: j['presence'] == true,
-    presenceAt: j['presenceAt'] as int? ?? 0,
-    presenceSent: j['presenceSent'] as String?,
-    partials: {
-      for (final e in ((j['parts'] as Map?) ?? const {}).entries)
-        if (e.key is String && e.value is Map)
-          e.key as String: (e.value as Map).cast<String, dynamic>(),
-    },
-    dmOffers: [
-      for (final o in (j['dmOffers'] as List?) ?? const [])
-        ?V2DmOffer.fromJson(o),
-    ],
-    legacy: (j['msgs'] as List?)
-        ?.map((m) => (m as Map).cast<String, dynamic>())
-        .toList(),
-  )..closedByAdmin = j['closed'] == true;
+  static V2Group fromJson(Map<String, dynamic> j) =>
+      V2Group(
+          id: j['id'] as String,
+          name: j['name'] as String,
+          me: j['me'] as String? ?? 'Ja',
+          state: base64.decode(j['state'] as String),
+          joinInvite: j['join'] as String?,
+          joinedWith: j['via'] as String?,
+          openInvites: ((j['invites'] as List?) ?? const [])
+              .cast<String>()
+              .toList(),
+          inboxSeen: j['seen'] as int? ?? 0,
+          metaTs: j['metaTs'] as int? ?? 0,
+          membersSeen: j['members'] as int? ?? 0,
+          keysAt: j['keysAt'] as int? ?? 0,
+          sentSinceKeys: j['sentSinceKeys'] as int? ?? 0,
+          dm: j['dm'] == true,
+          presence: j['presence'] == true,
+          presenceAt: j['presenceAt'] as int? ?? 0,
+          presenceSent: j['presenceSent'] as String?,
+          partials: {
+            for (final e in ((j['parts'] as Map?) ?? const {}).entries)
+              if (e.key is String && e.value is Map)
+                e.key as String: (e.value as Map).cast<String, dynamic>(),
+          },
+          dmOffers: [
+            for (final o in (j['dmOffers'] as List?) ?? const [])
+              ?V2DmOffer.fromJson(o),
+          ],
+          legacy: (j['msgs'] as List?)
+              ?.map((m) => (m as Map).cast<String, dynamic>())
+              .toList(),
+        )
+        ..closedByAdmin = j['closed'] == true
+        ..fromV1 = j['fromV1'] as String?
+        ..moveInvites.addAll(((j['moveInvites'] as List?) ?? const []).cast())
+        ..movedAt = j['movedAt'] as int? ?? 0
+        ..dmQr = j['dmQr'] == true;
 }
 
 /// Opens the chat session of [group]: its encrypted cache and media live in
@@ -460,41 +537,10 @@ class V2Groups extends ChangeNotifier {
   }
 
   /// A new group with us as its admin; [me] is our name in it.
-  Future<V2Group> create(String name, String me) => _serial(() async {
-    final s = CoreSession.create('me');
-    final g = V2Group(
-      id: _newId(),
-      name: name.trim(),
-      me: me.trim(),
-      state: s.save(),
-      membersSeen: 1,
-      keysAt: clock(), // fresh keys
-    );
-    _sessions[g.id] = s;
-    try {
-      await _run(g, {'op': 'create_group'});
-      await _attach(g);
-    } on Object {
-      _sessions.remove(g.id)?.close();
-      rethrow;
-    }
-    await _save();
-    notifyListeners();
-    return g;
-  });
-
-  /// A new one-time invite (admin only). Whoever uses it is let in on a
-  /// later sync.
-  Future<String> createInvite(V2Group g) => _serial(() async {
-    final code = await _run(g, {'op': 'create_invite'}) as String;
-    g.openInvites.add(inviteRendezvous(code));
-    await _save();
-    return code;
-  });
-
-  /// Asks to join with [invite]; the admin's key must have been checked
-  /// against the admin's screen ([V2Invite.adminCik]).
-  Future<V2Group> join(V2Invite invite, String name, String me) =>
+  /// A new group with us as its admin. [dm]: a 1:1 conversation started
+  /// with a QR code (its invites say so; the joiner is approved as in a
+  /// group).
+  Future<V2Group> create(String name, String me, {bool dm = false}) =>
       _serial(() async {
         final s = CoreSession.create('me');
         final g = V2Group(
@@ -502,17 +548,13 @@ class V2Groups extends ChangeNotifier {
           name: name.trim(),
           me: me.trim(),
           state: s.save(),
-          joinInvite: invite.code,
-          joinedWith: invite.code,
-        );
+          membersSeen: 1,
+          keysAt: clock(), // fresh keys
+          dm: dm,
+        )..dmQr = dm;
         _sessions[g.id] = s;
         try {
-          await _run(g, {
-            'op': 'request_join',
-            'invite': invite.code,
-            'verified_admin': invite.adminCik,
-            'name': me.trim(),
-          });
+          await _run(g, {'op': 'create_group'});
           await _attach(g);
         } on Object {
           _sessions.remove(g.id)?.close();
@@ -522,6 +564,54 @@ class V2Groups extends ChangeNotifier {
         notifyListeners();
         return g;
       });
+
+  /// A new one-time invite (admin only). Whoever uses it is let in on a
+  /// later sync.
+  Future<String> createInvite(V2Group g) => _serial(() async {
+    final raw = await _run(g, {'op': 'create_invite'}) as String;
+    final code = g.dmQr ? V2Invite.markDm(raw) : raw;
+    g.openInvites.add(inviteRendezvous(code));
+    await _save();
+    return code;
+  });
+
+  /// Asks to join with [invite]; the admin's key must have been checked
+  /// against the admin's screen ([V2Invite.adminCik]). [fromV1]: joining
+  /// the move of that v1 room (§B11.2).
+  Future<V2Group> join(
+    V2Invite invite,
+    String name,
+    String me, {
+    String? fromV1,
+    bool dm = false,
+  }) => _serial(() async {
+    final s = CoreSession.create('me');
+    final g = V2Group(
+      dm: dm || invite.isDm,
+      id: _newId(),
+      name: name.trim(),
+      me: me.trim(),
+      state: s.save(),
+      joinInvite: invite.code,
+      joinedWith: invite.code,
+    )..fromV1 = fromV1;
+    _sessions[g.id] = s;
+    try {
+      await _run(g, {
+        'op': 'request_join',
+        'invite': invite.code,
+        'verified_admin': invite.adminCik,
+        'name': me.trim(),
+      });
+      await _attach(g);
+    } on Object {
+      _sessions.remove(g.id)?.close();
+      rethrow;
+    }
+    await _save();
+    notifyListeners();
+    return g;
+  });
 
   // ------------------------------------------------- DMs (PROTOCOL §B10)
 
@@ -586,13 +676,23 @@ class V2Groups extends ChangeNotifier {
   Future<(V2Group, Map<String, String>)> createForMove(
     String name,
     String me,
-    Iterable<String> members,
-  ) async {
-    final g = await create(name, me);
+    Iterable<String> members, {
+    String? fromV1,
+    bool dm = false,
+  }) async {
+    // A moved v1 DM stays a DM, named after the other person on each side.
+    final g = await create(name, me)
+      ..dm = dm;
     final invites = <String, String>{};
     for (final m in members) {
-      invites[m] = await createInvite(g);
+      final code = await createInvite(g);
+      invites[m] = dm ? V2Invite.markDm(code) : code;
+      g.moveInvites.add(inviteRendezvous(code));
     }
+    g
+      ..fromV1 = fromV1
+      ..movedAt = clock();
+    await _save();
     return (g, invites);
   }
 
@@ -900,9 +1000,11 @@ class V2Groups extends ChangeNotifier {
   /// shown); in a DM the invite is bound to one member who proved who
   /// they are (§B10), so it is let in at once.
   Future<void> _admit(V2Group g) async {
-    if (g.dm) return _admitDm(g);
+    if (g.moveInvites.isNotEmpty) await _admitMoved(g);
+    if (g.dm && !g.dmQr) return _admitDm(g);
     final waiting = <String, V2JoinRequest>{};
     for (final rv in g.openInvites.toList()) {
+      if (g.moveInvites.contains(rv)) continue;
       try {
         final r = await _run(g, {'op': 'peek_join', 'rendezvous': rv});
         if (r is Map && r['cik'] is String) {
@@ -953,8 +1055,36 @@ class V2Groups extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Admin of a moved v1 room (PROTOCOL §B11.2): the invites went to the
+  /// v1 members inside the v1 room, so whoever uses one is let in at once,
+  /// with the trust the v1 room had. Everyone can compare keys later.
+  Future<void> _admitMoved(V2Group g) async {
+    for (final rv in g.moveInvites.toList()) {
+      if (!g.openInvites.contains(rv)) {
+        g.moveInvites.remove(rv);
+        continue;
+      }
+      try {
+        final r = await _run(g, {'op': 'peek_join', 'rendezvous': rv});
+        if (r is! Map || r['cik'] is! String) continue; // not used yet
+        await _rotateIfFull(g);
+        await _run(g, {'op': 'stage_add', 'rendezvous': rv, 'cik': r['cik']});
+      } on CoreError {
+        debugPrint('[v2] a move join request was refused or already used');
+      }
+      g.openInvites.remove(rv);
+      g.moveInvites.remove(rv);
+      await _save();
+      if (info(g)['has_pending'] == true) {
+        await _run(g, {'op': 'publish_pending'});
+        await _save();
+      }
+    }
+  }
+
   Future<void> _admitDm(V2Group g) async {
     for (final rv in g.openInvites.toList()) {
+      if (g.moveInvites.contains(rv)) continue;
       try {
         await _run(g, {'op': 'stage_add', 'rendezvous': rv});
       } on CoreError catch (e) {
