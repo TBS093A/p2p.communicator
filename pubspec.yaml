@@ -30,7 +30,7 @@ dependencies:
   image: ^4.3.0 # resize static avatars/backgrounds; GIFs stay untouched
   image_picker: ^1.2.0
   video_player: ^2.10.0
-  record: ^7.1.2
+  record: ^7.2.0
   audioplayers: ^6.8.1
 
   # Sender avatars that stick to the bottom of their message group while
