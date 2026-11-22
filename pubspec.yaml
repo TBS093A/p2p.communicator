@@ -27,7 +27,7 @@ dependencies:
   uuid: ^4.5.3
 
   # Media
-  image: ^4.3.0 # resize static avatars/backgrounds; GIFs stay untouched
+  image: ^4.13.1 # resize static avatars/backgrounds; GIFs stay untouched
   image_picker: ^1.2.0
   video_player: ^2.10.0
   record: ^7.1.2
